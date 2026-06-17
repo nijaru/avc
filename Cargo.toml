@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-gix = "0.72"
+gix = "0.83"
 rusqlite = { version = "0.39", features = ["bundled"] }
 anyhow = "1"
 thiserror = "2"

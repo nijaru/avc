@@ -2,7 +2,6 @@
 //!
 //! Provides utilities for creating temporary git repos and running avc commands.
 
-use std::path::Path;
 use tempfile::TempDir;
 
 /// A temporary git repository with avc initialized.
@@ -17,14 +16,12 @@ impl TestRepo {
         let dir = TempDir::new().expect("failed to create temp dir");
         let path = dir.path();
 
-        // Initialize git repo
         std::process::Command::new("git")
             .args(["init"])
             .current_dir(path)
             .output()
             .expect("failed to init git repo");
 
-        // Configure git for testing
         std::process::Command::new("git")
             .args(["config", "user.email", "test@test.com"])
             .current_dir(path)
@@ -37,24 +34,21 @@ impl TestRepo {
             .output()
             .expect("failed to config git");
 
-        // Create initial commit (required for avc)
         std::process::Command::new("git")
             .args(["commit", "--allow-empty", "-m", "initial"])
             .current_dir(path)
             .output()
             .expect("failed to create initial commit");
 
-        // Get avc binary path
         let avc_bin = env!("CARGO_BIN_EXE_avc").to_string();
 
-        // Initialize avc
         let output = std::process::Command::new(&avc_bin)
             .args(["init"])
             .current_dir(path)
             .output()
             .expect("failed to run avc init");
 
-        assert!(output.status.success(), "avc init failed: {}", 
+        assert!(output.status.success(), "avc init failed: {}",
             String::from_utf8_lossy(&output.stderr));
 
         TestRepo { dir, avc_bin }
@@ -69,21 +63,44 @@ impl TestRepo {
             .expect("failed to run avc")
     }
 
-    /// Run an avc command and assert it succeeds.
+    /// Run an avc command and assert it succeeds. Returns stdout.
     pub fn run_success(&self, args: &[&str]) -> String {
         let output = self.run(args);
-        assert!(output.status.success(), 
-            "avc {} failed: stderr={}", 
-            args.join(" "), 
+        assert!(output.status.success(),
+            "avc {} failed: stderr={}",
+            args.join(" "),
             String::from_utf8_lossy(&output.stderr));
         String::from_utf8_lossy(&output.stdout).to_string()
     }
 
-    /// Run an avc command and assert it fails.
+    /// Run an avc command and assert it succeeds. Returns stderr (where non-JSON output goes).
+    pub fn run_success_stderr(&self, args: &[&str]) -> String {
+        let output = self.run(args);
+        assert!(output.status.success(),
+            "avc {} failed: stderr={}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stderr).to_string()
+    }
+
+    /// Run an avc command and assert it succeeds. Returns (stdout, stderr).
+    pub fn run_success_both(&self, args: &[&str]) -> (String, String) {
+        let output = self.run(args);
+        assert!(output.status.success(),
+            "avc {} failed: stderr={}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr));
+        (
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    }
+
+    /// Run an avc command and assert it fails. Returns stderr.
     pub fn run_failure(&self, args: &[&str]) -> String {
         let output = self.run(args);
-        assert!(!output.status.success(), 
-            "avc {} unexpectedly succeeded", 
+        assert!(!output.status.success(),
+            "avc {} unexpectedly succeeded",
             args.join(" "));
         String::from_utf8_lossy(&output.stderr).to_string()
     }
@@ -105,45 +122,27 @@ impl TestRepo {
         self.dir.path().join(name).exists()
     }
 
-    /// List staged files (via git diff --cached).
-    pub fn staged_files(&self) -> Vec<String> {
+    /// Get HEAD hash via git.
+    pub fn head_hash(&self) -> String {
         let output = std::process::Command::new("git")
-            .args(["diff", "--cached", "--name-only"])
+            .args(["rev-parse", "HEAD"])
             .current_dir(self.dir.path())
             .output()
-            .expect("failed to run git diff");
-
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect()
+            .expect("failed to get HEAD");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
-    /// List files in git log (to verify refs don't leak).
-    pub fn git_log_refs(&self) -> Vec<String> {
+    /// Run a git command in the repo.
+    pub fn git(&self, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
-            .args(["log", "--oneline", "--all"])
+            .args(args)
             .current_dir(self.dir.path())
             .output()
-            .expect("failed to run git log");
-
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    /// Get the list of refs (to verify hidden refs exist).
-    pub fn git_refs(&self) -> Vec<String> {
-        let output = std::process::Command::new("git")
-            .args(["for-each-ref", "--format=%(refname)"])
-            .current_dir(self.dir.path())
-            .output()
-            .expect("failed to run git for-each-ref");
-
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(|s| s.to_string())
-            .collect()
+            .expect("failed to run git");
+        assert!(output.status.success(),
+            "git {} failed: stderr={}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).to_string()
     }
 }

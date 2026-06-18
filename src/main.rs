@@ -14,14 +14,11 @@ use cli::{Cli, Commands};
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Default to status if no command given
     let command = cli.command.unwrap_or(Commands::Status);
 
     let result = match command {
         Commands::Init => commands::init::run(cli.json),
-        Commands::Save { message, amend } => {
-            commands::save::run(message, amend, cli.json)
-        }
+        Commands::Save { message, amend } => commands::save::run(message, amend, cli.json),
         Commands::Undo => commands::undo::run(cli.json),
         Commands::Redo => commands::redo::run(cli.json),
         Commands::Log { limit, saves } => commands::log_cmd::run(limit, saves, cli.json),

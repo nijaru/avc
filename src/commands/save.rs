@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, Context, bail};
 use std::path::Path;
 
 use crate::git;
@@ -11,7 +11,7 @@ pub fn run(messages: Vec<String>, amend: bool, json: bool) -> Result<()> {
         bail!("not a git repository. Run `avc init` first.");
     }
 
-    let root = repo_root()?;
+    let root = git::repo_root()?;
     let branch = git::current_branch()?.unwrap_or_else(|| "HEAD".to_string());
 
     // Auto-commit dirty working tree first
@@ -25,7 +25,6 @@ pub fn run(messages: Vec<String>, amend: bool, json: bool) -> Result<()> {
 }
 
 fn do_save(root: &Path, branch: &str, messages: &[String], json: bool) -> Result<()> {
-    // Find auto-commits since last non-auto commit
     let auto_commits = find_auto_commits_since_last_save()?;
 
     if auto_commits.is_empty() {
@@ -37,24 +36,20 @@ fn do_save(root: &Path, branch: &str, messages: &[String], json: bool) -> Result
         return Ok(());
     }
 
-    // Build commit message
     let title = if messages.is_empty() {
         generate_message()?
     } else {
         messages.join("\n\n")
     };
 
-    // Get the hash before first auto-commit (the parent of the first auto-commit)
     let parent = git::git(&["rev-parse", &format!("{}^", auto_commits.last().unwrap())])?;
     let parent = parent.trim();
 
-    // Squash: soft reset to parent, then commit
     git::reset_soft(parent)?;
     git::commit(&title)?;
 
     let new_head = git::head_hash()?.context("commit succeeded but no HEAD")?;
 
-    // Log to oplog
     let entry = oplog::OpEntry::save(branch, &new_head, &title, auto_commits.clone());
     oplog::append(root, &entry)?;
 
@@ -71,12 +66,11 @@ fn do_save(root: &Path, branch: &str, messages: &[String], json: bool) -> Result
 }
 
 fn do_amend(root: &Path, branch: &str, messages: &[String], json: bool) -> Result<()> {
-    // Find the last save commit
     let entries = oplog::read_all(root)?;
-    let last_save = entries.iter().rev().find(|e| e.op == "save" || e.op == "amend");
+    let last_save = entries.iter().rev().find(|e| e.op_type() == "save" || e.op_type() == "amend");
 
     let save_commit = match last_save {
-        Some(entry) => entry.commit.clone().unwrap_or_else(|| entry.head.clone().unwrap_or_default()),
+        Some(entry) => entry.head().unwrap_or_default().to_string(),
         None => {
             if json {
                 println!("{{\"status\": \"nothing_to_amend\"}}");
@@ -87,7 +81,6 @@ fn do_amend(root: &Path, branch: &str, messages: &[String], json: bool) -> Resul
         }
     };
 
-    // Find auto-commits since that save
     let auto_commits = find_auto_commits_since(&save_commit)?;
 
     if auto_commits.is_empty() && messages.is_empty() {
@@ -99,16 +92,13 @@ fn do_amend(root: &Path, branch: &str, messages: &[String], json: bool) -> Resul
         return Ok(());
     }
 
-    // Get the message: use provided or keep original
     let title = if messages.is_empty() {
-        // Keep original message
         let msg = git::git(&["log", "-1", "--format=%B", &save_commit])?;
         msg.trim().to_string()
     } else {
         messages.join("\n\n")
     };
 
-    // Soft reset to the save commit's parent, then commit with new message
     let parent = git::git(&["rev-parse", &format!("{}^", save_commit)])?;
     let parent = parent.trim();
 
@@ -117,7 +107,6 @@ fn do_amend(root: &Path, branch: &str, messages: &[String], json: bool) -> Resul
 
     let new_head = git::head_hash()?.context("commit succeeded but no HEAD")?;
 
-    // Log to oplog
     let entry = oplog::OpEntry::amend(branch, &new_head, &title, auto_commits.clone());
     oplog::append(root, &entry)?;
 
@@ -131,9 +120,7 @@ fn do_amend(root: &Path, branch: &str, messages: &[String], json: bool) -> Resul
     Ok(())
 }
 
-/// Find all [avc:auto] commits since the last non-auto commit.
 fn find_auto_commits_since_last_save() -> Result<Vec<String>> {
-    // Walk backwards from HEAD, collecting auto-commits until we hit a non-auto
     let mut auto_commits = Vec::new();
     let mut current = "HEAD".to_string();
 
@@ -149,26 +136,22 @@ fn find_auto_commits_since_last_save() -> Result<Vec<String>> {
         let hash = hash.trim().to_string();
         auto_commits.push(hash.clone());
 
-        // Move to parent
         let parent = git::git(&["rev-parse", "--short", &format!("{}^", current)]);
         match parent {
             Ok(p) => current = p.trim().to_string(),
-            Err(_) => break, // No parent (root commit)
+            Err(_) => break,
         }
     }
 
-    // Return in order (oldest first)
     auto_commits.reverse();
     Ok(auto_commits)
 }
 
-/// Find all [avc:auto] commits since a given commit.
 fn find_auto_commits_since(since: &str) -> Result<Vec<String>> {
     let mut auto_commits = Vec::new();
     let mut current = "HEAD".to_string();
 
     loop {
-        // Stop if we've reached the target commit
         let current_hash = git::git(&["rev-parse", "--short", &current])?;
         let current_hash = current_hash.trim();
         let target_hash = git::git(&["rev-parse", "--short", since])?;
@@ -185,7 +168,6 @@ fn find_auto_commits_since(since: &str) -> Result<Vec<String>> {
             auto_commits.push(current_hash.to_string());
         }
 
-        // Move to parent
         let parent = git::git(&["rev-parse", "--short", &format!("{}^", current)]);
         match parent {
             Ok(p) => current = p.trim().to_string(),
@@ -197,9 +179,7 @@ fn find_auto_commits_since(since: &str) -> Result<Vec<String>> {
     Ok(auto_commits)
 }
 
-/// Generate a message from the files changed in auto-commits.
 fn generate_message() -> Result<String> {
-    // Get the diff stat for staged changes (after reset --soft)
     let stat = git::diff_stat_staged().unwrap_or_default();
     let stat = stat.trim();
 
@@ -207,13 +187,9 @@ fn generate_message() -> Result<String> {
         return Ok("Update files".to_string());
     }
 
-    // Extract file names from the diff stat
     let files: Vec<&str> = stat
         .lines()
-        .filter_map(|line| {
-            // Format: " file.rs | 5 +++--"
-            line.split('|').next().map(|f| f.trim())
-        })
+        .filter_map(|line| line.split('|').next().map(|f| f.trim()))
         .collect();
 
     let title = if files.is_empty() {
@@ -239,17 +215,3 @@ fn generate_message() -> Result<String> {
 
     Ok(message)
 }
-
-fn repo_root() -> Result<std::path::PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!("not in a git repository");
-    }
-    Ok(std::path::PathBuf::from(
-        String::from_utf8_lossy(&output.stdout).trim(),
-    ))
-}
-
-use anyhow::Context;

@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, bail};
-use std::path::Path;
 use std::process::Command;
 
 /// Run a git command and return stdout as a String.
@@ -26,6 +25,19 @@ pub fn git(args: &[&str]) -> Result<String> {
 pub fn git_void(args: &[&str]) -> Result<()> {
     git(args)?;
     Ok(())
+}
+
+/// Get the repository root directory.
+pub fn repo_root() -> Result<std::path::PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !output.status.success() {
+        bail!("not in a git repository");
+    }
+    Ok(std::path::PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
 }
 
 /// Check if we're in a git repository.
@@ -67,7 +79,6 @@ pub fn head_hash() -> Result<Option<String>> {
 
 /// Check if the working tree is dirty (staged + unstaged + untracked).
 pub fn is_dirty() -> Result<bool> {
-    // Check staged + unstaged
     let status = Command::new("git")
         .args(["status", "--porcelain"])
         .output()?;
@@ -85,12 +96,6 @@ pub fn commit(message: &str) -> Result<String> {
     head_hash()?.context("commit succeeded but no HEAD")
 }
 
-/// Create a commit with a message file. Returns the short hash.
-pub fn commit_file(path: &Path) -> Result<String> {
-    git_void(&["commit", "-F", &path.to_string_lossy(), "--allow-empty"])?;
-    head_hash()?.context("commit succeeded but no HEAD")
-}
-
 /// Soft reset to a target, keeping changes staged.
 pub fn reset_soft(hash: &str) -> Result<()> {
     git_void(&["reset", "--soft", hash])
@@ -99,18 +104,6 @@ pub fn reset_soft(hash: &str) -> Result<()> {
 /// Hard reset to a target, discarding all changes.
 pub fn reset_hard(hash: &str) -> Result<()> {
     git_void(&["reset", "--hard", hash])
-}
-
-/// Get the full log output with a format string.
-pub fn log_format(format: &str, limit: Option<usize>) -> Result<String> {
-    let limit_str;
-    let mut args = vec!["log", "--format", format];
-    if let Some(n) = limit {
-        limit_str = n.to_string();
-        args.push("-n");
-        args.push(&limit_str);
-    }
-    git(&args)
 }
 
 /// Get diff stat between two refs, or working tree if only one ref.
@@ -127,13 +120,7 @@ pub fn diff_stat_staged() -> Result<String> {
     git(&["diff", "--cached", "--stat"])
 }
 
-/// Check if a ref exists.
-pub fn ref_exists(hash: &str) -> bool {
-    Command::new("git")
-        .args(["rev-parse", "--verify", hash])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Get the porcelain status output.
+pub fn porcelain_status() -> Result<String> {
+    git(&["status", "--porcelain"])
 }

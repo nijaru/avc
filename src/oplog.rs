@@ -6,160 +6,158 @@ use std::path::Path;
 
 /// An entry in the operation log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpEntry {
-    /// Operation type: init, auto, save, amend, undo, redo, run
-    pub op: String,
-    /// ISO 8601 timestamp
-    pub time: String,
-    /// Branch name (if applicable)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    /// HEAD hash after operation
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub head: Option<String>,
-    /// Files changed (for auto commits)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub files: Option<Vec<String>>,
-    /// Commit title (for save/amend)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// Commit hash (for save/amend)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    /// Squashed auto-commit hashes (for save)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub squashed: Option<Vec<String>>,
-    /// Command that was run (for run)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    /// HEAD before operation (for undo/redo)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
-    /// HEAD after operation (for undo/redo)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub to: Option<String>,
-    /// What operation was undone/redone
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_op: Option<usize>,
+#[serde(tag = "op")]
+pub enum OpEntry {
+    #[serde(rename = "init")]
+    Init {
+        time: String,
+        branch: Option<String>,
+        head: Option<String>,
+    },
+    #[serde(rename = "auto")]
+    Auto {
+        time: String,
+        branch: String,
+        head: String,
+        files: Vec<String>,
+    },
+    #[serde(rename = "save")]
+    Save {
+        time: String,
+        branch: String,
+        head: String,
+        title: String,
+        squashed: Vec<String>,
+    },
+    #[serde(rename = "amend")]
+    Amend {
+        time: String,
+        branch: String,
+        head: String,
+        title: String,
+        squashed: Vec<String>,
+    },
+    #[serde(rename = "undo")]
+    Undo {
+        time: String,
+        from: String,
+        to: String,
+        target_op: usize,
+    },
+    #[serde(rename = "redo")]
+    Redo {
+        time: String,
+        from: String,
+        to: String,
+        target_op: usize,
+    },
+    #[serde(rename = "run")]
+    Run {
+        time: String,
+        branch: String,
+        head: String,
+        command: String,
+    },
 }
 
 impl OpEntry {
+    pub fn op_type(&self) -> &str {
+        match self {
+            OpEntry::Init { .. } => "init",
+            OpEntry::Auto { .. } => "auto",
+            OpEntry::Save { .. } => "save",
+            OpEntry::Amend { .. } => "amend",
+            OpEntry::Undo { .. } => "undo",
+            OpEntry::Redo { .. } => "redo",
+            OpEntry::Run { .. } => "run",
+        }
+    }
+
+    pub fn time(&self) -> &str {
+        match self {
+            OpEntry::Init { time, .. } => time,
+            OpEntry::Auto { time, .. } => time,
+            OpEntry::Save { time, .. } => time,
+            OpEntry::Amend { time, .. } => time,
+            OpEntry::Undo { time, .. } => time,
+            OpEntry::Redo { time, .. } => time,
+            OpEntry::Run { time, .. } => time,
+        }
+    }
+
+    pub fn head(&self) -> Option<&str> {
+        match self {
+            OpEntry::Init { head, .. } => head.as_deref(),
+            OpEntry::Auto { head, .. } => Some(head),
+            OpEntry::Save { head, .. } => Some(head),
+            OpEntry::Amend { head, .. } => Some(head),
+            OpEntry::Undo { to, .. } => Some(to),
+            OpEntry::Redo { to, .. } => Some(to),
+            OpEntry::Run { head, .. } => Some(head),
+        }
+    }
+
     pub fn init(branch: &str, head: Option<&str>) -> Self {
-        Self {
-            op: "init".to_string(),
+        OpEntry::Init {
             time: chrono::Utc::now().to_rfc3339(),
             branch: Some(branch.to_string()),
             head: head.map(|s| s.to_string()),
-            files: None,
-            title: None,
-            commit: None,
-            squashed: None,
-            command: None,
-            from: None,
-            to: None,
-            target_op: None,
         }
     }
 
     pub fn auto(branch: &str, head: &str, files: Vec<String>) -> Self {
-        Self {
-            op: "auto".to_string(),
+        OpEntry::Auto {
             time: chrono::Utc::now().to_rfc3339(),
-            branch: Some(branch.to_string()),
-            head: Some(head.to_string()),
-            files: Some(files),
-            title: None,
-            commit: None,
-            squashed: None,
-            command: None,
-            from: None,
-            to: None,
-            target_op: None,
+            branch: branch.to_string(),
+            head: head.to_string(),
+            files,
         }
     }
 
     pub fn save(branch: &str, head: &str, title: &str, squashed: Vec<String>) -> Self {
-        Self {
-            op: "save".to_string(),
+        OpEntry::Save {
             time: chrono::Utc::now().to_rfc3339(),
-            branch: Some(branch.to_string()),
-            head: Some(head.to_string()),
-            files: None,
-            title: Some(title.to_string()),
-            commit: Some(head.to_string()),
-            squashed: Some(squashed),
-            command: None,
-            from: None,
-            to: None,
-            target_op: None,
+            branch: branch.to_string(),
+            head: head.to_string(),
+            title: title.to_string(),
+            squashed,
         }
     }
 
     pub fn amend(branch: &str, head: &str, title: &str, squashed: Vec<String>) -> Self {
-        Self {
-            op: "amend".to_string(),
+        OpEntry::Amend {
             time: chrono::Utc::now().to_rfc3339(),
-            branch: Some(branch.to_string()),
-            head: Some(head.to_string()),
-            files: None,
-            title: Some(title.to_string()),
-            commit: Some(head.to_string()),
-            squashed: Some(squashed),
-            command: None,
-            from: None,
-            to: None,
-            target_op: None,
+            branch: branch.to_string(),
+            head: head.to_string(),
+            title: title.to_string(),
+            squashed,
         }
     }
 
     pub fn undo(from: &str, to: &str, target_op: usize) -> Self {
-        Self {
-            op: "undo".to_string(),
+        OpEntry::Undo {
             time: chrono::Utc::now().to_rfc3339(),
-            branch: None,
-            head: Some(to.to_string()),
-            files: None,
-            title: None,
-            commit: None,
-            squashed: None,
-            command: None,
-            from: Some(from.to_string()),
-            to: Some(to.to_string()),
-            target_op: Some(target_op),
+            from: from.to_string(),
+            to: to.to_string(),
+            target_op,
         }
     }
 
     pub fn redo(from: &str, to: &str, target_op: usize) -> Self {
-        Self {
-            op: "redo".to_string(),
+        OpEntry::Redo {
             time: chrono::Utc::now().to_rfc3339(),
-            branch: None,
-            head: Some(to.to_string()),
-            files: None,
-            title: None,
-            commit: None,
-            squashed: None,
-            command: None,
-            from: Some(from.to_string()),
-            to: Some(to.to_string()),
-            target_op: Some(target_op),
+            from: from.to_string(),
+            to: to.to_string(),
+            target_op,
         }
     }
 
     pub fn run(branch: &str, head: &str, command: &str) -> Self {
-        Self {
-            op: "run".to_string(),
+        OpEntry::Run {
             time: chrono::Utc::now().to_rfc3339(),
-            branch: Some(branch.to_string()),
-            head: Some(head.to_string()),
-            files: None,
-            title: None,
-            commit: None,
-            squashed: None,
-            command: Some(command.to_string()),
-            from: None,
-            to: None,
-            target_op: None,
+            branch: branch.to_string(),
+            head: head.to_string(),
+            command: command.to_string(),
         }
     }
 }
@@ -207,10 +205,4 @@ pub fn read_all(repo_root: &Path) -> Result<Vec<OpEntry>> {
     }
 
     Ok(entries)
-}
-
-/// Get the last entry of a given op type.
-pub fn last_of_type(repo_root: &Path, op_type: &str) -> Result<Option<OpEntry>> {
-    let entries = read_all(repo_root)?;
-    Ok(entries.into_iter().rev().find(|e| e.op == op_type))
 }

@@ -3,29 +3,21 @@ use anyhow::{Result, bail};
 use crate::git;
 use crate::oplog;
 use crate::output;
-use crate::track;
 
+/// Status is read-only — does NOT auto-commit.
 pub fn run(json: bool) -> Result<()> {
     if !git::is_git_repo() {
         bail!("not a git repository");
     }
 
-    let root = repo_root()?;
-
-    // Auto-commit dirty working tree first
-    track::auto_commit(&root, json)?;
-
+    let root = git::repo_root()?;
     let branch = git::current_branch()?.unwrap_or_else(|| "HEAD".to_string());
     let head = git::head_hash()?;
 
-    // Find last save
     let entries = oplog::read_all(&root)?;
-    let last_save = entries.iter().rev().find(|e| e.op == "save" || e.op == "amend");
+    let last_save = entries.iter().rev().find(|e| e.op_type() == "save" || e.op_type() == "amend");
 
-    // Count auto-commits since last save
     let auto_since_save = count_auto_commits_since_last_save(&entries)?;
-
-    // Check for uncommitted changes
     let dirty = git::is_dirty()?;
 
     if json {
@@ -33,9 +25,12 @@ pub fn run(json: bool) -> Result<()> {
             "branch": branch,
             "head": head,
             "last_save": last_save.map(|s| serde_json::json!({
-                "commit": s.commit,
-                "title": s.title,
-                "time": s.time,
+                "commit": s.head(),
+                "title": match &s {
+                    oplog::OpEntry::Save { title, .. } | oplog::OpEntry::Amend { title, .. } => Some(title.as_str()),
+                    _ => None,
+                },
+                "time": s.time(),
             })),
             "auto_commits_since_save": auto_since_save,
             "uncommitted_changes": dirty,
@@ -44,28 +39,25 @@ pub fn run(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Rich status output
-    // Branch
     output::label_value("branch", &output::branch(&branch));
 
-    // Last save
     if let Some(save) = last_save {
-        let commit = save.commit.as_deref().or(save.head.as_deref()).unwrap_or("?");
-        let title = save.title.as_deref().unwrap_or("(no message)");
-        let time = output::time_ago(&save.time);
-        output::label_value("last save", &format!("{} {} — {}",
-            output::hash(commit), title, time));
+        let commit = save.head().unwrap_or("?");
+        let title = match save {
+            oplog::OpEntry::Save { title, .. } | oplog::OpEntry::Amend { title, .. } => title.as_str(),
+            _ => "(unknown)",
+        };
+        let time = output::time_ago(save.time());
+        output::label_value("last save", &format!("{} {} — {}", output::hash(commit), title, time));
     } else {
         output::label_value("last save", "(none)");
     }
 
-    // Auto-commits since save
     if auto_since_save > 0 {
         output::label_value("auto-commits", &format!("{} since last save", auto_since_save));
 
-        // Show what save would produce
         if let Some(save) = last_save {
-            let save_hash = save.commit.as_deref().or(save.head.as_deref()).unwrap_or("HEAD");
+            let save_hash = save.head().unwrap_or("HEAD");
             if let Ok(stat) = git::diff_stat(save_hash, None) {
                 let stat = stat.trim();
                 if !stat.is_empty() {
@@ -81,9 +73,8 @@ pub fn run(json: bool) -> Result<()> {
         output::label_value("auto-commits", "0 (clean)");
     }
 
-    // Uncommitted changes
     if dirty {
-        output::label_value("uncommitted", "yes (will auto-commit on next avc command)");
+        output::label_value("uncommitted", "yes");
     } else {
         output::label_value("uncommitted", "none");
     }
@@ -94,23 +85,11 @@ pub fn run(json: bool) -> Result<()> {
 fn count_auto_commits_since_last_save(entries: &[oplog::OpEntry]) -> Result<usize> {
     let mut count = 0;
     for entry in entries.iter().rev() {
-        match entry.op.as_str() {
+        match entry.op_type() {
             "save" | "amend" => break,
             "auto" => count += 1,
             _ => {}
         }
     }
     Ok(count)
-}
-
-fn repo_root() -> Result<std::path::PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!("not in a git repository");
-    }
-    Ok(std::path::PathBuf::from(
-        String::from_utf8_lossy(&output.stdout).trim(),
-    ))
 }

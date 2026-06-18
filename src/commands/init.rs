@@ -12,7 +12,7 @@ pub fn run(json: bool) -> Result<()> {
         bail!("not a git repository. Run `git init` first.");
     }
 
-    let root = repo_root()?;
+    let root = git::repo_root()?;
     let avc_dir = root.join(".avc");
 
     if avc_dir.exists() {
@@ -24,19 +24,11 @@ pub fn run(json: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Create .avc/ directory
     fs::create_dir_all(&avc_dir)?;
-
-    // Write default config
     config::write_default(&root)?;
-
-    // Create empty oplog
     fs::write(avc_dir.join("oplog"), "")?;
-
-    // Add .avc/ to .gitignore
     add_to_gitignore(&root)?;
 
-    // Record init in oplog
     let branch = git::current_branch()?.unwrap_or_else(|| "HEAD".to_string());
     let head = git::head_hash()?;
     let entry = oplog::OpEntry::init(&branch, head.as_deref());
@@ -53,18 +45,6 @@ pub fn run(json: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn repo_root() -> Result<std::path::PathBuf> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()?;
-    if !output.status.success() {
-        anyhow::bail!("not in a git repository");
-    }
-    Ok(std::path::PathBuf::from(
-        String::from_utf8_lossy(&output.stdout).trim(),
-    ))
 }
 
 fn add_to_gitignore(root: &Path) -> Result<()> {

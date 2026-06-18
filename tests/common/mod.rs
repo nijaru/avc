@@ -84,6 +84,7 @@ impl TestRepo {
     }
 
     /// Run an avc command and assert it succeeds. Returns (stdout, stderr).
+    #[allow(dead_code)]
     pub fn run_success_both(&self, args: &[&str]) -> (String, String) {
         let output = self.run(args);
         assert!(output.status.success(),
@@ -97,6 +98,7 @@ impl TestRepo {
     }
 
     /// Run an avc command and assert it fails. Returns stderr.
+    #[allow(dead_code)]
     pub fn run_failure(&self, args: &[&str]) -> String {
         let output = self.run(args);
         assert!(!output.status.success(),

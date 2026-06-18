@@ -113,8 +113,8 @@ pub fn time_ago(time_str: &str) -> String {
     }
 }
 
-/// Print a section header.
-pub fn header(msg: &str) {
+/// Print a section header (currently unused).
+pub fn _header(msg: &str) {
     if is_tty() {
         eprintln!("\x1b[1m{}\x1b[0m", msg);
     } else {
@@ -127,7 +127,7 @@ pub fn blank() {
     eprintln!();
 }
 
-/// Flush stderr.
-pub fn flush() {
+/// Flush stderr (currently unused).
+pub fn _flush() {
     io::stderr().flush().ok();
 }

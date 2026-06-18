@@ -72,6 +72,7 @@ pub fn config_path(repo_root: &Path) -> std::path::PathBuf {
 }
 
 /// Load config from .avc/config. Returns default if file doesn't exist.
+#[allow(dead_code)]
 pub fn load(repo_root: &Path) -> Result<Config> {
     let path = config_path(repo_root);
     if !path.exists() {

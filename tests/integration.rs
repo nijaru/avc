@@ -428,7 +428,7 @@ fn commands_fail_without_init() {
         .output()
         .unwrap();
     // Verify it at least warns about missing .avc config
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let _stderr = String::from_utf8_lossy(&output.stderr);
     // save succeeds (auto-creates oplog) — this is expected behavior
     assert!(output.status.success(), "save should auto-create .avc if missing");
 }

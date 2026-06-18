@@ -1,62 +1,57 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "avc", version, about = "Agent-Native Git-Compatible VCS")]
+#[command(name = "avc", version, about = "Agent-native Git-compatible VCS")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Output in JSON format
+    /// JSON output for machine consumption
     #[arg(long, global = true)]
     pub json: bool,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize avc in this repository
+    /// Initialize avc in a git repository
     Init,
 
-    /// Name the current work as a change
-    Change {
-        /// Change title (positional argument)
-        name: Option<String>,
+    /// Squash auto-commits into a clean commit
+    Save {
+        /// Commit message (can be specified multiple times for paragraphs)
+        #[arg(short, long = "message")]
+        message: Vec<String>,
 
-        /// Message flag (alias for positional)
-        #[arg(short = 'm', long = "message")]
-        message: Option<String>,
+        /// Squash into the last save instead of creating a new one
+        #[arg(long)]
+        amend: bool,
     },
 
-    /// Show the unified timeline
+    /// Step back one operation (non-destructive)
+    Undo,
+
+    /// Step forward one operation (non-destructive)
+    Redo,
+
+    /// View the operation timeline
     Log {
-        /// Number of entries to show
-        #[arg(long, default_value = "20")]
-        limit: u32,
+        /// Limit number of entries
+        #[arg(short, long)]
+        limit: Option<usize>,
 
-        /// Show only named changes
+        /// Show only saved commits
         #[arg(long)]
-        changes: bool,
+        saves: bool,
     },
 
-    /// Step back to previous timeline point
-    Undo {
-        /// Also remove untracked files
-        #[arg(long)]
-        clean: bool,
-    },
-
-    /// Jump to a specific timeline point
-    Restore {
-        /// Change or operation ID (prefix match)
-        id: String,
-
-        /// Also remove untracked files
-        #[arg(long)]
-        clean: bool,
-    },
-
-    /// Show working tree status
+    /// Show changes since last save
     Status,
 
-    /// Run health check
-    Doctor,
+    /// Wrap a command with before/after snapshots
+    #[command(allow_external_subcommands = true)]
+    Run {
+        /// Command and arguments to run
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }

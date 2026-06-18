@@ -1,69 +1,90 @@
-use anyhow::{Context, Result};
+use anyhow::{Result, bail};
 use std::fs;
 use std::path::Path;
 
-use crate::{db, id, config};
+use crate::config;
+use crate::git;
+use crate::oplog;
+use crate::output;
 
 pub fn run(json: bool) -> Result<()> {
-    let repo = gix::open(".").context("not a git repository")?;
+    if !git::is_git_repo() {
+        bail!("not a git repository. Run `git init` first.");
+    }
 
-    let avc_dir = repo.path().join("agentvcs");
+    let root = repo_root()?;
+    let avc_dir = root.join(".avc");
+
+    if avc_dir.exists() {
+        if json {
+            println!("{{\"status\": \"already_initialized\"}}");
+        } else {
+            output::warn("avc already initialized in this repository");
+        }
+        return Ok(());
+    }
+
+    // Create .avc/ directory
     fs::create_dir_all(&avc_dir)?;
 
-    // Initialize database
-    let db_path = avc_dir.join("state.sqlite");
-    let conn = db::open(&db_path)?;
-    db::initialize_schema(&conn)?;
+    // Write default config
+    config::write_default(&root)?;
 
-    // Write default config files to .agentvcs/
-    let config_dir = Path::new(".agentvcs");
-    fs::create_dir_all(config_dir)?;
-    config::write_default_configs(config_dir)?;
+    // Create empty oplog
+    fs::write(avc_dir.join("oplog"), "")?;
 
-    // Install pre-push hook
-    install_pre_push_hook(&repo)?;
+    // Add .avc/ to .gitignore
+    add_to_gitignore(&root)?;
 
-    // Record init operation
-    let op_id = id::new_op_id();
-    db::insert_operation(&conn, &op_id, "cli", Some("init"), "init", None, None)?;
+    // Record init in oplog
+    let branch = git::current_branch()?.unwrap_or_else(|| "HEAD".to_string());
+    let head = git::head_hash()?;
+    let entry = oplog::OpEntry::init(&branch, head.as_deref());
+    oplog::append(&root, &entry)?;
 
     if json {
-        println!("{{\"status\": \"initialized\", \"db_path\": \"{}\"}}", db_path.display());
+        println!("{{\"status\": \"initialized\", \"branch\": \"{}\"}}", branch);
     } else {
-        println!("Initialized avc in {}", repo.path().display());
+        output::success("initialized avc");
+        output::label_value("branch", &branch);
+        if let Some(h) = head {
+            output::label_value("head", &h);
+        }
     }
 
     Ok(())
 }
 
-fn install_pre_push_hook(repo: &gix::Repository) -> Result<()> {
-    let hooks_dir = repo.path().join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
+fn repo_root() -> Result<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("not in a git repository");
+    }
+    Ok(std::path::PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
+}
 
-    let hook_path = hooks_dir.join("pre-push");
-    let hook_content = r#"#!/bin/sh
-# avc pre-push hook: block accidental push of internal refs
-while read local_ref local_sha remote_ref remote_sha; do
-    case "$remote_ref" in
-        refs/agentvcs/*)
-            echo "ERROR: Cannot push refs/agentvcs/* refs."
-            echo "  avc internal refs should not be pushed to remote."
-            echo "  If you really need to push, use: git push --no-verify"
-            exit 1
-            ;;
-    esac
-done
-"#;
+fn add_to_gitignore(root: &Path) -> Result<()> {
+    let gitignore = root.join(".gitignore");
+    let entry = ".avc/";
 
-    fs::write(&hook_path, hook_content)?;
+    let content = if gitignore.exists() {
+        fs::read_to_string(&gitignore)?
+    } else {
+        String::new()
+    };
 
-    // Make executable
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&hook_path)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&hook_path, perms)?;
+    if !content.lines().any(|line| line.trim() == entry) {
+        let mut new_content = content;
+        if !new_content.is_empty() && !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(entry);
+        new_content.push('\n');
+        fs::write(&gitignore, new_content)?;
     }
 
     Ok(())

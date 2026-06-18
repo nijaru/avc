@@ -1,10 +1,10 @@
 mod cli;
 mod commands;
 mod config;
-mod db;
 mod git;
-mod id;
-mod snapshot;
+mod oplog;
+mod output;
+mod track;
 
 use anyhow::Result;
 use clap::Parser;
@@ -19,22 +19,21 @@ fn main() -> Result<()> {
 
     let result = match command {
         Commands::Init => commands::init::run(cli.json),
-        Commands::Change { name, message } => {
-            let title = name.or(message);
-            commands::change::run(title, cli.json)
+        Commands::Save { message, amend } => {
+            commands::save::run(message, amend, cli.json)
         }
-        Commands::Log { limit, changes } => commands::log::run(limit, changes, cli.json),
-        Commands::Undo { clean } => commands::undo::run(clean, cli.json),
-        Commands::Restore { id, clean } => commands::restore::run(&id, clean, cli.json),
+        Commands::Undo => commands::undo::run(cli.json),
+        Commands::Redo => commands::redo::run(cli.json),
+        Commands::Log { limit, saves } => commands::log_cmd::run(limit, saves, cli.json),
         Commands::Status => commands::status::run(cli.json),
-        Commands::Doctor => commands::doctor::run(cli.json),
+        Commands::Run { args } => commands::run::run(args, cli.json),
     };
 
     if let Err(e) = result {
         if cli.json {
             println!("{{\"error\": \"{}\"}}", e);
         } else {
-            eprintln!("Error: {:#}", e);
+            output::error(&format!("{:#}", e));
         }
         std::process::exit(1);
     }

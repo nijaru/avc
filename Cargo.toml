@@ -1,19 +1,17 @@
 [package]
 name = "avc"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+description = "Agent-native Git-compatible VCS CLI"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-gix = "0.72"
-rusqlite = { version = "0.39", features = ["bundled"] }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
 serde_json = "1"
+serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
-sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]

@@ -1,138 +1,124 @@
-use anyhow::{Context, Result};
+use anyhow::{Result, bail};
 
-use crate::{db, git, id};
+use crate::git;
+use crate::oplog;
+use crate::output;
+use crate::track;
 
-pub fn run(clean: bool, json: bool) -> Result<()> {
-    let conn = db::open(&db::db_path()?)?;
+pub fn run(json: bool) -> Result<()> {
+    if !git::is_git_repo() {
+        bail!("not a git repository");
+    }
 
-    // Auto-snapshot first (non-destructive)
-    let _ = crate::snapshot::auto_snapshot(std::path::Path::new("."), &conn)?;
+    let root = repo_root()?;
 
-    // Get all operations
-    let all_ops = db::list_operations(&conn, 100)?;
+    // Auto-commit current state (safety net)
+    track::auto_commit(&root, json)?;
 
-    // Find the most recent non-auto operation (this is what we're undoing)
-    let most_recent_non_auto = all_ops.iter().find(|op| op.kind != "auto");
+    // Read oplog and find the last non-undo/redo operation
+    let entries = oplog::read_all(&root)?;
+    let last_op = entries.iter().rev().find(|e| {
+        e.op != "undo" && e.op != "redo"
+    });
 
-    let most_recent_op = match most_recent_non_auto {
-        Some(op) => op,
+    let last_op = match last_op {
+        Some(op) => op.clone(),
         None => {
             if json {
-                println!("{{\"error\": \"nothing to undo\"}}");
+                println!("{{\"status\": \"nothing_to_undo\"}}");
             } else {
-                println!("Nothing to undo.");
+                output::info("nothing to undo");
             }
             return Ok(());
         }
     };
 
-    // If the most recent non-auto is init, nothing to undo
-    if most_recent_op.kind == "init" {
+    let op_index = entries.iter().rposition(|e| e.op == last_op.op && e.head == last_op.head && e.time == last_op.time)
+        .context("could not find operation in oplog")?;
+
+    // Get the state to restore to
+    let restore_to = match last_op.op.as_str() {
+        "init" => {
+            // Undo init: just a message, can't really undo
+            if json {
+                println!("{{\"status\": \"nothing_to_undo\"}}");
+            } else {
+                output::info("nothing to undo — this is the beginning");
+            }
+            return Ok(());
+        }
+        "auto" => {
+            // Undo an auto-commit: restore to the commit before this one
+            let head = last_op.head.as_ref().context("auto op missing head")?;
+            let parent = git::git(&["rev-parse", "--short", &format!("{}^", head)])?;
+            parent.trim().to_string()
+        }
+        "save" | "amend" => {
+            // Undo a save: restore to the state before the save
+            // The squashed auto-commits are in the oplog, restore to the last one
+            if let Some(squashed) = &last_op.squashed {
+                if let Some(last_auto) = squashed.last() {
+                    last_auto.clone()
+                } else {
+                    // No squashed commits, restore to parent of save
+                    let commit = last_op.commit.as_ref().or(last_op.head.as_ref()).context("save op missing commit")?;
+                    let parent = git::git(&["rev-parse", "--short", &format!("{}^", commit)])?;
+                    parent.trim().to_string()
+                }
+            } else {
+                let commit = last_op.commit.as_ref().or(last_op.head.as_ref()).context("save op missing commit")?;
+                let parent = git::git(&["rev-parse", "--short", &format!("{}^", commit)])?;
+                parent.trim().to_string()
+            }
+        }
+        _ => {
+            if json {
+                println!("{{\"status\": \"nothing_to_undo\"}}");
+            } else {
+                output::info("nothing to undo");
+            }
+            return Ok(());
+        }
+    };
+
+    let current_head = git::head_hash()?.context("no HEAD")?;
+
+    // Check if we're already at the restore point
+    if current_head == restore_to {
         if json {
-            println!("{{\"error\": \"nothing to undo\"}}");
+            println!("{{\"status\": \"nothing_to_undo\"}}");
         } else {
-            println!("Nothing to undo.");
+            output::info("nothing more to undo");
         }
         return Ok(());
     }
 
-    // Find the target state to restore to
-    let target_ref = find_undo_target(&all_ops, most_recent_op)?;
+    // Hard reset to restore point
+    git::reset_hard(&restore_to)?;
 
-    let target_ref = match target_ref {
-        Some(r) => r,
-        None => {
-            if json {
-                println!("{{\"error\": \"cannot determine previous state\"}}");
-            } else {
-                println!("Cannot determine previous state.");
-            }
-            return Ok(());
-        }
-    };
-
-    // Get the commit SHA from the ref
-    let repo = git::open_repo()?;
-    let commit_sha = git::ref_commit_id(&repo, &target_ref)?
-        .context("ref does not point to a commit")?;
-
-    // Restore working dir + index WITHOUT moving HEAD
-    git::restore_workdir(&commit_sha, clean)?;
-
-    // Record operation
-    let before_commit = git::head_commit_id(&repo)?.unwrap_or_default();
-    let op_id = id::new_op_id();
-    db::insert_operation(
-        &conn,
-        &op_id,
-        "cli",
-        Some("undo"),
-        "undo",
-        Some(&before_commit),
-        Some(&target_ref),
-    )?;
+    // Log undo to oplog
+    let entry = oplog::OpEntry::undo(&current_head, &restore_to, op_index);
+    oplog::append(&root, &entry)?;
 
     if json {
-        println!("{{\"status\": \"restored\", \"target_ref\": \"{}\"}}", target_ref);
+        println!("{{\"status\": \"undone\", \"to\": \"{}\"}}", restore_to);
     } else {
-        println!("Restored to {}", target_ref);
+        output::success(&format!("undone — back to {}", output::hash(&restore_to)));
     }
 
     Ok(())
 }
 
-/// Find the target state to restore to when undoing an operation.
-fn find_undo_target(
-    all_ops: &[db::Operation],
-    target_op: &db::Operation,
-) -> Result<Option<String>> {
-    // Find the index of the target operation
-    let target_idx = match all_ops.iter().position(|op| op.id == target_op.id) {
-        Some(idx) => idx,
-        None => return Ok(None),
-    };
-
-    // Case 1: Undoing a change operation
-    // Restore to the most recent change BEFORE this one
-    if target_op.kind == "change" {
-        for i in (target_idx + 1)..all_ops.len() {
-            if all_ops[i].kind == "change" {
-                return Ok(all_ops[i].after_ref.clone());
-            }
-        }
-        // No previous change found - look for the auto-snapshot before this change
-        // This handles the case of undoing the first change
-        for i in (target_idx + 1)..all_ops.len() {
-            if all_ops[i].kind == "auto" {
-                return Ok(all_ops[i].after_ref.clone());
-            }
-        }
-        return Ok(None);
+fn repo_root() -> Result<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("not in a git repository");
     }
-
-    // Case 2: Undoing an undo or restore operation
-    // The undo/restore has an after_ref pointing to what it restored TO
-    // We want to restore to the state BEFORE that target
-    // (i.e., the most recent change before the undo's target)
-    if target_op.kind == "undo" || target_op.kind == "restore" {
-        // Get the target of the undo we're undoing
-        if let Some(ref undo_target) = target_op.after_ref {
-            // Find the operation that has this as its after_ref
-            // This is the change that the undo was targeting
-            let target_change_idx = all_ops.iter().position(|op| {
-                op.after_ref.as_ref() == Some(undo_target) && op.kind == "change"
-            });
-
-            if let Some(change_idx) = target_change_idx {
-                // Now find the most recent change BEFORE that change
-                for i in (change_idx + 1)..all_ops.len() {
-                    if all_ops[i].kind == "change" {
-                        return Ok(all_ops[i].after_ref.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(None)
+    Ok(std::path::PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
 }
+
+use anyhow::Context;

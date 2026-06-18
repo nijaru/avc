@@ -1,7 +1,7 @@
 pub mod init;
-pub mod change;
-pub mod log;
-pub mod undo;
-pub mod restore;
+pub mod log_cmd;
+pub mod redo;
+pub mod run;
+pub mod save;
 pub mod status;
-pub mod doctor;
+pub mod undo;

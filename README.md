@@ -4,21 +4,21 @@
 
 **Agent-Native Git-Compatible VCS**
 
-A version control system designed for AI agent workflows, built on top of Git. Provides automatic snapshots, non-destructive undo, and a unified timeline — all while remaining fully compatible with standard Git tools.
+A version control layer designed for AI agent workflows, built on top of Git. Auto-commit, easy squash, non-destructive undo — all while remaining fully compatible with standard Git tools.
 
 ## Features
 
-- **Zero-ceremony safety** — Auto-snapshots on every command. Never lose work.
-- **Non-destructive undo** — Step back through your timeline without moving Git HEAD or polluting `git log`.
-- **Unified timeline** — Auto-snapshots and named changes live on the same timeline.
+- **Zero-ceremony safety** — Auto-commits on every command. Never lose work.
+- **Non-destructive undo** — Step back through your operation history with `git reset`, not destructive reverts.
+- **No staging area** — Everything gets committed. No `git add`, no index management.
 - **Agent-native** — `--json` output on all commands for easy integration with AI agents.
-- **Git-compatible** — Works alongside normal Git operations. Hidden refs don't appear in `git log`, `git branch`, etc.
-- **Privacy-first** — No full prompts stored by default. Only metadata.
+- **Git-compatible** — Commits are visible in `git log`. No hidden refs, no magic. Works alongside normal Git operations.
+- **Transparent** — All state is in `.avc/oplog` (JSONL) and `.avc/config` (YAML). No databases, no hidden state.
 
 ## Installation
 
 ```bash
-cargo install avc
+cargo install --path .
 ```
 
 Or build from source:
@@ -35,26 +35,23 @@ cargo build --release
 # Initialize avc in a Git repository
 avc init
 
-# Make some changes to your files
+# Make some changes — they're auto-committed on the next avc command
 echo "hello" > file.txt
 
-# Name your current work
-avc change "initial implementation"
+# Squash auto-commits into a clean save
+avc save -m "add file.txt"
 
-# Continue working
-echo "world" >> file.txt
-
-# Step back to the previous state
-avc undo
-
-# Jump to a specific point in time
-avc restore <change-id>
-
-# View your timeline
+# View your operation timeline
 avc log
 
-# Check current status
-avc status
+# Step back (non-destructive)
+avc undo
+
+# Step forward
+avc redo
+
+# Wrap a command with before/after snapshots
+avc run -- cargo test
 ```
 
 ## Commands
@@ -62,45 +59,42 @@ avc status
 | Command | Description |
 |---------|-------------|
 | `avc init` | Initialize avc in the current Git repository |
-| `avc change <name>` | Name the current working directory state |
-| `avc log` | Show unified timeline (auto-snapshots + named changes) |
-| `avc undo` | Step back to the previous timeline point |
-| `avc restore <id>` | Jump to a specific timeline point |
-| `avc status` | Show current branch, HEAD, and last change |
-| `avc doctor` | Run health checks |
+| `avc save [-m MSG] [--amend]` | Squash auto-commits into a clean commit |
+| `avc undo` | Step back one operation (non-destructive) |
+| `avc redo` | Step forward one operation (non-destructive) |
+| `avc log [--saves] [--limit N]` | View the operation timeline |
+| `avc status` | Show branch, last save, and uncommitted changes |
+| `avc run -- <cmd>` | Wrap a command with before/after snapshots |
 
 ### Common Flags
 
 - `--json` — Output in JSON format (for agent consumption)
-- `--changes` — Show only named changes in `log`
+- `--saves` — Show only saves (not auto-commits) in `log`
 - `--limit N` — Limit number of entries in `log`
-- `--clean` — Remove untracked files during `undo`/`restore`
+- `--amend` — Squash into the last save instead of creating a new one
 
 ## How It Works
 
-avc stores snapshots as Git commits under hidden refs (`refs/agentvcs/*`). These refs are invisible to normal Git operations but can be accessed via avc commands.
+avc works by auto-committing your working tree on every command and maintaining an operation log (oplog) for undo/redo.
 
-**Auto-snapshots**: Every time you run an avc command, the working directory is automatically captured. If nothing has changed (detected via file modification times), the snapshot is skipped.
+**Auto-commits**: Every `avc` command auto-commits dirty files as `[avc:auto]` commits. These are real Git commits, visible in `git log`.
 
-**Named changes**: When you run `avc change <name>`, a snapshot is created and recorded in a local SQLite database with the given name.
+**Save**: `avc save` squashes consecutive auto-commits into a single clean commit with your message. The oplog records which auto-commits were squashed.
 
-**Undo**: Steps back one point on the timeline. The working directory is restored without moving Git HEAD, so your normal Git history remains clean.
+**Undo/Redo**: Uses `git reset --hard` to step through the oplog. Non-destructive — all operations are recorded and can be redone.
 
-**Restore**: Jumps to a specific timeline point by ID prefix.
+**Run**: `avc run -- <cmd>` snapshots before and after running a command, then records the result in the oplog.
 
-## Use Cases
+## State
 
-- **AI Agent Workflows**: Agents can safely experiment with code changes, knowing they can always undo.
-- **Iterative Development**: Try multiple approaches without fear of losing work.
-- **Debugging**: Step back through your timeline to find when a bug was introduced.
-- **Code Review**: Easily see what changed between named checkpoints.
+All avc state lives in `.avc/`:
 
-## Architecture
+| File | Format | Purpose |
+|------|--------|---------|
+| `.avc/oplog` | JSONL | Append-only operation log |
+| `.avc/config` | YAML | Configuration |
 
-- **Git objects** — Store file trees and commit metadata
-- **SQLite** — Stores mutable workflow state (operations, changes, metadata)
-- **Hidden refs** — `refs/agentvcs/auto/*` and `refs/agentvcs/changes/*`
-- **Pre-push hook** — Prevents accidental push of hidden refs
+The `.avc/` directory is added to `.gitignore` by `avc init`.
 
 ## Requirements
 

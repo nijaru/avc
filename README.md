@@ -9,7 +9,7 @@ A version control layer designed for AI agent workflows, built on top of Git. Au
 ## Features
 
 - **Zero-ceremony safety** — Auto-commits on every command. Never lose work.
-- **Non-destructive undo** — Step back through your operation history with `git reset`, not destructive reverts.
+- **Non-destructive undo** — Step back through your operation history, not destructive reverts.
 - **No staging area** — Everything gets committed. No `git add`, no index management.
 - **Agent-native** — `--json` output on all commands for easy integration with AI agents.
 - **Git-compatible** — Commits are visible in `git log`. No hidden refs, no magic. Works alongside normal Git operations.
@@ -17,16 +17,12 @@ A version control layer designed for AI agent workflows, built on top of Git. Au
 
 ## Installation
 
-```bash
-cargo install --path .
-```
-
-Or build from source:
+Build from source:
 
 ```bash
 git clone https://github.com/nijaru/avc.git
 cd avc
-cargo build --release
+cargo install --path .
 ```
 
 ## Quick Start
@@ -66,7 +62,7 @@ avc run -- cargo test
 | `avc status` | Show branch, last save, and uncommitted changes |
 | `avc run -- <cmd>` | Wrap a command with before/after snapshots |
 
-### Common Flags
+### Flags
 
 - `--json` — Output in JSON format (for agent consumption)
 - `--saves` — Show only saves (not auto-commits) in `log`
@@ -75,13 +71,13 @@ avc run -- cargo test
 
 ## How It Works
 
-avc works by auto-committing your working tree on every command and maintaining an operation log (oplog) for undo/redo.
+avc auto-commits your working tree on every command and maintains an operation log (oplog) for undo/redo.
 
 **Auto-commits**: Every `avc` command auto-commits dirty files as `[avc:auto]` commits. These are real Git commits, visible in `git log`.
 
 **Save**: `avc save` squashes consecutive auto-commits into a single clean commit with your message. The oplog records which auto-commits were squashed.
 
-**Undo/Redo**: Uses `git reset --hard` to step through the oplog. Non-destructive — all operations are recorded and can be redone.
+**Undo/Redo**: Steps through the oplog using `git reset`. Non-destructive — all operations are recorded and can be redone.
 
 **Run**: `avc run -- <cmd>` snapshots before and after running a command, then records the result in the oplog.
 
@@ -99,8 +95,8 @@ The `.avc/` directory is added to `.gitignore` by `avc init`.
 ## Requirements
 
 - Git 2.20+
-- Rust 1.75+ (for building from source)
+- Rust 1.85+ (edition 2024)
 
 ## License
 
-MIT OR Apache-2.0
+MIT — see [LICENSE](LICENSE).

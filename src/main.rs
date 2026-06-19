@@ -24,6 +24,7 @@ fn main() -> Result<()> {
         Commands::Log { limit, saves } => commands::log_cmd::run(limit, saves, cli.json),
         Commands::Status => commands::status::run(cli.json),
         Commands::Run { args } => commands::run::run(args, cli.json),
+        Commands::Watch { interval } => commands::watch::run(interval, cli.json),
     };
 
     if let Err(e) = result {

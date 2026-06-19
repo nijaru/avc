@@ -5,3 +5,4 @@ pub mod run;
 pub mod save;
 pub mod status;
 pub mod undo;
+pub mod watch;

@@ -54,4 +54,11 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+
+    /// Watch for file changes and auto-commit periodically
+    Watch {
+        /// Auto-commit interval in seconds
+        #[arg(short, long, default_value = "2")]
+        interval: u64,
+    },
 }

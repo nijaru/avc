@@ -48,6 +48,9 @@ avc redo
 
 # Wrap a command with before/after snapshots
 avc run -- cargo test
+
+# Or start the file watcher for continuous auto-commit
+avc watch --interval 2
 ```
 
 ## Commands
@@ -61,6 +64,7 @@ avc run -- cargo test
 | `avc log [--saves] [--limit N]` | View the operation timeline |
 | `avc status` | Show branch, last save, and uncommitted changes |
 | `avc run -- <cmd>` | Wrap a command with before/after snapshots |
+| `avc watch [--interval N]` | Watch for file changes and auto-commit |
 
 ### Flags
 
@@ -78,6 +82,8 @@ avc auto-commits your working tree on every command and maintains an operation l
 **Save**: `avc save` squashes consecutive auto-commits into a single clean commit with your message. The oplog records which auto-commits were squashed.
 
 **Undo/Redo**: Steps through the oplog using `git reset`. Non-destructive — all operations are recorded and can be redone.
+
+**Watch**: `avc watch` polls the working tree for changes and auto-commits at a configurable interval (default 2 seconds). Useful for background safety.
 
 **Run**: `avc run -- <cmd>` snapshots before and after running a command, then records the result in the oplog.
 

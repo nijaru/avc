@@ -1,4 +1,5 @@
 use anyhow::{Result, Context, bail};
+use std::collections::HashSet;
 
 use crate::git;
 use crate::oplog;
@@ -15,12 +16,39 @@ pub fn run(json: bool) -> Result<()> {
     // Auto-commit current state (safety net)
     track::auto_commit(&root, json)?;
 
-    // Read oplog and find the last undo entry
     let entries = oplog::read_all(&root)?;
-    let last_undo_index = entries.iter().rposition(|e| e.op_type() == "undo");
 
-    let (last_undo_index, last_undo) = match last_undo_index {
-        Some(i) => (i, entries[i].clone()),
+    // Walk backwards to find the last undo that hasn't been redone.
+    // Track which undos have been redone.
+    let mut redone_undos: HashSet<usize> = HashSet::new();
+    let mut target: Option<(usize, usize)> = None; // (undo_index, target_op_index)
+
+    for (i, entry) in entries.iter().enumerate().rev() {
+        match entry {
+            oplog::OpEntry::Redo { target_op, .. } => {
+                // This redo re-activates target_op. The undo that targeted
+                // target_op is now effectively redone.
+                // Find the most recent undo targeting target_op and mark it redone.
+                for j in (0..i).rev() {
+                    if let oplog::OpEntry::Undo { target_op: undo_target, .. } = &entries[j] {
+                        if *undo_target == *target_op {
+                            redone_undos.insert(j);
+                            break;
+                        }
+                    }
+                }
+            }
+            oplog::OpEntry::Undo { target_op, .. } if !redone_undos.contains(&i) => {
+                // Found an undo that hasn't been redone
+                target = Some((i, *target_op));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let (undo_index, target_op_index) = match target {
+        Some(t) => t,
         None => {
             if json {
                 println!("{{\"status\": \"nothing_to_redo\"}}");
@@ -31,9 +59,9 @@ pub fn run(json: bool) -> Result<()> {
         }
     };
 
-    // Check if there are any operations after the last undo
+    // Check if there are any new operations after the undo
     // If so, we can't redo because it would overwrite those changes
-    let has_ops_after_undo = entries.iter().skip(last_undo_index + 1)
+    let has_ops_after_undo = entries.iter().skip(undo_index + 1)
         .any(|e| e.op_type() != "undo" && e.op_type() != "redo");
 
     if has_ops_after_undo {
@@ -44,11 +72,6 @@ pub fn run(json: bool) -> Result<()> {
         }
         return Ok(());
     }
-
-    let target_op_index = match &last_undo {
-        oplog::OpEntry::Undo { target_op, .. } => *target_op,
-        _ => unreachable!(),
-    };
 
     let original_op = &entries[target_op_index];
     let restore_to = original_op.head().context("original op missing head")?.to_string();

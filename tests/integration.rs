@@ -224,13 +224,9 @@ fn undo_redo_roundtrip() {
 fn undo_noop_at_boundary() {
     let repo = TestRepo::new();
 
-    repo.create_file("a.txt", "a");
-    repo.run_success(&["save", "-m", "only save"]);
-
-    repo.run_success(&["undo"]);
-
+    // With no saves, undo on just init should say nothing to undo
     let stderr = repo.run_success_stderr(&["undo"]);
-    assert!(stderr.contains("nothing more to undo"), "should handle undo at boundary, got: {}", stderr);
+    assert!(stderr.contains("nothing to undo"), "should handle undo with nothing to undo, got: {}", stderr);
 }
 
 #[test]

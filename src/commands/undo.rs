@@ -1,4 +1,5 @@
 use anyhow::{Result, Context, bail};
+use std::collections::HashSet;
 
 use crate::git;
 use crate::oplog;
@@ -15,19 +16,38 @@ pub fn run(json: bool) -> Result<()> {
     // Auto-commit dirty working tree first
     track::auto_commit(&root, json)?;
 
-    // Read oplog and find the last non-undo/redo operation
     let entries = oplog::read_all(&root)?;
-    let (op_index, last_op) = entries
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, e)| e.op_type() != "undo" && e.op_type() != "redo")
-        .map(|(i, e)| (i, e.clone()))
-        .unzip();
 
-    let (op_index, last_op) = match (op_index, last_op) {
-        (Some(i), Some(op)) => (i, op),
-        _ => {
+    // Walk backwards through the oplog, tracking which entries have been undone.
+    // An entry is "undone" if there's an undo targeting it that hasn't been redone.
+    let mut undone: HashSet<usize> = HashSet::new();
+    let mut target: Option<(usize, oplog::OpEntry)> = None;
+
+    for (i, entry) in entries.iter().enumerate().rev() {
+        match entry {
+            oplog::OpEntry::Redo { target_op, .. } => {
+                // Redo re-activates the entry at target_op
+                undone.remove(target_op);
+            }
+            oplog::OpEntry::Undo { target_op, .. } => {
+                // Undo deactivates the entry at target_op
+                undone.insert(*target_op);
+            }
+            _ if undone.contains(&i) => {
+                // This entry has been undone — skip
+                continue;
+            }
+            _ => {
+                // First non-undone, non-undo/redo entry
+                target = Some((i, entry.clone()));
+                break;
+            }
+        }
+    }
+
+    let (op_index, last_op) = match target {
+        Some((i, op)) => (i, op),
+        None => {
             if json {
                 println!("{{\"status\": \"nothing_to_undo\"}}");
             } else {
@@ -47,7 +67,7 @@ pub fn run(json: bool) -> Result<()> {
             }
             return Ok(());
         }
-        oplog::OpEntry::Auto { head, .. } => {
+        oplog::OpEntry::Auto { head, .. } | oplog::OpEntry::Run { head, .. } => {
             let parent = git::git(&["rev-parse", "--short", &format!("{}^", head)])?;
             parent.trim().to_string()
         }
@@ -60,14 +80,7 @@ pub fn run(json: bool) -> Result<()> {
                 parent.trim().to_string()
             }
         }
-        _ => {
-            if json {
-                println!("{{\"status\": \"nothing_to_undo\"}}");
-            } else {
-                output::info("nothing to undo");
-            }
-            return Ok(());
-        }
+        oplog::OpEntry::Undo { .. } | oplog::OpEntry::Redo { .. } => unreachable!(),
     };
 
     let current_head = git::head_hash()?.context("no HEAD")?;

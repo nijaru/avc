@@ -1,6 +1,5 @@
 use anyhow::{Result, bail};
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::git;
 use crate::output;

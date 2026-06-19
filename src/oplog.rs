@@ -1,8 +1,18 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha1::Digest;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+
+/// Generate a Change-Id in Gerrit-compatible format.
+/// Format: "I" followed by 40 hex characters (SHA-1 of UUID).
+pub fn generate_change_id() -> String {
+    let uuid = uuid::Uuid::new_v4();
+    let hash = sha1::Sha1::digest(uuid.as_bytes());
+    let hash_hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("I{}", hash_hex)
+}
 
 /// An entry in the operation log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +38,7 @@ pub enum OpEntry {
         head: String,
         title: String,
         squashed: Vec<String>,
+        change_id: Option<String>,
     },
     #[serde(rename = "amend")]
     Amend {
@@ -36,6 +47,7 @@ pub enum OpEntry {
         head: String,
         title: String,
         squashed: Vec<String>,
+        change_id: Option<String>,
     },
     #[serde(rename = "undo")]
     Undo {
@@ -114,23 +126,25 @@ impl OpEntry {
         }
     }
 
-    pub fn save(branch: &str, head: &str, title: &str, squashed: Vec<String>) -> Self {
+    pub fn save(branch: &str, head: &str, title: &str, squashed: Vec<String>, change_id: Option<String>) -> Self {
         OpEntry::Save {
             time: chrono::Utc::now().to_rfc3339(),
             branch: branch.to_string(),
             head: head.to_string(),
             title: title.to_string(),
             squashed,
+            change_id,
         }
     }
 
-    pub fn amend(branch: &str, head: &str, title: &str, squashed: Vec<String>) -> Self {
+    pub fn amend(branch: &str, head: &str, title: &str, squashed: Vec<String>, change_id: Option<String>) -> Self {
         OpEntry::Amend {
             time: chrono::Utc::now().to_rfc3339(),
             branch: branch.to_string(),
             head: head.to_string(),
             title: title.to_string(),
             squashed,
+            change_id,
         }
     }
 
@@ -231,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_opentry_save_roundtrip() {
-        let entry = OpEntry::save("main", "def5678", "my save", vec!["abc1234".to_string()]);
+        let entry = OpEntry::save("main", "def5678", "my save", vec!["abc1234".to_string()], Some("Iabc123".to_string()));
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: OpEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.op_type(), "save");
@@ -240,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_opentry_amend_roundtrip() {
-        let entry = OpEntry::amend("main", "ghi9012", "amended", vec!["abc1234".to_string()]);
+        let entry = OpEntry::amend("main", "ghi9012", "amended", vec!["abc1234".to_string()], Some("Iabc123".to_string()));
         let json = serde_json::to_string(&entry).unwrap();
         let parsed: OpEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.op_type(), "amend");
@@ -298,7 +312,7 @@ mod tests {
         
         let entry1 = OpEntry::init("main", Some("abc1234"));
         let entry2 = OpEntry::auto("main", "def5678", vec!["file.txt".to_string()]);
-        let entry3 = OpEntry::save("main", "ghi9012", "my save", vec!["def5678".to_string()]);
+        let entry3 = OpEntry::save("main", "ghi9012", "my save", vec!["def5678".to_string()], Some("Iabc123".to_string()));
         
         append(&root, &entry1).unwrap();
         append(&root, &entry2).unwrap();

@@ -42,15 +42,20 @@ fn do_save(root: &Path, branch: &str, messages: &[String], json: bool) -> Result
         messages.join("\n\n")
     };
 
+    let change_id = oplog::generate_change_id();
+
+    // Build commit message with Change-Id trailer
+    let commit_message = format!("{}\n\nChange-Id: {}", title, change_id);
+
     let parent = git::git(&["rev-parse", &format!("{}^", auto_commits.last().unwrap())])?;
     let parent = parent.trim();
 
     git::reset_soft(parent)?;
-    git::commit(&title)?;
+    git::commit(&commit_message)?;
 
     let new_head = git::head_hash()?.context("commit succeeded but no HEAD")?;
 
-    let entry = oplog::OpEntry::save(branch, &new_head, &title, auto_commits.clone());
+    let entry = oplog::OpEntry::save(branch, &new_head, &title, auto_commits.clone(), Some(change_id));
     oplog::append(root, &entry)?;
 
     if json {
@@ -69,8 +74,14 @@ fn do_amend(root: &Path, branch: &str, messages: &[String], json: bool) -> Resul
     let entries = oplog::read_all(root)?;
     let last_save = entries.iter().rev().find(|e| e.op_type() == "save" || e.op_type() == "amend");
 
-    let save_commit = match last_save {
-        Some(entry) => entry.head().unwrap_or_default().to_string(),
+    let (save_commit, existing_change_id) = match &last_save {
+        Some(entry) => {
+            let change_id = match entry {
+                oplog::OpEntry::Save { change_id, .. } | oplog::OpEntry::Amend { change_id, .. } => change_id.clone(),
+                _ => None,
+            };
+            (entry.head().unwrap_or_default().to_string(), change_id)
+        }
         None => {
             if json {
                 println!("{{\"status\": \"nothing_to_amend\"}}");
@@ -94,20 +105,33 @@ fn do_amend(root: &Path, branch: &str, messages: &[String], json: bool) -> Resul
 
     let title = if messages.is_empty() {
         let msg = git::git(&["log", "-1", "--format=%B", &save_commit])?;
-        msg.trim().to_string()
+        // Strip existing Change-Id trailer from message
+        msg.trim()
+            .lines()
+            .take_while(|line| !line.starts_with("Change-Id:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string()
     } else {
         messages.join("\n\n")
     };
+
+    // Reuse existing Change-Id or generate new one
+    let change_id = existing_change_id.unwrap_or_else(oplog::generate_change_id);
+
+    // Build commit message with Change-Id trailer
+    let commit_message = format!("{}\n\nChange-Id: {}", title, change_id);
 
     let parent = git::git(&["rev-parse", &format!("{}^", save_commit)])?;
     let parent = parent.trim();
 
     git::reset_soft(parent)?;
-    git::commit(&title)?;
+    git::commit(&commit_message)?;
 
     let new_head = git::head_hash()?.context("commit succeeded but no HEAD")?;
 
-    let entry = oplog::OpEntry::amend(branch, &new_head, &title, auto_commits.clone());
+    let entry = oplog::OpEntry::amend(branch, &new_head, &title, auto_commits.clone(), Some(change_id));
     oplog::append(root, &entry)?;
 
     if json {

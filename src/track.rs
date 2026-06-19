@@ -26,7 +26,12 @@ pub fn auto_commit(repo_root: &Path, json: bool) -> Result<Option<String>> {
         .filter_map(|line| {
             let line = line.trim();
             if line.len() > 3 {
-                Some(line[3..].to_string())
+                let path = &line[3..];
+                // Never commit .avc/ directory
+                if path.starts_with(".avc/") || path.starts_with(".avc\\") {
+                    return None;
+                }
+                Some(path.to_string())
             } else {
                 None
             }

@@ -17,10 +17,10 @@ pub fn run(json: bool) -> Result<()> {
 
     // Read oplog and find the last undo entry
     let entries = oplog::read_all(&root)?;
-    let last_undo = entries.iter().rev().find(|e| e.op_type() == "undo");
+    let last_undo_index = entries.iter().rposition(|e| e.op_type() == "undo");
 
-    let last_undo = match last_undo {
-        Some(op) => op.clone(),
+    let (last_undo_index, last_undo) = match last_undo_index {
+        Some(i) => (i, entries[i].clone()),
         None => {
             if json {
                 println!("{{\"status\": \"nothing_to_redo\"}}");
@@ -30,6 +30,20 @@ pub fn run(json: bool) -> Result<()> {
             return Ok(());
         }
     };
+
+    // Check if there are any operations after the last undo
+    // If so, we can't redo because it would overwrite those changes
+    let has_ops_after_undo = entries.iter().skip(last_undo_index + 1)
+        .any(|e| e.op_type() != "undo" && e.op_type() != "redo");
+
+    if has_ops_after_undo {
+        if json {
+            println!("{{\"status\": \"cannot_redo\", \"reason\": \"new operations after undo\"}}");
+        } else {
+            output::info("cannot redo — new operations were performed after the undo");
+        }
+        return Ok(());
+    }
 
     let target_op_index = match &last_undo {
         oplog::OpEntry::Undo { target_op, .. } => *target_op,

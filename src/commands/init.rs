@@ -29,6 +29,12 @@ pub fn run(json: bool) -> Result<()> {
     fs::write(avc_dir.join("oplog"), "")?;
     add_to_gitignore(&root)?;
 
+    // Commit .gitignore to ensure it's always present
+    git::add_all()?;
+    if git::is_dirty()? {
+        git::commit("[avc:init] add .avc/ to .gitignore")?;
+    }
+
     let branch = git::current_branch()?.unwrap_or_else(|| "HEAD".to_string());
     let head = git::head_hash()?;
     let entry = oplog::OpEntry::init(&branch, head.as_deref());

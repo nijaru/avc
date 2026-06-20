@@ -25,6 +25,7 @@ fn main() -> Result<()> {
         Commands::Status => commands::status::run(cli.json),
         Commands::Run { args } => commands::run::run(args, cli.json),
         Commands::Watch { interval } => commands::watch::run(interval, cli.json),
+        Commands::Stack => commands::stack::run(cli.json),
     };
 
     if let Err(e) = result {

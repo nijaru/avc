@@ -3,6 +3,7 @@ pub mod log_cmd;
 pub mod redo;
 pub mod run;
 pub mod save;
+pub mod stack;
 pub mod status;
 pub mod undo;
 pub mod watch;

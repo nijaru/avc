@@ -61,4 +61,7 @@ pub enum Commands {
         #[arg(short, long, default_value = "2")]
         interval: u64,
     },
+
+    /// Show the current stack of saves
+    Stack,
 }

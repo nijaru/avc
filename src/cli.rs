@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "avc",
     version,
-    about = "Atomic Version Control (legacy Git-backed build)"
+    about = "Automatic recovery, intentional history, atomic publication"
 )]
 pub struct Cli {
     #[command(subcommand)]

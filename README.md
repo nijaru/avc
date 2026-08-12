@@ -2,9 +2,9 @@
 
 **Atomic Version Control**
 
-> **Early development:** AVC is being rebuilt around its own object model and storage rather than Git. Its formats and commands are not stable yet, so keep independent backups until the durability work is complete.
+AVC continuously protects your work, organizes it into meaningful changes, and publishes shared history atomically. It separates private filesystem recovery from named development changes and shared repository events.
 
-AVC is designed around **automatic recovery, intentional history, and atomic publication**. It separates private filesystem recovery from named development changes and shared repository events.
+> **Early development:** Formats and commands are not stable yet, so keep independent backups until the durability work is complete.
 
 ## Model
 
@@ -31,7 +31,7 @@ The accepted direction is a journaled snapshot VCS with:
 - quiet draft synchronization; and
 - compare-and-swap publication.
 
-The existing `src/` tree is an earlier Git-backed prototype. It remains only as implementation evidence while the Git-independent implementation replaces it; it does not implement the architecture above.
+The current `src/` tree is the earlier Git-backed implementation. The first milestone below replaces its storage and command loop with the new architecture.
 
 See [`docs/design.md`](docs/design.md) for the architecture, correctness invariants, research sources, and implementation roadmap.
 

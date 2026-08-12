@@ -81,9 +81,9 @@ The second milestone is AVC draft synchronization and atomic publication.
 
 ### 1.1 Product definition
 
-> **AVC (Atomic Version Control) is a general-purpose version-control system for new projects, with its own object model and storage rather than a Git-backed core. It provides automatic local recovery, stable logical changes, reversible repository operations, efficient workspaces, scalable content storage, and intentional atomic publication.**
+> **AVC (Atomic Version Control) continuously protects work, organizes it into stable logical changes, makes repository operations reversible, and publishes shared history atomically.**
 
-AVC is not “Git for AI agents.” Coding agents are one high-frequency workload alongside interactive development, large monorepos, automated dependency updates, generated code, continuous refactoring, CI, and many concurrent contributors.
+AVC supports interactive development, large monorepos, automated dependency updates, generated code, continuous refactoring, CI, coding agents, and many concurrent contributors.
 
 ### 1.2 Central design thesis
 
@@ -2219,7 +2219,7 @@ Once that loop works, use AVC on its own repository and continue with the next w
 
 ## 29. Final recommendation
 
-Build AVC as a **journaled snapshot VCS with its own object model and storage**, not as a Git-compatible automatic-commit client and not as an agent-specific product.
+Build AVC as a **journaled snapshot VCS that provides automatic recovery, intentional history, and atomic publication**.
 
 The core combination is:
 

@@ -1,108 +1,70 @@
-# avc
+# AVC
 
-> **⚠️ WORK IN PROGRESS** — This project is under active development. APIs and data formats may change without notice. Do not use in production or with important repositories yet.
+**Atomic Version Control**
 
-**Agent-Native Git-Compatible VCS**
+> **Early development:** AVC is being rebuilt around its own object model and storage rather than Git. Its formats and commands are not stable yet, so keep independent backups until the durability work is complete.
 
-A version control layer designed for AI agent workflows, built on top of Git. Auto-commit, easy squash, non-destructive undo — all while remaining fully compatible with standard Git tools.
+AVC is designed around **automatic recovery, intentional history, and atomic publication**. It separates private filesystem recovery from named development changes and shared repository events.
 
-## Features
+## Model
 
-- **Zero-ceremony safety** — Auto-commits on every command. Never lose work.
-- **Non-destructive undo** — Step back through your operation history, not destructive reverts.
-- **No staging area** — Everything gets committed. No `git add`, no index management.
-- **Agent-native** — `--json` output on all commands for easy integration with AI agents.
-- **Git-compatible** — Commits are visible in `git log`. No hidden refs, no magic. Works alongside normal Git operations.
-- **Transparent** — All state is in `.avc/oplog` (JSONL) and `.avc/config` (YAML). No databases, no hidden state.
+| Concept | Purpose | Default visibility |
+| --- | --- | --- |
+| **Savepoint** | Automatically capture a recoverable filesystem state | Private and retention-bounded |
+| **Change** | Give a stable identity and description to a logical unit of work | Local or draft |
+| **Revision** | Record one immutable version of a change | Local or draft |
+| **Publication** | Atomically update shared project state and trigger integrations | Shared |
 
-## Installation
+Automatic savepointing observes the working copy; it does not rewrite editor buffers or files. A commit-like action finishes and names the current change. Publishing selected changes is a separate operation, so private recovery does not inherently create branches, CI runs, webhooks, notifications, or indexing work.
 
-Build from source:
+## Status
 
-```bash
-git clone https://github.com/nijaru/avc.git
-cd avc
-cargo install --path .
-```
+The accepted direction is a journaled snapshot VCS with:
 
-## Quick Start
+- immutable content-addressed objects;
+- stable change identities distinct from revision identities;
+- a separate operation/view graph for undo and recovery;
+- bounded automatic savepoints;
+- first-class workspaces and conflicts;
+- one append-only durable write path;
+- derived, rebuildable indexes;
+- quiet draft synchronization; and
+- compare-and-swap publication.
 
-```bash
-# Initialize avc in a Git repository
+The existing `src/` tree is an earlier Git-backed prototype. It remains only as implementation evidence while the Git-independent implementation replaces it; it does not implement the architecture above.
+
+See [`docs/design.md`](docs/design.md) for the architecture, correctness invariants, research sources, and implementation roadmap.
+
+## First working milestone
+
+The first implementation milestone is intentionally focused:
+
+```text
 avc init
-
-# Make some changes — they're auto-committed on the next avc command
-echo "hello" > file.txt
-
-# Squash auto-commits into a clean save
-avc save -m "add file.txt"
-
-# View your operation timeline
+avc checkpoint [name]
+avc status
 avc log
-
-# Step back (non-destructive)
-avc undo
-
-# Step forward
-avc redo
-
-# Wrap a command with before/after snapshots
-avc run -- cargo test
-
-# Or start the file watcher for continuous auto-commit
-avc watch --interval 2
+avc restore <id>
 ```
 
-## Commands
+It will replace the Git-backed command loop with AVC whole-file objects, deterministic flat snapshots, and durable local state in the existing Rust crate. This is foundation code for the real tool, not a disposable spike.
 
-| Command | Description |
-|---------|-------------|
-| `avc init` | Initialize avc in the current Git repository |
-| `avc save [-m MSG] [--amend]` | Squash auto-commits into a clean commit |
-| `avc undo` | Step back one operation (non-destructive) |
-| `avc redo` | Step forward one operation (non-destructive) |
-| `avc log [--saves] [--limit N]` | View the operation timeline |
-| `avc status` | Show branch, last save, and uncommitted changes |
-| `avc run -- <cmd>` | Wrap a command with before/after snapshots |
-| `avc watch [--interval N]` | Watch for file changes and auto-commit |
+From there, AVC will grow through working releases that add:
 
-### Flags
+1. bounded automatic savepoints and stable named changes;
+2. operation-log undo, restore, and history rewriting;
+3. first-class workspaces, deterministic merge, and conflict-bearing revisions;
+4. AVC draft synchronization and atomic publication; and
+5. scalable indexes, chunking, and lazy materialization where the working tool needs them.
 
-- `--json` — Output in JSON format (for agent consumption)
-- `--saves` — Show only saves (not auto-commits) in `log`
-- `--limit N` — Limit number of entries in `log`
-- `--amend` — Squash into the last save instead of creating a new one
+Current checks:
 
-## How It Works
-
-avc auto-commits your working tree on every command and maintains an operation log (oplog) for undo/redo.
-
-**Auto-commits**: Every `avc` command auto-commits dirty files as `[avc:auto]` commits. These are real Git commits, visible in `git log`.
-
-**Save**: `avc save` squashes consecutive auto-commits into a single clean commit with your message. The oplog records which auto-commits were squashed.
-
-**Undo/Redo**: Steps through the oplog using `git reset`. Non-destructive — all operations are recorded and can be redone.
-
-**Watch**: `avc watch` polls the working tree for changes and auto-commits at a configurable interval (default 2 seconds). Useful for background safety.
-
-**Run**: `avc run -- <cmd>` snapshots before and after running a command, then records the result in the oplog.
-
-## State
-
-All avc state lives in `.avc/`:
-
-| File | Format | Purpose |
-|------|--------|---------|
-| `.avc/oplog` | JSONL | Append-only operation log |
-| `.avc/config` | YAML | Configuration |
-
-The `.avc/` directory is added to `.gitignore` by `avc init`.
-
-## Requirements
-
-- Git 2.20+
-- Rust 1.85+ (edition 2024)
+```bash
+cargo test
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [`LICENSE`](LICENSE).

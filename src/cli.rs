@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "avc", version, about = "Agent-native Git-compatible VCS")]
+#[command(
+    name = "avc",
+    version,
+    about = "Atomic Version Control (legacy Git-backed build)"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

@@ -2,7 +2,7 @@
 name = "avc"
 version = "0.0.1"
 edition = "2024"
-description = "Agent-native Git-compatible VCS CLI"
+description = "Atomic Version Control system"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

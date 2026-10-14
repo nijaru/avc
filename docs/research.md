@@ -199,3 +199,32 @@ A decisive benchmark must include **semantic interference without file conflicts
 5. **Compatibility and server:** user-visible Git exchange and exact-candidate integration first; optional native sync and cache scale when the core is trustworthy.
 
 No honest claim can be made yet about AVC's performance, production durability, or semantic-conflict reduction. Published upstream numbers remain their authors' workload-specific measurements until reproduced. The first serious improvement is to replace untested architectural assumptions with **clear experiments that can falsify the design**.
+
+
+## 14. Additional systems worth learning from
+
+### Darcs: identity-preserving commutation has a precise meaning
+
+Darcs's [patch theory](https://darcs.net/Theory/MergersDocumentation) specifies patch identity, inversion and commutation: a patch can be represented in a changed context while retaining its identity. Its [conflictors](https://darcs.net/Theory/Conflictors) encode conflicts so their interpretation can be retained and later reconsidered. This is considerably stronger than simply naming a collection of revisions with the same ChangeId.
+
+**Implication:** the Phase 0 patch-oriented prototype must implement real context transformation with specified laws, not just store file diffs and call them independent changes. Test commute/uncommute round trips, invertibility, merge order, rename versus edit, line insertion ambiguity, delete/recreate, binary change, and repeated conflict resolution. The intended source-tree outcome must be checked against a separate reference model. If the algebra is incomplete, it can be a *partial* native capability with explicit preconditions rather than a universal guarantee.
+
+### Mercurial: evolution is separate from ancestry
+
+[Mercurial changeset evolution](https://mercurial-scm.org/help/topics/evolution) records obsolescence/successor markers separately from file ancestry and can exchange this metadata. Its documentation explicitly calls out orphan, content-divergence and phase-divergence cases. [Evolve](https://mercurial-scm.org/help/extensions/evolve) adds behaviors and discovery for this metadata; historical source of a change does not fully describe later rewriting.
+
+**Implication:** AVC's ChangeId and operation graph should model **replacement/divergence** rather than force all amendment variants into one last-write-wins successor. Evolution may be pruned or summarized differently from public source history, but this must not falsely conflate independently amended versions. Make creation/rebase/split/fold/undo transformations reference-model operations with a defined result for two concurrent successors.
+
+### Fossil: stable logical identity, replaceable physical compression
+
+[Fossil's artifact format](https://fossil-scm.org/home/doc/trunk/www/fileformat.wiki) distinguishes enduring logical artifacts from how they are packed in SQLite. Its [delta format](https://www.fossil-scm.org/home/doc/trunk/www/delta_format.wiki) states that physical deltas are storage optimizations rather than the meaning of repository state.
+
+**Implication:** include an explicit invariant that repacking, recompression, compacting or moving native objects between storage tiers cannot change their logical IDs or source trees. The benchmark should compare whole compressed blobs, bounded deltas, and CDC on long-running real edit traces rather than treating a chunk manifest as the inevitable advanced choice. The physical codec and storage layout remain migration-capable.
+
+### Perforce: binary and asset workflows are real general-purpose workloads
+
+[Perforce changelists and exclusive-open behavior](https://help.perforce.com/helix-core/server-apps/cmdref/2025.1/Content/CmdRef/p4_edit.html) demonstrate that non-text assets need explicit edit/filetype and optional server locking semantics. Such locks are **not** a blanket reason to reject offline-first development: offline drafts may still be edited, but global exclusive authority cannot be guaranteed without contacting an authoritative service.
+
+**Implication:** reserve an optional versioned path/file policy for pessimistic *publication* protection of nonmergeable assets (including ownership fencing and expiry). Ordinary code remains optimistic and concurrent. An offline revision created while another actor holds an asset lock must remain recoverable but not be misrepresented as authorized for landing.
+
+These systems do not justify copying their UIs or protocols. Their useful contributions are narrow, testable invariants that a clean-sheet VCS should deliberately choose or reject.

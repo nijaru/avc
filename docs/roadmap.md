@@ -10,7 +10,7 @@ The current Rust 0.0.1 source is a Git wrapper. Its Git command helpers, JSON op
 
 Do **three targeted experiments before finalizing the native format**, rather than treating the previous mechanism choices as validated.
 
-1. **Source/change model:** independently specify revisions, ChangeId lineage, operations, conflicts, recovery, and per-workspace/target CAS. Build an executable reference state machine. Prototype snapshot+changed-path composition and a small genuine patch-commutation alternative; compare exact historic reconstruction, mixed binaries, renames, conflict reapplication, undo/rebase and Git translation.
+1. **Source/change model:** independently specify revisions, ChangeId lineage, operations, conflicts, recovery, and per-workspace/target CAS. Build an executable reference state machine. Prototype snapshot+changed-path composition and a small genuine patch-commutation alternative; compare exact historic reconstruction, mixed binaries, renames, conflict reapplication, undo/rebase and Git translation. Patch-algebra probes must exercise inversion and round-trip commutation laws, not just text-diff replay.
 2. **Persistent directories:** benchmark flat canonical trees, deterministic paged Merkle maps and a canonical immutable search-tree baseline. Use ordinary repositories plus 10, 1,000, 100,000 and 1,000,000-entry directories, adversarial path distributions, update-order invariance, move operations and boundary-shift merges.
 3. **Durable store:** implement minimal complete root transactions in (a) a single append-only object/root journal, (b) immutable segments plus authoritative SQLite metadata and (c) SQLite small objects/metadata plus separately persisted large objects. All three must preserve the same object identity and transition model. Measure synchronous write performance, reopen, retained space, reader contention, checkpoint/compaction, and GC with process-kill/fault injection.
 
@@ -24,7 +24,7 @@ Implement one Rust library and CLI vertical slice: initialize/open, immutable wh
 
 Start with small flat tree objects and whole blobs; retain later algorithm choices behind cohesive object interfaces rather than speculative backend frameworks. Use versioned on-disk format and explicit error paths. No required daemon, hosted service or custom filesystem.
 
-**Gate:** crash injection at every object/metadata/checkout boundary, full reopen/recovery, no silent destruction of edited files. Fuzz malformed objects, names and indexes. Reconstruct arbitrary revisions without replaying a growing log. Verify two independent workspaces can commit without moving a single shared logical head.
+**Gate:** crash injection at every object/metadata/checkout boundary, full reopen/recovery, no silent destruction of edited files. Fuzz malformed objects, names and indexes. Reconstruct arbitrary revisions without replaying a growing log. Verify two independent workspaces can commit without moving a single shared logical head. Reproduce a Trellis-like failure case: a separate editor modifies files after an observer's scan but before a later materialization; neither restore, journal catch-up nor sync may overwrite those unseen changes. Distinguish committed source state from successfully updated filesystem state.
 
 ## Phase 2 — Concurrent workspaces and bounded recovery
 
@@ -32,7 +32,7 @@ Implement separate mutable directories sharing immutable store, CAS on workspace
 
 Add a typed checkout-free library API with exact edit/file preconditions, versioned requests, structured conflicts, bounded streaming queries and durable idempotent outcomes. GUI/MCP/agent adaptors must use the same semantics, not shell scripts as the only truth.
 
-**Gate:** 1/8/32 writers, stale generations, concurrent editors, watcher overflow, crash/GC interleavings, long-running readers, million-event bounded recovery traces. Explicitly exercise an in-flight prepared object racing collection, abandoned workspace lease, a rewritten dependency, and a nonoverlapping change with stale read assumptions. Correctness and retention first, throughput second.
+**Gate:** 1/8/32 writers, stale generations, concurrent editors, watcher overflow, crash/GC interleavings, long-running readers, million-event bounded recovery traces. Explicitly exercise an in-flight prepared object racing collection, abandoned workspace lease, a rewritten dependency, and a nonoverlapping change with stale read assumptions. Several sessions using the same authenticated agent/person identity must remain distinct workspaces, and per-edit checks cannot require scanning all active workers' journals. Correctness and retention first, throughput second.
 
 ## Phase 3 — Git exchange and early interoperability
 

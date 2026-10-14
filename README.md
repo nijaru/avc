@@ -1,45 +1,33 @@
 # AVC
 
-Version control for independent work and deliberate integration.
+**Experimental native version control for humans and agents.**
 
-AVC is being redesigned as a **local-first, change-oriented VCS for humans and agents**, interoperating with existing Git projects. The intended system protects unfinished work, gives concurrent workers isolated workspaces, and makes the transition from proposed changes to shared history explicit and verifiable.
+AVC is being redesigned from first principles as a **local-first VCS with its own source representation, storage, history, transaction and synchronization protocols**. Git and Jujutsu are important references, not its canonical engines.
 
-## Implementation status
+The goal is not a marginally nicer Git client. The value proposition is reliable automatic recovery, stable logical changes, inexpensive isolated workspaces, checkout-free source operations, safe multiworker composition and deliberate validated integration—without requiring a hosted service for ordinary use.
 
-**The redesign is a specification, not an implemented feature set.** The current Rust package is the earlier `avc` 0.0.1 prototype: it invokes Git, creates automatic commits, and records a separate JSON operation log. It does not implement the transactional storage, recovery guarantees, workspace isolation, or validated integration described below. Keep independent backups; do not rely on the prototype to protect irreplaceable work.
+## Status
 
-The implementation direction is to reuse **Jujutsu's Rust history engine and Git object storage**, with AVC-owned transactional coordination and bounded recovery. It is not a continuation of the automatic-commit/squash command loop, and it does not start by inventing a new object-store format.
+**This architecture is a design, not working code.** The Rust 0.0.1 prototype still invokes Git and separately appends a JSON operation log. It has not established the proposed native durability, recovery, garbage collection, interoperability, or concurrency guarantees. Keep independent backups; do not use this prototype as the only copy of important work.
 
-## Intended experience
+The new architecture will replace the old Git-command loop rather than preserve it as a legacy core. Git import/export and existing-host collaboration remain essential adoption paths, but they must not constrain native objects and operations.
 
-A person works on a named change in an ordinary directory. Work is recoverable without turning every edit into a public commit. Splitting, amending, rebasing, and undoing work are normal operations.
+## Documents
 
-A worker needing independence gets another workspace sharing immutable repository data, not another writer in the same mutable directory. Agents use the same operations through a versioned, noninteractive API with explicit revision and concurrency preconditions.
+- [Architecture](docs/design.md): native source model, transaction and recovery rules, workspaces, agent interfaces and collaboration semantics.
+- [Research](docs/research.md): tradeoffs against Git/Jujutsu, lessons from Scion, Sapling and Pijul, limitations and naming.
+- [Roadmap](docs/roadmap.md): implementation milestones and required data-safety and performance evidence.
 
-Local recovery, private synchronization, review proposals, and integration are different actions. Shared integration validates an exact candidate against the current target and policy. Existing Git hosting remains usable; an optional managed service adds guarantees that an ordinary Git push cannot provide.
+**Tavi** remains a proposed name, not an approved rename. The repository, crate, executable and .avc path retain the AVC name.
 
-These are design goals. See the roadmap for implementation boundaries and acceptance criteria.
+## Current development checks
 
-## Design and implementation
+    cargo test
+    cargo fmt --check
+    cargo clippy --all-targets --all-features -- -D warnings
 
-- [Architecture and contracts](docs/design.md): accepted direction, state ownership, recovery, concurrency, interoperability, and integration semantics.
-- [Research and alternatives](docs/research.md): primary-source evidence, lessons from existing systems, rejected alternatives, and the **Tavi** naming recommendation.
-- [Implementation roadmap](docs/roadmap.md): working milestones, compatibility qualification, failure tests, and workload comparisons.
-
-The repository, package, binary, and `.avc` directory retain their current names. Tavi is a recommendation, not an applied rename.
-
-## Development
-
-The existing crate's checks are:
-
-```sh
-cargo test
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-Passing these checks does not establish the redesigned system's guarantees. Those need the end-to-end acceptance tests in the roadmap.
+These checks are not substitutes for native crash-injection, state-model and interoperability verification.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT.

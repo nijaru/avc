@@ -1,205 +1,169 @@
-# AVC: concrete reference design and decision boundaries
+# AVC: native source control reference architecture
 
-**Reviewed:** 2026-10-14.  
-**Status:** Candidate A for implementation and comparison; not a frozen source format or a validated production system.  
-**Evidence:** [research.md](research.md). **Qualification:** [roadmap.md](roadmap.md).
+**Revised 2026-10-14. Status: selected reference design, not validated or frozen.**  
+**Owner:** this document defines the proposed behavior; [research.md](research.md) owns evidence and alternatives, and [roadmap.md](roadmap.md) owns the work and proof gates.
 
-The product is free to be native. Git and Jujutsu are not required as its storage or history engine. The previous selection of State/WorkVersion/Application as a novel fundamental model is superseded: it described provenance but did not demonstrate a better merge algorithm. A causal change graph and a delta-first changeset store remain complete competing candidates described in the research record.
+## 1. Product requirements and system boundary
 
-## 1. Objective and why this candidate leads
+Build a safe, fast VCS that works for one developer on an ordinary filesystem and can also serve a repository inspected, edited and integrated by many concurrent agents. It must preserve source data, work offline when the required objects are local, make changes/history understandable, avoid redundant materialization, and publish shared source only through explicit coordination.
 
-The target is ordinary software projects, from a solo developer to teams running many agents, with an optional path to large hosted repositories. Optimize inspect/edit/recover/compare/integrate tasks, including failed attempts. Require exact bytes, understandable history, offline work on retained data, clear conflicts, safe publication and explicit interoperability.
+This is **not** Git with extra commands. Git and Jujutsu are interoperability and performance baselines. Nor is it an agent runtime, scheduler, CI service, package manager or semantic source database.
 
-Candidate A uses immutable source-tree revisions, explicit change evolution, isolated workspaces, transactional resource updates and checkout-free APIs. This is selected as the **reference design** because it handles arbitrary filesystem-produced source without requiring a parser or an exact event stream from every editor. It exposes the source tested by CI directly and provides a clear Git-history projection.
+The six fundamental operations are: **observe and recover local work; record an authored revision; inspect any revision without checkout; compose revisions with explicit conflicts; synchronize immutable objects; conditionally advance shared targets.** Source integrity and ordinary ergonomics take precedence over theoretical novelty.
 
-Those reasons do not prove that snapshots are inherently faster or safer than a well-indexed change graph. Candidate B may win where causal selective undo and repeated reapplication dominate. Candidate C may win where admitting many rarely read draft versions dominates. Do not silently promote this reference choice to a stability commitment before the comparisons in the roadmap.
+The leading representation is a **parent-relative changeset DAG with derived persistent source views**. It is chosen for the reference because two substantial production systems—Scion and Mononoke/Bonsai—demonstrate its advantages for cheap admission and independently evolvable read indexes. It is not declared universally superior to snapshot-root commits. A snapshot-first system with the same APIs and storage is a mandatory comparison before freezing the native format.
 
-## 2. User model
+## 2. Authoritative data: small and explicit
 
-A person works in a **workspace**, groups work into **changes**, and deliberately updates a **shared target**. Internal revisions and recovery records are inspectable without requiring a user to manage all of them.
+The canonical closure is **changesets and referenced file-content objects**, plus the durable mutable roots selecting history. Source-tree manifests, blame and path-history indexes are **derived**, not an independently writable source of truth.
 
-Proposed operations, not commands supported by today's prototype:
+Illustrative logical records, **not** frozen Rust serialization:
 
-```text
-new "Add parser"          begin a logical change
-capture                   preserve admitted filesystem bytes privately
-finish                    create a described source revision; no publication
-workspace create <base>   give another worker an independent directory
-merge <revision>          create an integration result or typed conflicts
-restore <revision> --to <new-directory>
-propose <revisions>       create/update an exact review subject
-land <candidate>          request policy-controlled target advancement
-```
+    ChangeSet {
+      format_version,
+      parents: Vec<ChangeSetId>,        // ordered; parents[0] is the primary parent
+      logical_change_id: ChangeId,     // stable user-visible identity, not a patch algebra
+      file_changes: SortedMap<Path, FileChange>,
+      author, description, authored_time,
+      source_metadata
+    }
 
-Automated capture is opt-in per workspace or established repository policy, visible, bounded and independent of review. New files are discovered but not all silently retained. Alternative experiments and compositional tasks both use workspaces; deleting other workers after one succeeds is not an implicit VCS policy.
+    FileChange =
+        Set { file_kind, content_id, executable_or_mode }
+      | Delete
+      | Conflict { conflict_object_id }
 
-The VCS does not orchestrate agents, run an unrequested build, create a sandbox, deploy software, or infer that every tool call deserves a commit. A server is unnecessary for local operations.
+    Conflict {
+      base_entries, side_entries, source_changesets, resolution_context
+    }
 
-## 3. Authoritative records
+    WorkspaceRoot {
+      workspace_id, generation, head_changeset,
+      materialization_state, ownership_epoch
+    }
 
-These are logical schemas. They define interpretation, not a stable binary layout:
+    TargetRoot {
+      name, generation, head_changeset, policy_epoch
+    }
 
-```text
-Tree = ordered map<PathComponent, Entry>
-Entry = File(content_id, executable) | Symlink(target_bytes)
-      | Directory(tree_id) | Conflict(conflict_id)
+    ResourceOperation {
+      request_identity, affected_resource_generations,
+      previous_values, new_values, outcome
+    }
 
-Revision = {
-  format, tree_id, ordered_parent_ids,
-  change_id, author, description, authored_metadata
-}
-Evolution = {kind, predecessor_revision_ids, successor_revision_ids}
-Conflict = {kind, base_terms, ordered_side_terms, source_revision_ids, driver_id}
+The root changeset has no parent and applies its file changes to an empty source namespace. Each later changeset's **exact logical source** is defined by recursively obtaining the first parent's state and applying the listed path modifications, in canonical order. Other parents are ancestry/provenance; they do **not** implicitly alter source bytes. A merge therefore records the changes needed to turn the selected first-parent tree into the agreed result, even when those changes came from its additional parents.
 
-Resource = {kind, resource_id, generation, value}
-WorkspaceValue = {revision_id, materialization_state, ownership_generation}
-TargetValue = {revision_id, policy_version}
-Capture = {workspace_id, tree_id, observed_generation, coverage, expiry}
-Operation = {request_identity, affected_resources, before_values, after_values}
-Candidate = {base_revision, expected_target_generation, selected_revisions,
-             result_revision, recipe_id, validation_policy_version}
-Evidence = {candidate_id, validation_inputs, runner_identity, result}
-```
+Paths and source entries have versioned portable rules. Initial semantics: regular file, executable file, symlink, and typed unresolved conflict; directories are implied by their child paths. Empty-directory tracking, opaque platform metadata, hard-link identity, and efficient subtree-move operations need explicit future decisions. Reject invalid file/directory collisions or unsupported paths rather than silently reinterpret them.
 
-A full schema must distinguish source author time from capture/receipt time; neither is a concurrency ordering mechanism. Change IDs are stable labels for intent, not a magical transformation law. Revision IDs identify immutable bytes and metadata. Amend/rebase may create new revisions with the same change ID; concurrent successors remain distinct. Splits and folds use explicit many-to-many evolution records. No timestamp chooses a globally latest variant.
+Canonical entries are sorted, unique and bounded; each Set references an immutable content hash, and Delete is meaningful relative to its parent. File copy/rename information may be recorded as verified provenance, but inode or matching content does not prove user intent. A directory rename can touch many paths in a flat changeset; compare this cost against subtree-copy and snapshot-tree primitives before stabilizing the format. Mononoke supports explicit subtree changes, illustrating a plausible—but nontrivial—way to address it.
 
-The source tree identifies source bytes and relevant file kinds/modes; it does not by itself identify causal history or which independent edits contributed identical text. Parents, evolution and merge provenance preserve history separately. Do not promise causal selective undo solely because that metadata exists: the transformation law still has to be specified.
+An authored revision's **ChangesetId** hashes its versioned canonical metadata, parents and file operations. Equal source bytes reached through different history may yield different ChangesetIds but equal logical source states. A stable **ChangeId** connects rewrites/amendments without implying that two revisions commute. Split/fold creates explicit evolution relationships; conflicting successors remain distinct. Rebase creates a new changeset and may preserve the logical ChangeId; the original remains immutable.
 
-### Object identity
+This system does **not** require a second WorkVersion/Application graph. An exact merge result, its selected input identities and algorithm/resolution provenance are recorded by the merge changeset and integration candidate. Do not store redundant mutable versions of the same authoritative state.
 
-Use a domain-separated hash of object kind, logical format version and canonical payload. A reference implementation may use SHA-256 and publish byte-level vectors; this does not decide a final hash/performance policy. Short hashes are display-only. Maps, parent ordering, lengths and metadata bounds need canonical rules.
+## 3. Derived source trees: fast reads without a second authority
 
-Changing compression, segment location or physical delta packing must not change IDs. Changing a canonical directory's paging layout or chunk-manifest encoding **can** change its ID. Equal logical content yields equal IDs within the specified format; do not assert representation-independent roots without a matching commitment scheme. Keep native IDs and imported Git object IDs in distinct namespaces.
+The fundamental query is:
 
-The first tree representation is hierarchical sorted entries, with whole-file blobs. Empty directories, executable bits and symlinks have explicit semantics. Devices/sockets and unsupported metadata are rejected. Canonical filename bytes and each platform's materializable subset are different; refuse case/normalization/reserved-name collisions rather than silently alter spelling.
+    source_view(change_id, index_format_version) -> persistent tree root
 
-## 4. Source operations and merge algorithm
+For a cached source view, return the immutable tree immediately. Otherwise obtain the first parent's view, apply the changed paths to a persistent map, validate structure, and cache the derived root. Iterative derivation from a retained earlier checkpoint must yield the same logical tree. A cached index is versioned by the canonical interpreter and its own tree encoding; deletion and recomputation must not change file bytes or history.
 
-### Direct edits
+**A changeset may be durably admitted before its tree is computed.** Clients requesting that tree must either derive/wait and return a complete result, or return an explicit unavailable/in-progress error; never imply a partial tree is complete. In a small local repository derive eagerly when it improves user latency. Hosted fleets can defer rare revisions and compute popular ones on demand or proactively. This is an execution policy, not a change in canonical semantics.
 
-`apply_edits(base_revision, edits, expected_resource_generation)` creates a new source tree from immutable inputs. Each edit identifies its path and expected previous entry/content ID, including absence. Validate the entire edit set against the base before publishing any result. A stale generation or entry returns a typed conflict, not partial success or implicit fuzzy patching.
+The initial derived tree is a hierarchical Merkle directory map with small sorted flat objects. It supports subtree equality and recursive diffs. Very wide directories may benefit from deterministic paged B+/POS/prolly maps or a compressed Merkle radix trie; choose by update/diff/listing cost, cold-cache locality, adversarial keys and node count. Tree-object hash identity depends on its **versioned encoding**; changing indexes may alter derived root IDs without altering ChangesetIds. Do not promise representation-independent tree hashes unless the encoding guarantees it.
 
-Source updates through this API are atomic at the repository level. Updating ordinary filesystem files is a separate operation described below.
+Derived indexes can include ancestry generations/skip links, path-history postings and changed-path Bloom filters, copy candidates, blame/line-origin ranges, and optional symbol search. They use immutable input identities and algorithm/version keys. They must not become alternate source truth. Expensive derivations require bounded work, duplicate suppression, caching, cancellation and observable failure states.
 
-### Integration
+**Cost trade-off:** admitting a delta touching k paths avoids synchronously constructing all affected tree nodes. A future read may pay that deferred work. If a desired historical view has no cached ancestor, reconstruction can require traversing many changesets. Set a materialization/checkpoint policy and benchmark complete write + first read + rebuild + garbage-collection costs. This is why the snapshot-first challenger remains serious.
 
-`merge(base, left, right, driver_policy)` begins with a deterministic tree comparison. For each entry, the reference rule is:
+## 4. Editing, merging, undo and conflicts
 
-```text
-left == right : select those bytes, retain both source identities in provenance
-left == base  : select right
-right == base : select left
-both directories : recurse
-supported text : run the explicitly selected, versioned merge driver
-otherwise : retain a typed conflict with base and alternatives
-```
+**Editing:** a human or agent works in an ordinary or isolated working directory. File watching and status locate candidate path edits; source content and expected parent entries are read/verified. Creating a changeset stages canonical blobs, computes exact Set/Delete operations relative to the selected primary parent, and publishes the changeset with workspace generation CAS. No independent Git index or background public commit is moved.
 
-Directory/file collisions, delete/modify, modes, symlinks and binary replacements are entry-level conflicts unless a specific safe rule applies. Renames are explicit hints or deterministic inference, never unquestionable identities extracted from an inode or matching content. Copy and move are different relations. Unknown or malformed syntax remains valid source data; a parser may decline and leave a conservative conflict.
+**Checkout-free editing:** source clients may submit changed paths and expected before-content IDs directly without materializing the repository. An entire request either creates one well-defined new revision or returns a typed stale/conflict result.
 
-For multiple merge bases, calculate an explicit virtual base using the same conflict-preserving rules and record it. Do not quietly choose an arbitrary ancestor. For more than two selected revisions, use an explicit integration order/plan; there is no claim that arbitrary merges are associative or that checking all possible orders is cheap. Text, token and structural drivers are replaceable components with separately measured correctness.
+**Merging:** obtain the relevant complete derived trees, determine merge bases and compute a deterministic candidate with a well-defined driver policy. Start with three-way tree and conservative text merge; file kind changes, deletion/modification and unmergeable binaries produce typed conflicts. A resulting merge changeset has the selected first parent plus additional parents, and its **first-parent file delta encodes the exact resulting tree**. The second parent's history alone cannot be interpreted as source updates. Multiple bases require explicit virtual-base semantics; arbitrary merge order is not assumed associative.
 
-The result is a new revision with parent/provenance references to its inputs. Existing authored revisions remain immutable, as they can in existing VCSs. A separate Application object is not necessary merely to restate that fact. An operation or candidate records an exact merge recipe where useful.
+**Conflicts:** preserve base and alternatives as canonical typed objects; private conflicted states may be recorded and further merged. Normal resolved Git exports and protected land operations reject unresolved conflicts. Structural/text-token/LLM-assisted drivers may propose better resolutions, but must be versioned, bounded, byte-preserving outside intended edits, and separately evaluated for incorrect automatic merges. Model output is never an implicit canonical storage transformation.
 
-Conflicts are records, not only marker text. Preserve original alternatives and any remaining merge terms. A resolution is a new source revision tied to its actual conflict inputs. Reuse a previous resolution only under a declared matching context; otherwise propose it for inspection or keep the conflict. A clean result is not proof of program compatibility.
+**Undo:** source-history operation undo restores an earlier resource root under a current-generation check. Content revert creates an inverse-content revision on a new base and can conflict. Causal selective undo (remove only one author's independently identical effect) is a distinct alternative that this changeset model does **not** guarantee. Jujutsu's documented same-change trade-offs and Darcs/Pijul patch theory are prior art; claiming more would require a precise algebra and tests. A reverted change may be intentionally reapplied; never use an eternal set of ChangeIds as a duplicate filter.
 
-### Same-change policy and undo
+## 5. Private recovery and safe workspaces
 
-The reference user policy coalesces independently identical changes in the rendered file while retaining source provenance. Jujutsu documents a similar usability-versus-algebra tradeoff; see the research record. We do not promise that reverting A retracts only A's causal effect while preserving an independently identical effect B.
+A **recovery capture** protects admitted local filesystem bytes under a bounded retention policy. It is not automatically a permanent changeset in shared semantic history. Capture may store a private derived tree or a bounded incremental overlay; measure overhead before choosing. Automatic capture neither pushes nor invokes CI, review, or indexing events.
 
-`undo` restores prior local resource values under current preconditions and retention limits. `revert` creates an inverse-content change on current source, possibly conflicting. **Causal selective undo** is a distinct challenger requirement. It must name the intended behavior for repeated identical deletes, later edits, dependencies and delete/recreate before being implemented or advertised.
+Watchers, stat metadata and editor events are hints only; recrawl when uncertain. A directory scan is not an atomic multi-file snapshot when editors continue writing. Unsaved buffers cannot be captured by a filesystem watcher. Report the last durable capture, admitted paths and failures. Do not silently retain ignored files, secrets or all untracked outputs. Ignoring a previously captured secret does not erase it from old objects or backups.
 
-A target that integrated a change, reverted it, and later intentionally reapplies it must remain supported. An eternal set of ever-seen ChangeIds is not a valid duplicate filter. Deduplicate retries by request identity; distinguish ancestry merge, explicit cherry-pick/reapply and change evolution.
+**Independent workers get distinct writable directories** sharing immutable objects, caches and safe build artifacts. Workspaces have separate resource generations; advancing workspace A must not falsely conflict with B. The same human/agent may own several sessions, so actor, session, workspace and source-root identities remain distinct.
 
-## 5. Independent roots and one transaction boundary
+A workspace is **not** a process/credential/network sandbox. An API fence cannot prevent an already running editor from writing through an open file handle.
 
-Mutable resource keys include workspaces, local names, proposals, retention pins and shared targets. Each has a generation. A source mutation checks only the resources it actually changes; a multi-resource operation checks them together. A single local writer may serialize short physical transactions without causing false logical conflicts between unrelated workspaces.
+**Restore safety:** absent actual exclusion of external filesystem writers, restore to a fresh directory by default. An in-place operation can check dirtiness and preserve before-images, but a check immediately before replacement cannot guarantee no-clobber against an uncontrolled writer. The source transaction and filesystem materialization are two different completion states. Do not claim that metadata atomicity makes checkout atomic.
 
-Prepare hashing, diff, merge and candidate computation outside the write transaction. Do not hold it while a model, editor, build or remote service runs. The source operation publishes its objects and resource transition together, then returns an immutable result ID.
+## 6. Local transaction, object integrity and GC
 
-For the reference implementation, use **one local SQLite database for small immutable objects, resource roots, operation records, request outcomes and event intents**, with explicit durable configuration and size/resource bounds. This minimizes cross-file authority during correctness work. It is not a measured storage winner or a mandate to put large assets in SQLite indefinitely. Keep the repository logic separate from physical storage without inventing a broad plugin framework.
+The local repository has one authority for committed **mutable resource roots and request outcomes**. It does not need a single logical repository-wide head for every worker. A physical writer may serialize short commits; unrelated workspace generations remain logically independent.
 
-Conceptual transaction:
+First correctness implementation: use a local SQLite transactional authority holding canonical changesets, small blobs, workspace/target roots, operations, pins and request outcomes. This minimizes cross-file durability ordering while building the reference model. It is **not a final performance choice**: compare one append-only object/root journal and immutable object segments with separate metadata after real crash and workload tests. Large blobs can move out only with an explicit staging/GC protocol.
 
-```text
-prepare canonical objects and requested result
-BEGIN IMMEDIATE
-  verify actor/request epoch and canonical request digest
-  return a recorded duplicate outcome, or reject conflicting identity reuse
-  check all affected resource generations and current policy when applicable
-  insert missing immutable objects; verify complete required closure
-  update affected roots and their generations
-  record before/after operation, retention pins, result and needed outbox events
-COMMIT with the selected durable guarantees
-acknowledge result
-```
+Local mutation sequence:
 
-WAL mode with synchronous=FULL is a reference configuration, subject to the actual SQLite build/filesystem assumptions. Normal process termination tests do not establish power-loss safety. Long-running readers/checkpoints, transaction size and single-writer contention require measurement. A database is authoritative here, not a cache that may simply be deleted.
+    prepare declared input IDs and source changes
+    begin short durable transaction
+      check expected workspace/target generations
+      check request identity/epoch and canonical payload
+      write required canonical closure, or check durable staged blobs
+      select updated mutable root(s)
+      record pin changes, operation, retry outcome, event intent
+    commit durably and acknowledge
 
-A larger-store design can put source payloads in immutable segments. Then the protocol must durably register/protect staging data, flush objects and required directory/manifests, and only afterward publish roots. GC must observe staging references or equivalent generation barriers. The toy probe reproduces how root CAS alone fails. A single append-only object/root journal is another challenger; its recovery and compaction need the same observable contracts.
+Changesets are immutable and may be created without advancing public refs. In a split object+metadata store, a durable staging root/epoch must protect objects from GC **before** an authoritative target references them. Never acknowledge a root referencing missing blobs. Reader epochs/leases and staging pins protect compaction and repair. Deleting a cache is safe; deleting the root authority is not.
 
-Backups include a consistent authority snapshot and required object closure. Physical compaction must wait for reader/in-flight protection before retiring old data. Root logs and operation records require actual pruning rules; calling something append-only does not solve retention.
+Backup must include a consistent root/operation state and all reachable canonical blobs/changesets. Private recoveries expire by time/count/bytes; named checkpoints and accepted history remain protected. An immortal operation chain must not accidentally retain every private capture. Only root transitions that truly require coordination use compare-and-swap.
 
-## 6. Working copies, capture and restoration
+Full-source data integrity uses versioned domain-separated hashing, canonical length limits, checksums/framing on physical records and verification at untrusted boundaries. Cryptographic content hashes do not establish access rights, authenticity of actors, or semantic correctness.
 
-Each independent writer gets a separate mutable workspace. Immutable content and safe read caches may be shared; mutable hard links must not cause one workspace's writes to alter another. Reflinks, sparse materialization or a virtual filesystem are accelerators, not correctness assumptions.
+## 7. Machine API, remote clients and syncing
 
-An actor can own several sessions and workspaces. Generation/fencing tokens restrict managed API writes, not arbitrary OS writes by a process holding access. A workspace is not a credential/network/process sandbox. Administrative takeover cannot revoke a stale file descriptor merely by changing a database row.
+Core APIs accept exact immutable ChangesetIds or explicit resource-generation preconditions:
 
-Capture admits tracked/explicitly included paths, detects changed bytes and builds a recoverable source state. Watcher notifications and stat caches are hints; overflow or uncertainty causes reconciliation. Files can change across or during reads, and unsaved buffers are invisible. Report exact capture coverage and the last durable result. Validation runs on a separately materialized immutable source root rather than an assumed simultaneous directory scan.
+- Read file/range/tree, compare trees, list history, blame/path queries, inspect conflicts.
+- Create a changeset from path edits, capture/recover, construct merges, inspect operation history.
+- Synchronize selected immutable roots, propose a candidate, get validation status, conditionally advance a target.
 
-**Restoration has two explicit contracts:**
+CLI, library and service expose the **same semantics**, but not necessarily the same physical execution. A local full repository works entirely offline; thin clients can fetch only requested objects and ask a service to merge or diff. Missing promised objects are not silently treated as deletions. RPCs are bounded, batchable, resumable and return structured errors and immutable pagination cursors.
 
-- In an ordinary directory with uncontrolled editors, a pre-write check detects many stale states but cannot guarantee no-clobber. The reference safe recovery operation materializes into a **new directory** without replacing current files. In-place switches require a cooperative/quiescent ownership contract, explicit dirtiness checks and preserved before-images; limitations remain visible.
-- In a controlled workspace where every writer is excluded or fenced at the actual filesystem boundary, record a durable materialization intent, preserve required original data, stage replacements and finish them under that exclusion. On interruption, resume or preserve both versions; report pending materialization separately from committed source state.
+Large deployments may use stateless compute and independently cached durable objects; node/regional cache tiers and sparse/lazy workspaces are optional. Separate durable storage from serving capacity and avoid requiring full repositories on every CI runner. Protect object retrieval authorization, including directory-scoped restrictions and cross-tenant existence leaks; hashes alone are not authorization. Failure isolation matters as much as cache hit rate.
 
-Do not claim a universal atomic compare-content-and-replace operation on ordinary portable filesystems. Do not silently weaken this contract merely to make `restore` look simpler.
+Request idempotency keys have authenticated actor + authority epoch scope. Replay returns the original durable outcome while valid; retired epochs are rejected rather than silently executing delayed requests. Cancellation and network timeouts do not revoke already committed state.
 
-## 7. Recovery retention and privacy
+## 8. Review, validation and publication
 
-A successful automatic capture means its bytes are durable within a documented retained horizon. It does not mean review, remote backup, or publication. Show those states separately. Do not permanently link every capture through strong immutable parents; otherwise time-based pruning cannot reclaim source objects.
+Four distinct boundaries: **private capture → optional restricted draft sync → proposal/review → accepted target transition**. Do not send every private agent loop to a normal Git remote and promise quiet events; a third-party host may trigger webhooks and CI for pushed refs.
 
-The initial capture implementation may store a tree root directly. A bounded delta/overlay chain can be introduced only with a maximum reconstruction path, pinned bases, verified effects and measured benefit. An overlay is not an independent byte authority allowed to replay over newer editor writes.
+A candidate names exact revisions, computed merge result, base/target generation, algorithm, validation recipe and policy epoch. Tests and human approvals are evidence **about** that exact candidate; do not include future evidence in the candidate's own digest. Validation runs on the immutable result or an isolated exact materialization, not a live workspace mutable during the test.
 
-Retention has separate classes: expiring private captures, explicit checkpoints, draft/proposal roots, accepted history, and in-flight/reader protection. Storage pressure cannot silently evict a named pin or an accepted revision. Ignoring a captured secret is not erasure; purge behavior must cover backups and remotes. Build outputs, test logs and model transcripts have separate storage and retention by default.
+Protected landing checks current target, policy/authority and qualifying evidence and atomically updates **only the target and its receipt/outbox**. Changed target or policy may require recomposition and revalidation. An organization may instead maintain separately accepted and verified targets, or choose post-merge/pre-deployment checks, but must state the weaker guarantee. No design eliminates necessary ordering on one shared linear target.
 
-## 8. Machine interface and distributed use
+If the destination is GitHub/GitLab/etc., that host controls ref, review and CI policy. A local AVC transaction cannot promise cross-host atomicity; use actual remote protections/merge queues and reconcile unknown network results.
 
-All source reads and candidate-producing writes operate on exact immutable IDs. Core methods include read/list/range, diff, history, ancestry, apply_edits, merge, resolve, capture registration, propose and target advancement. CLI and remote methods share semantics, not necessarily the same physical execution path. Machine mode has bounded output, stable cursors bound to a revision, structured errors, cancellation and no terminal prompts.
+## 9. Git import/export, platform and trust boundary
 
-Requests carry schema, repository, actor scope, authority-issued request epoch, unique request ID, canonical request digest and relevant expected generations. Preserve outcomes while an epoch is active. Retire epochs explicitly; a delayed retry from an expired epoch cannot become an apparently new write. Lost responses produce queryable outcomes, not distributed exactly-once promises.
+Existing Git repositories are adoption inputs; Git is **not** canonical AVC source truth. Preserve original Git objects/IDs when unchanged and keep mapping to native changesets. Native rewrites/export will generally produce new Git commits and lose some private metadata; state this explicitly. Do not silently share an index/worktree with a Git writer. Export unresolved conflicts only through a capable explicit transport, not as a resolved Git commit.
 
-Full local stores work offline. Partial clients explicitly know which objects are promised and can pin a working set. Missing remote content fails or hydrates; it is never an empty file or a silently omitted ancestor. Native transport batches requested objects and queries, verifies hashes/closure, supports resume and authorization, and permits optional node/regional caches. A small local project does not need that infrastructure.
+Test practical compatibility: paths/Unicode/casefolding, executable bits, symlinks, ignore rules, attributes/EOL/filters, tags/signatures, Git LFS, submodules and partial/shallow histories. Unsupported operations fail before destructive mutation. Binary source is first-class opaque data; no mandatory parser or AST format.
 
-For a hosted service, immutable objects can live in durable blob storage while stateless compute and derived indexes scale independently. Keep coordination around named target updates small. Avoid imposing local pack maintenance on every job, but compare network bytes and cold-cache compute before abandoning useful physical delta compression.
+Untrusted repository data and configuration do not implicitly execute hooks, plugins or language tooling during clone, fetch, status or diff. Process execution belongs to an explicitly authorized runner. Agent provenance and optional read sets are useful advisory/validation inputs, not a required source identity or proof of semantic independence.
 
-## 9. Review, validation and publication
+## 10. Decisions, open bets and proof of value
 
-Capture, restricted draft sync, proposal update and target publication are separate event classes. Ordinary Git pushes may not provide quiet draft semantics; expose that capability instead of silently claiming it.
+**Decided as architectural requirements:** native model; offline full repository; per-workspace/target conditional roots; immutable canonical source objects; no-checkout APIs; bounded private recovery; conservative typed conflicts; deliberate publication; explicit Git exchange; safety gates before real user trust.
 
-A Candidate names its exact result revision, expected target/base, selected inputs, integration recipe and policy version. Evidence references the Candidate and its actual toolchain, test recipe, external inputs and runner identity. Candidate identity does not contain its future evidence; that would be circular. A build action may safely reuse output only when its declared full inputs match, not because two changes touch different paths.
+**Leading reference:** parent-relative canonical changesets plus eagerly/lazily derived persistent tree views. **Not yet format-stable.**
 
-Validation never holds the target lock. For a protected target, atomically check its current generation, applicable policy and live authority, then update it and record receipt/outbox. If the base changed, construct and validate the new relevant candidate. Recheck revoked authority and altered policy rather than trusting an old approval forever. Delivery is at least once with stable event IDs.
+**Serious alternatives:** canonical snapshot-root revisions with changed-path hints, and Pijul/Darcs-style causal patch graphs where selective undo and change commutation have real value. These are not optional cosmetic tweaks; a winning alternative would replace the canonical history model.
 
-A serial validated batch containing k changes and requiring T time has an approximate k/T capacity limit before failures/overheads. Support bounded queues, grouping, superseded-work cancellation and sound caching. Alternatively a repository owner may separate accepted and verified targets or choose post-merge/pre-deploy validation. These have different guarantees; none makes arbitrary concurrent changes semantically independent.
+**Open implementation choices:** tree-node layout (flat vs deterministic radix/prolly), physical store and durability protocol, hash/codec, large-file chunking/deltas, subtree move/copy semantics, native protocol cache topology, merge driver selection, initial Git compatibility subset and naming.
 
-Git-hosted targets remain under their host's authoritative policy and conditional writes. A local transaction cannot atomically own the remote branch, review database and local receipt. Adapters reconcile durable intent and uncertain network results, using actual host protections/merge queues where available.
-
-## 10. Interoperability and safety boundary
-
-Git is an import/export boundary, not the core. Preserve unchanged imported Git objects or retain mappings to exact originals. Native rewriting usually creates different Git objects; signatures, change evolution and native conflicts may not translate. Test byte content, modes, parent ordering, tags/signatures, attributes/filters/EOL, ignores, path encodings, LFS, submodules and shallow/partial histories. Refuse unsupported mutation before damage. Initial native workspaces must not race a Git writer on the same index/directory.
-
-A content hash is not authorization, a signature is not a test, and neither provides transport confidentiality. Authorize object retrieval and reachable closure; avoid cross-tenant existence leaks. Repository configuration and fetched content do not implicitly execute hooks/plugins. Process sandboxing belongs to the caller/runner with explicit authority.
-
-## 11. Complexity targets and things not promised
-
-Tree equality is a digest comparison within a logical format. Path lookup follows directory nodes. A snapshot edit rewrites changed content and ancestors; a very wide flat directory can still cost its full width. Tree diff can skip equal subtrees, but worst-case merge and ancestry queries can be large. Indexes need explicit versioning and rebuild cost.
-
-Clean status can be cheap under a valid observation boundary; arbitrary watcher loss or uncoordinated filesystem mutations may require scanning. Metadata-only workspace creation can be constant work while materializing its requested files is not. No tree design, CRDT, stable change ID or CI policy makes all these operations constant time.
-
-The reference design deliberately does not promise patch commutation, causal selective undo, perfectly inferred rename identity, free old-client compatibility after causal pruning, or semantic correctness from merge success. Those require different contracts and evidence.
-
-## 12. What would replace this candidate?
-
-Choose causal graph B if controlled comparisons establish substantially better conflict preservation/selective undo/reapplication with acceptable generic editing, cold reads, retention and interoperability. Choose delta-first C if measured draft admission savings exceed deferred materialization and recovery costs for the intended population. Choose an existing history engine if the native model provides no material user benefit; the freedom to design natively is not a requirement to ignore that outcome.
-
-Until then, this document supplies an implementable reference, not another unsupported claim that its labels or components make it state of the art. The mandatory commitments are the user-facing and integrity contracts; source representation and physical formats remain reviewable before stabilization.
+The comparison must include end-to-end creation + first-read + history query + merge + recovery + GC + sync, not just cheap append. Data loss, incorrect unreported automatic merging, or false protection claims are release blockers. The current native implementation does not exist; the research fixtures are counterexamples, not performance proof.

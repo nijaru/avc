@@ -1,241 +1,144 @@
-# VCS design investigation: requirements, evidence, and alternatives
+# AVC research and architecture decision
 
-**Research date:** 2026-10-14.  
-**Status:** Comparative investigation and a scoped reference-design recommendation, not a finding of universal optimality.  
-**Related:** [Concrete candidate and contracts](design.md); [qualification and next experiments](roadmap.md); [reproducible contract probes](experiments/vcs_contract_probes.py).
+**Updated 2026-10-14.** These are primary-source observations, engineering deductions and open hypotheses—not native AVC performance measurements. The proposed behavior lives in [design.md](design.md); implementation/verification gates live in [roadmap.md](roadmap.md).
 
-## 1. Conclusions supported by this investigation
+## 1. Conclusion: a direction, not a solved optimum
 
-A native system remains a legitimate product direction. Current evidence supports independent workspaces, precise machine operations, inexpensive private recovery, immutable source access without checkout, and deliberate integration. It does **not** show that agents require a patch graph, a particular database, a mandatory server, or the previous State/WorkVersion/Application abstraction.
+There is now a **coherent implementable native VCS direction**: small immutable parent-relative changesets and blobs as source truth, with versioned persistent Merkle source-tree views and additional query indexes computed when useful; full offline development and optional scalable server execution use the same semantics. Independent workspaces mutate independent roots; only genuinely shared targets require agreement.
 
-The leading **reference implementation candidate** is a native multiversion repository with persistent source trees, immutable revisions, separately tracked logical-change evolution, resource-scoped transactions, and local or remote access through the same operation contracts. This is an evidence-bounded starting point for the stated general-purpose workload, not a stable format decision or a claim of innovation by itself.
+**Why lead with this:** Scion and Mononoke independently demonstrate the design at substantial production scale. Cheap change admission and separately evolvable derived structures match increasingly frequent agent edits and no-checkout CI queries. This is evidence of feasibility and value for those workloads, **not proof that the format outperforms snapshot-root commits for ordinary repositories**.
 
-Two complete challengers remain important: a causal change graph with indexed materialization, and a parent-relative changeset log with derived source trees. They can satisfy most of the same user requirements. Their relative merits depend on how often selective change removal/reapplication, deep divergence, source queries, and ephemeral draft writes occur. No measured AVC result currently selects a universal winner.
+The strongest alternative remains a canonical persistent snapshot tree per revision with changed-file hints. A causal patch graph offers different semantics for selective undo and commutation, but its benefits cannot be asserted merely because agents run concurrently. The right choice is the one that wins full user work, including cold reads, rebuilds, merges, retention, transfer and recovery.
 
-The previous blanket selection of a change-centric core and the claimed differentiation from naming an Application record are withdrawn. A source revision plus provenance can express the latter without improving the merge algorithm. Retaining the original authored object does not eliminate transformation or validation work on a new base.
+## 2. Ground truth: workloads and users
 
-## 2. Define the workload before declaring an optimum
+The architecture must handle three genuinely different multiworker situations:
 
-These are proposed product workloads, not measured population shares:
-
-| User/workload | Required outcome | Dominant costs or hazards |
+| Situation | Actual requirement | Wrong optimization |
 | --- | --- | --- |
-| Solo developer using ordinary editors and shell tools | Understand what changed; recover experiments; work offline | Surprising state, destructive restore, scanning, unnecessary bookkeeping |
-| Team developing features and releases | Review coherent changes; merge and backport predictably | Conflicts, history interpretation, stale review, interoperability |
-| Parallel compositional agents | Combine several independently useful results | Workspace interference, stale assumptions, merge/validation cost |
-| Parallel alternative-solving agents | Evaluate alternatives and choose one or a subset | Workspace creation, redundant work, retention of failed attempts |
-| Sequential agent edit/test loops | Checkpoint frequently without publishing every attempt | Capture latency, write amplification, unbounded recovery, CI amplification |
-| CI, search, code review, automation | Read exact files/history or construct a change without a clone | Read fanout, object negotiation, cache misses, checkout overhead |
-| Very large monorepos | Bound local data and scale hot shared targets | Data placement, directory/history indexes, integration ordering |
-| Projects with assets, submodules, signed history or restricted paths | Preserve bytes and policy; make limitations explicit | Opaque merges, locks, conversion, authentication and access scope |
+| Sequential edit/test/fix | Very frequent private recovery, cheap status, reliable undo | Public commit/push/CI for every intermediate edit |
+| Competitive attempts | Cheap isolated alternatives; choose and retain desired results | Implicitly merge every failed alternative |
+| Parallel useful features | Workers progress independently; explicit combined validation | One global workspace/branch lock, or first-winner semantics |
 
-Competitive alternatives and compositional work must not share an implicit winner-takes-all policy. A workspace optimized for one can discard useful work from the other. Agent scheduling remains outside the VCS; the VCS supplies clear independent work and integration operations.
+A solo developer still needs understandable history, ordinary editors, offline operation and reliable data recovery. Agent infrastructure adds read/query fanout and concurrent speculative writes, but the source-control engine should not own agent prompts, task scheduling, process sandboxes or every build artifact.
 
-Hard requirements are source integrity, exact revision interpretation, explicit conflicts, predictable recovery, authorization, and truthful supported-platform behavior. Within those constraints, minimize whole-task latency, resource cost, repeated human/agent work, operational burden and migration friction. There is no defensible single numeric score until workload weights and safety tolerances are specified. A small decrease in conflicts does not compensate for silent wrong merges.
+**Published deployment observations:** Anthropic reported about 30,000 merges/day and 25 million CI checkouts/day for its atypically large monorepo, plus strong infrastructure savings *against its previous mirror fleet*. [Scion article, October 13, 2026](https://www.anthropic.com/engineering/redesigning-source-control). GitHub reported major growth in commits, pushes, merges, CI fanout and service costs, while investing in scalable storage **without changing Git semantics**; its up-to-35× throughput figure is an internal benchmark, not a universal result. [GitHub engineering, October 6–7, 2026](https://github.blog/engineering/architecture-optimization/building-git-infrastructure-for-agent-scale-development/).
 
-Human needs are not inferred only from fleet engineering reports. The 2026 **Git Takes Two** study emphasizes shared awareness of distributed state in a learning setting [6]. It supports making local, peer and remote state legible, but is not evidence of measured productivity gains for all professional developers. **GitGoodBench** supplies agent tasks and history-manipulation evaluation material [7]; its historical model results are not current agent capability estimates.
+**Inference:** changed-file storage is one way to remove hot-path computation. Other important costs—network fanout, redundant checkouts, CI, maintenance and target coordination—can be addressed independently of the canonical history model. Do not count all agent-generated commits as inherently expensive or infer that a native VCS automatically reduces host load.
 
-## 3. What the recent production reports establish
+## 3. What Scion and Mononoke actually choose
 
-### Scion: a workload-specific native redesign
+### Scion (Anthropic)
 
-Anthropic's October 13 report describes more than 30,000 merges and roughly 25 million CI checkouts per day. Scion combines parent-relative changed-file records, derived indexes, server APIs and tiered immutable-object caches. The authors report roughly 100-fold faster checkouts and a 200-fold smaller CPU/memory footprint than their former mirror infrastructure [1]. These are whole-system, author-reported comparisons. They do not isolate a benefit from patch algebra; Scion's changesets still have parents. Its online-only clients and post-merge/pre-deploy validation are deployment choices, not necessities for ordinary projects.
+[Primary source, October 13, 2026](https://www.anthropic.com/engineering/redesigning-source-control):
 
-### GitHub: a crucial counterexample to the necessity claim
+- Canonical changeset: commit metadata, parents, and list of files changed **relative to the first parent**. File contents are content-addressed.
+- The changeset is a write-ahead-log entry; creating it does not require updating a ref or building Git packfiles. A public ref update is a separate CAS operation.
+- Trees, ancestry acceleration, blame, file history and path/copy indexes are recursively **derived** from changesets. Computation may be eager or lazy.
+- API/server performs commits, merges, rebases, history/diff queries. Thin clients cache selected objects and materialize only requested workspaces.
+- Immutable requests flow through node-local daemons, regional caches and authoritative services, avoiding the full repository/pack negotiation for each job; caches have topology/failure-isolation rules.
+- Scion optimizes an always-online, centralized fleet. Its measured 100× fleet checkout and 200× infrastructure footprint comparisons are not source-format microbenchmarks, and do not establish the best local offline format.
 
-GitHub's October 6 report, updated October 7, attributes pressure to rapid push growth, hot refs, read fanout and maintenance. Its redesign separates durable storage from serving capacity, reduces the coordinated part of writes, and moves maintenance off serving workers. It reports **up to 35-fold write-throughput improvement in internal benchmarks**, while retaining Git [2]. That is not a fully rolled-out universal result. It does show that a storage/service redesign and a new change algebra are independent choices.
+**Design consequences:** use parent-relative changes with a separately cached source view; put query and materialization APIs below the CLI; keep immutable object fetch distinct from mutable target CAS. Do **not** require a service for ordinary work. Do not adopt Scion's post-merge/pre-deploy policy as every project's default.
 
-### GitFarm and Sapling: reuse data rather than repeatedly reconstruct environments
+### Bonsai / Mononoke (Meta)
 
-Uber's April 2026 GitFarm preprint describes production use of repository-scoped RPC and warmed execution environments while retaining Git semantics [3]. Its resource savings are explicitly client-side; count the server fleet when comparing total cost. Sapling's scale documentation separates lazy content/history access, incremental working-copy tracking and optional virtual filesystems [4]. These are strong precedents for making materialization optional, not evidence that one canonical source model is optimal.
+[Mononoke architecture overview](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/1.3-architecture-overview.md), [Bonsai data model](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/2.1-bonsai-data-model.md), [derived data](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/2.3-derived-data.md), consulted 2026-10-14:
 
-**Inference:** AVC can pursue better native APIs and storage without needing to prove a new merge calculus first. Conversely, adding a patch graph alone will not solve repeated clones, server fanout, CI jobs, or hot-target scheduling.
+- Bonsai is VCS-independent canonical history: parent IDs, metadata, and a flat mapping of changed full file paths; content is stored separately. The first-parent notion is central to reconstructing resulting files.
+- It preserves file-kind and copy information, supports snapshot-related changes and **subtree changes** for certain copies/merges. That last detail is consequential: naïve flat file deltas otherwise make a large directory move touch many paths.
+- Manifests, ancestry/path indices, blame, and Git/Hg representations are versioned derived data computed outside the minimal ingest path.
+- Immutable blobstore and mutable bookmark/metadata DB have separate ownership; the server can scale file services, landing and derivation independently.
 
-## 4. Do not conflate independent design axes
+**Design consequences:** account for path/tree-change operations before freezing our changeset format. The initial prototype can enumerate affected paths, but must benchmark large renames and decide whether an exact subtree operation is warranted. Copy metadata is not automatically proof of author intent.
 
-1. **Authoritative history:** source snapshots, parent-relative effects, or a causal edit graph.
-2. **Edit correspondence and merge policy:** line/token matching, structural matching, explicit anchors, move provenance, and conflict rules.
-3. **Physical representation:** complete objects, compressed deltas, chunks, pages, segments, and databases.
-4. **Working environments:** directories, reflinks, overlays, sparse materialization, or virtual filesystems.
-5. **Distribution:** complete offline stores, incomplete clients, remote query execution, object caches and replication.
-6. **Acceptance:** private drafts, review subjects, validated batches, accepted versus verified targets, and deployment policy.
+### The distinguishing unanswered issue
 
-A snapshot repository can support syntax-aware merge, remote APIs and private recovery. A causal graph can maintain fast materialized snapshots and serve opaque files. A parent-relative changeset log can run locally. None of these properties is exclusive merely because one incumbent combines them a particular way.
+Both systems demonstrate **cheap admission of increments plus derived state** at scale. Neither proves that deferring a source-tree root is better when a solo user immediately diffs, builds, tests, and checks out almost every revision. That is the direct test against snapshot-first storage.
 
-## 5. Three concrete competitors
+## 4. Competing complete canonical representations
 
-### A. Persistent source revisions with explicit evolution
-
-A revision records a source-tree root, ordered parents, logical change identity and ordinary authorship metadata. An immutable evolution record relates replacements/splits/folds. Workspace and target pointers carry separate generations. Recovery captures have separate retention roots. A merge creates a revision and explicit recipe/provenance; it does not mutate either input revision.
-
-Source reads traverse the tree, not an edit log. Default merge compares base/left/right entries, recurses through directories and applies an explicitly selected text or structural driver. Incompatible types, opaque concurrent replacements and unresolved content become typed conflicts. Private history can be reorganized; accepted targets advance through explicit new revisions or reverts.
-
-**Strongest fit:** ordinary filesystem edits, arbitrary files, exact builds, historical inspection, understandable imported history. **Weakness:** reconstructing two snapshots' relationship does not recover every causal editing intent. Strong selective undo or context-independent replay needs additional history and defined transformation semantics. Changed ancestry may create new revision IDs; stable logical identity alone does not imply commutation.
-
-### B. Causal change graph with materialized views
-
-A change has a content-derived identity, causal dependencies and typed operations. Text references stable content/edge identities; deletion records whose deletion is being expressed, not just a boolean tombstone. Namespace operations need their own concurrent move/copy/type rules. Opaque replacements can use a multivalue conflict representation. Repository history is a causally closed set/graph; an indexed interpreter yields a source tree or explicit conflicts.
-
-Pijul supplies real prior art for change-labelled edges, deleted/retained relationships and conflict graphs [9]. This is not adequately specified by writing `merge = graph union`: the difficult contract is interpreting the union, maintaining indexes, and retaining enough causality for later changes. Unknown filesystem edits also need a diff-to-operation recording policy; the original editor's exact operations cannot generally be inferred from before/after bytes.
-
-**Strongest fit:** repeated integration of long-divergent changes, causal selective undo and resolution reuse, especially when edits are captured through controlled operations. **Weakness:** more causal state to retain/index and more choices when matching external edits to identities. Unbounded offline compatibility and aggressive tombstone/context pruning conflict unless a resynchronization epoch or equivalent protocol is defined. These are tradeoffs, not proof of poor performance or lack of binary support.
-
-### C. Parent-relative changed-file records with derived trees
-
-A changeset records parents and an explicit list of file-level effects, each carrying old/new identifiers and validation rules. A materializer derives tree states and history indexes, eagerly or lazily; periodic durable derived checkpoints bound cold reconstruction. Merge computes a result and records effects against the designated parent. The authoritative effect and any cached result must agree.
-
-**Strongest fit:** high-rate draft creation and centralized indexed services with many histories rarely materialized. **Weakness:** cold historical reads, repair and disconnected work pay materialization costs unless appropriate state is already cached. This is not necessarily online-only, but its economics depend heavily on index hit rates and bounded reconstruction.
-
-### Conditional comparison, not arbitrary scores
-
-| Criterion | A: source revisions | B: causal graph | C: effect log |
+| Model | Upside | Downside / hidden work | Decision posture |
 | --- | --- | --- | --- |
-| Exact files at an arbitrary retained revision | Direct persistent-tree access | Direct when materialized; otherwise graph/index work | Direct when materialized; otherwise parent/checkpoint work |
-| Stable identity across reordering | Logical IDs; result revisions may differ | A core benefit under its specified change algebra | Not supplied by the log representation alone |
-| Selective undo of independent identical effects | Requires causal provenance and a separate undo contract | Can be native to labelled effect history | Requires extra causal semantics |
-| Generic uninstrumented filesystem editing | Natural state capture | Must infer correspondence and emit graph operations | Natural file-level effect capture |
-| Cheap updates in very wide directories | Depends on tree pages/commitment | Depends on graph indexes/materialization | Can defer tree materialization |
-| Structured/text merge improvements | Independent driver choice | Must compose with graph semantics | Independent driver choice |
-| Efficient thin-client access | API/cache design | API/cache design | API/cache design |
-| Git interchange | Relatively direct history projection | More causal information lacks a Git counterpart | Parent-relative history projection |
-| Retention and compaction | Keep reachable states and required provenance | Also preserve causal references needed by future edits | Keep retained effects and reconstruction checkpoints |
+| **C — Parent-relative changeset truth + derived trees** | Small canonical write, cheap skipped drafts, history/index format independent of changeset identity, incremental remote service | Cold revision reconstruction; derived index lag; directory moves may require many path entries; cache/checkpoint policy is essential | **Selected reference, not frozen** |
+| **A — Canonical tree-root revisions + changed-path index** | Complete source view immediately, Merkle subtree diff, easy opaque files and bulk directory restructuring, predictable offline historical reads | Tree construction in every revision write; changing canonical tree encoding affects object identity | Mandatory challenger |
+| **B — Causal patch graph + materialized working view** | Strong selective undo, dependencies and commuting changes in supported operations | Context/identity semantics for arbitrary filesystem edits, copy/move, binaries, deletion, conflict reuse, GC and arbitrary cold reads | Challenger only if causal semantics earn their additional cost |
 
-**Current judgment:** A is the strongest reference candidate for the declared broad workload, because it gives an explicit ordinary-file contract without first assuming demand for fine-grained causal undo. B is the strongest semantic challenger. C is the strongest alternative when admitting vast amounts of rarely read draft history dominates. This preference is not an empirical performance ranking. Reverse it when representative traces show another design wins the relevant end-to-end outcomes.
+This is not a preference for novelty. Git already provides structural sharing, object hashes and highly optimized pack/index maintenance. Jujutsu already provides stable change identity, operation history, automatic working-copy snapshots and conflict-bearing commits. **AVC does not become differentiated simply by reproducing those features in Rust.**
 
-## 6. Papers that materially change the evaluation
+For model C, a merge with multiple parents stores a **complete first-parent delta for its resulting tree**; other parents express ancestry and provenance, not an instruction to replay all their edits. This yields deterministic reconstruction while allowing independent merge-policy improvement. A stable ChangeId through amendments/rebase is metadata, not evidence of algebraic commutation.
 
-### Eg-walker — EuroSys 2025
+For model A, the reference comparison must use the *same* file/blob objects, status workflow, merger, query API and SQLite durability level. Only the canonical revision record differs. Otherwise the experiment cannot attribute a benefit to the representation.
 
-The peer-reviewed paper and artifact combine an event graph with cached document state and temporary merge machinery. Sequential activity need not keep the full causal machinery resident; concurrent history activates it [10]. This defeats the simplistic assertion that operation history always means replaying everything or retaining per-character working state indefinitely. It remains a text-editing result, not a complete file/namespace VCS or a proof that arbitrary source merges are correct.
+For model B, a true alternative must define anchor/change identity, dependency closure, inversion, concurrency and file/path operations; a generic text diff with IDs is not a patch calculus. [Pijul manual](https://pijul.org/manual/theory), [Darcs theory](https://darcs.net/Theory/MergersDocumentation). Pijul's site states strong commutation/conflict guarantees under its chosen model; these are model-specific, not proof of general software semantics or AVC improvement.
 
-### Fugue / FugueMax — published 2025
+### Cost model and edge cases
 
-Work on non-interleaving sequence CRDTs makes ordering quality an explicit property [11]. Deterministic convergence and user-appropriate grouping are distinct. Even a non-interleaving text result can combine logically incompatible code, so neither property substitutes for integration validation.
+Let k be changed paths, d effective directory depth, and H the unmaterialized sequence of changes between a requested revision and the nearest cached source view.
 
-### Certified Mergeable Replicated Data Types — PLDI 2022
+- C canonical admission writes approximately k changed-path records plus changed file bytes, excluding filesystem change discovery and durability cost. Derived tree construction later touches changed paths and ancestors.
+- A admission writes changed file bytes plus the needed persistent tree updates, roughly proportional to affected nodes, not a full copy of N source files.
+- C cold reconstruction may require work proportional to all relevant changes through H; efficient source checkpoints and incremental derived trees are therefore important. If every revision is immediately queried, C may move rather than remove work.
+- A and C both need real merging; C's merge file delta may be larger than the set of conflicts, since it describes the entire result relative to the chosen first parent.
+- C's naïve directory move is O(number of affected files); A can often reuse a whole subtree reference. Test explicit subtree-change semantics without compromising generic path behavior.
 
-This work provides verification methods for three-way merge of versioned data [12]. Formal merge reasoning is not exclusive to operation-based source control. Its verified data-type laws do not establish correctness of arbitrary programs stored in those data types.
+Neither format inherently solves checkout-frees APIs, history index quality, cache topology, or shared target throughput. Source-state derivation and merge semantics must be deterministic and independently testable.
 
-### MergirafSemi — August 2026 preprint
+## 5. DSA choices: choose per question, not by popularity
 
-The study evaluates 21,615 scenarios across five languages, comparing semistructured and fully structured merge [13]. Its resolution/missed-conflict findings show why fewer conflicts alone is an inadequate metric. The authors' test- and output-based classifications are approximations; filtering and incomplete tests limit ground truth. It is useful current evidence, not a universal winner across languages or repositories.
-
-### Summer — April 2026 preprint; Merge-Bench — May 2026
-
-Summer explores token-level textual merging without a complete language grammar [14]. Merge-Bench supplies real conflict cases and evaluated model-based resolutions [15]. These broaden the merger comparison beyond diff3 versus a full AST. Their datasets and matching criteria differ; developer-merge agreement is not identical to correctness, and historical model results must not be presented as today's best model performance.
-
-### BranchFS — February 2026 preprint / agentic-OS workshop work
-
-The implementation explores cheap filesystem branching; its proposed OS interface is not an established portable syscall [5]. Its first-successful-commit policy invalidates alternatives, fitting competitive exploration rather than arbitrary parallel feature composition. Use it to evaluate workspace economics, not as a replacement for historical source semantics.
-
-### ForkBase / POS-Tree — VLDB 2018; Dolt fast merge — July 2025
-
-Persistent content-addressed ordered maps can share data across versions [16]. Dolt's engineering discussion also explains complications from shifting page boundaries [17]. These motivate a paged-directory experiment. They do not justify claiming every merge is proportional only to the number of edited entries, or freezing a prolly-tree algorithm before testing ordinary and adversarial layouts.
-
-### GitGoodBench and Git Takes Two
-
-These are sources for task and usability evaluation, not storage rankings [6,7]. A native CLI should be evaluated with equal model/tool budgets and task outcomes rather than punished for having a different command trace. Human evaluation needs first-use and experienced workflows, recovery success and state understanding, not just task-time averages.
-
-## 7. Concrete investigations performed here
-
-The probes are deliberately narrow counterexamples. They are not a native engine, a full merge calculus, performance measurements, or power-loss tests. Environment: Linux, Python 3.13.5, Git 2.47.3. That installed Git version is recorded, not described as current upstream.
-
-| Probe | Observed result | Consequence |
+| Problem | Leading structures | Caution |
 | --- | --- | --- |
-| Two branches independently delete the same line; merge; revert one branch's commit | Merge coalesces the identical deletion; inverse content change restores the line | Content revert and causal retraction are different desired contracts, not a Git defect |
-| Two branches edit different files; both pass their tests separately | Git merges cleanly; combined test raises TypeError | Mechanical independence is not program compatibility |
-| Validate current file; external editor writes; atomically replace path | Intervening edit is overwritten | A pre-overwrite content check cannot provide universal no-clobber without writer coordination |
-| Prepare/publish objects versus mark/sweep in a four-event model | Two of six valid schedules leave a dangling root without a staging pin; none do with the model's atomic pin | Pin in-flight objects, not just already published roots; actual persistence still needs testing |
-| Two independent workspace updates | One global expected generation spuriously rejects one; scoped generations accept both | Distinguish short physical serialization from logical shared-state conflicts |
+| Source namespace | Persistent hierarchical Merkle directory tree, small sorted flat nodes | Wide directories and moves need dedicated tests |
+| Huge ordered maps | POS/prolly tree, canonical Merkle B+ tree, compressed radix trie | Boundary shifts, object count, cold locality and history-independent roots |
+| Ancestry | Immutable parent DAG plus generation numbers, skip links, selective reachability bitmap | Index is derived and can be rebuilt; merge bases still need complete correctness |
+| Path history | Exact path postings and changed-path Bloom filters | Bloom is a negative filter, not source truth; renames need provenance |
+| Blame | Derived line-origin ranges with versioned algorithms | Incorrect attribution is possible with moves/copies and differing algorithms |
+| Files | Whole content blobs; selective chunking or physical deltas | Compression/chunking not intrinsically good for tiny or already-compressed files |
+| Object placement | Small transactional store, later immutable segments/append-only journal | Separate CAS from physical durability; GC of staged objects |
+| Synchronization | Batched immutable object/tree requests, resumable bundles and caches | Avoid per-object network RTT and unbounded lazy reads |
+| Concurrency | Per-workspace generations and per-target CAS, immutable operations | Physically serialized SQLite writes differ from logically shared-head contention |
 
-The first result is especially relevant to Pijul's deletion discussion [9] and Jujutsu's documented same-change rule [8]. Equal rendered bytes do not mean the same history. A source-tree design may keep provenance too; the result does not prove only a graph can support the desired behavior.
+[Git commit-graph format](https://git-scm.com/docs/commit-graph-format) describes generations, first-parent changed-path Bloom filters and commit-indexed parent offsets. [Dolt's fast-merge explanation, July 2025](https://www.dolthub.com/blog/2025-07-16-announcing-fast-merge/) shows why prolly page-boundary shifts require key-range-aware merge algorithms; a Merkle root alone does not make all merge costs trivial. [ForkBase/POS-Tree paper, 2018](https://www.vldb.org/pvldb/vol11/p1137-wang.pdf) provides broader versioned-index evidence.
 
-The restore race falsifies an explicit claim in the previous AVC design. A strong guarantee needs exclusive control of the mutable workspace, a suitable platform mechanism with stated assumptions, or non-destructive restoration to a new directory. An API generation token does not stop an editor writing through an already open file descriptor.
+**No hash/tree/physical store algorithm is yet selected as globally optimal.** Choose a simple canonical codec and reference tree for the first correctness slice, then benchmark the small set of plausible alternatives. File-content hashes and changeset identities are distinct from transport and Git SHA-1/SHA-256 identities.
 
-Reproduce with `python docs/experiments/vcs_contract_probes.py --output results.json`. Recorded output is [vcs_contract_results.json](experiments/vcs_contract_results.json). These scripts only use fresh temporary directories and never mutate the user's repository.
+## 6. Correctness, merge and agent-specific boundaries
 
-## 8. Concrete design consequences
+**Three-way merge is the conservative default**, including deterministic tree-level type/delete conflicts and first-class conflict objects. It does not guarantee semantic correctness. Token- and syntax-aware drivers may reduce nuisance conflicts but can create incorrect automatic merges. Evaluate both error classes, not just the no-conflict rate. Research references: [Mergiraf architecture](https://mergiraf.org/architecture.html), [Eg-walker, EuroSys 2025](https://martin.kleppmann.com/2025/03/30/eg-walker-collaborative-text.html), [MergirafSemi 2026](https://arxiv.org/abs/2608.11345). Eg-walker studies collaborative text event-history algorithms; its benefits do not automatically transfer to arbitrary file-level VCS operations.
 
-### Immutable source access, not mandatory cloning
+**Independent workspaces** should share immutable data but not mutable directories. Agent identity is not a workspace/session identity. [Trellis ADR 0038](https://github.com/trentbrew/trellis/blob/main/docs/adr/0038-git-authoritative-file-tier.md) reports a real project failure class from competing filesystem/op-log authority. That is a warning about *any* stale restore path, not proof that Git is always the correct native store.
 
-Use exact revision/tree IDs for `read`, `diff`, `history`, `merge`, `apply` and candidate creation. The same library semantics can execute locally or behind a remote API. Batch object requests and query results; a separate network request per tiny object defeats caching gains. A full or explicitly pinned local working set works offline; an incomplete client reports missing promised data instead of treating it as deletion.
+**Recovery** saves only deliberately admitted files, labels capture completeness, protects against lost responses and bounds retention. A portable check-then-replace is not a no-clobber guarantee under uncontrolled concurrent editors. Restore into a separate directory or require actual exclusion of writers. No format removes this filesystem race.
 
-### Recovery, review and acceptance are different
+**Integration** verifies exact candidate source against current target policy. Two agents can modify disjoint files and break a cross-file API; clean merge is not adequate proof. CI, code search, review, artifact caching and notifications are distinct event/compute budgets. A target update has an irreducible order; most other object creation and query work does not.
 
-Automatic private captures should not create public refs, reviews, notifications or CI runs. A capture is an observation of admitted files, not unwritten editor buffers or a simultaneous multi-file snapshot unless the capture mechanism establishes that. Named pins differ from expiring captures; sensitive material and build outputs need explicit admission/retention policy.
+**Publication authority** is separate from private capture/draft sync. Access to content hashes does not confer read/write authorization; directory- and tenant-scope constraints require server enforcement. Cross-host Git adapters cannot claim one transaction across independent authorities.
 
-Do not require fine-grained event history merely to protect local work. Conversely, do not promise arbitrary causal undo after discarding the very history needed to interpret it. Retention is part of semantics, not only storage cleanup.
+## 7. What has actually been verified in AVC
 
-### Integration capacity and policy
+The current Rust crate is **still a Git command wrapper with a separately appended JSON operation log**. It is not the native system described above. No native throughput, durability, or interoperability benchmark exists.
 
-For a serial validated batch of k changes taking time T, a simple sustained capacity bound is approximately k/T, excluding failed batches and other costs. More concurrent producers do not remove that bottleneck. Keep drafting independent, validate immutable batches, reuse checks only with sound input equivalence, and expose queue/backpressure.
+The maintained [Python contract probes](experiments/vcs_contract_probes.py) and [recorded results](experiments/vcs_contract_results.json) demonstrate five narrow counterexamples: identical deletion/revert semantics, cross-file semantic interference, a filesystem check/replace race, staged-object GC race in a toy model, and unnecessary global-generation conflicts. These are useful test specifications, not source-model performance evidence.
 
-A project may instead maintain separate accepted and verified targets or validate after merge and before deployment. Those are explicit policy profiles with different guarantees, not an automatic consequence of agents. GitHub's merge queue [18] is prior art; Bazel's action cache [19] supplies a useful input-based reuse boundary. A VCS alone cannot infer complete build dependencies from changed paths.
+The paper/engineering posts establish **what others chose and observed**, not an AVC benchmark. Some claims are author-reported fleet measurements, some are formal properties of a restricted model, and some are design inferences. Keep those categories separate.
 
-### Physical store and namespace commitments
+## 8. Decision register and overturn conditions
 
-For an executable reference implementation, a single local transactional database containing small objects, roots and request results avoids an initial cross-store durability protocol. It is a correctness/performance baseline, not a commitment that all large assets belong in it. Compare a single append log or staged external segments on the actual limiting workload before stabilizing storage. WAL durability settings, filesystem sync behavior and consistent backups are explicit requirements [20].
-
-Compression, segment placement and physical deltas can change without changing logical IDs. In contrast, changing a canonical tree's paging algorithm or serializing a file as a different chunk manifest may change its digest. Require equal-content/equal-root **within a specified logical format**, or design a separately proven representation-independent commitment. Do not call all tree/chunk changes purely physical.
-
-### Trust, not merely hashes
-
-Separate content integrity, identity authentication, authorization and validation evidence. A local agent with writable access to the repository files can bypass advisory API rules. Repository hooks, parsers and merge plugins must not execute merely because untrusted objects were fetched. Native permission scope must cover the reachable object closure; signatures are not transport confidentiality. The NDSS 2025 gittuf paper is relevant prior art for verifiable repository policy and ref-state history [21].
-
-## 9. What would justify replacing incumbents?
-
-The product hypothesis is lower end-to-end cost and error rates for frequent experimentation, handoff, recovery and integration, with an ordinary single-developer workflow that remains understandable. None of isolated workspaces, stable change IDs, merge queues, content hashes or remote APIs is novel on its own.
-
-The native case becomes compelling if coordinated changes to representation, materialization, recovery and interfaces produce substantial improvements together. It becomes weak if most measured gains come from a small wrapper over an existing engine. Evaluate that honestly without converting migration difficulty or implementation effort into a veto on a better architecture.
-
-Measure workload distributions, not just averages: p50/p95/p99, cold reads, failed attempts, bytes retained after GC, cache-miss traffic, validation compute, review events, offline recovery, bridge cost and operator recovery effort. Preserve each system's semantics in tests; do not count a deterministic but wrong merge as a performance win.
-
-## 10. Decision register
-
-| Concern | Position | Basis / limitation |
+| Decision | Status | What would overturn it |
 | --- | --- | --- |
-| Git dependency | Not required; native core remains in scope | Product freedom, not proof of a speed advantage |
-| Independent workspaces and scoped writes | Adopt as a contract | Direct isolation and concurrency reasoning; probe |
-| No-checkout source API | Adopt as a contract | Scion, GitFarm, Sapling; beneficial across models |
-| Separate capture/review/acceptance | Adopt as a contract | Different retention and event needs |
-| Snapshot-oriented candidate A | Reference candidate, not stable canonical decision | Strong fit to generic filesystem and exact-source workflows |
-| Causal graph B | Serious challenger, not presumed best | Potentially stronger selective-undo/reapplication semantics |
-| Changeset-log C | Strong high-rate draft/service challenger | Must measure cold materialization and retained storage |
-| State/WorkVersion/Application as a novel core | Withdraw as mandatory | Provenance organization did not prove better transformations |
-| Text/structural/LLM merge | Independent evaluated components | Minimize wrong merges, not conflict count alone |
-| SQLite/segments/log | Reference backend plus focused measured challengers | No comparative native durability or speed result yet |
-| Tree pages / chunks / hashing | Format choices need explicit vectors and tests | Equal-content identity must be qualified by format |
-| Universal no-clobber inplace restore | Reject under uncoordinated writers | Reproduced race; explicit ownership/recovery mode required |
-| Universal optimality / native performance claims | Not established | Requires implemented competitors and workload evidence |
+| Native VCS rather than Git/JJ wrapper | Product direction | User tasks prove insufficient differentiation or impossibly poor interop |
+| Canonical parent-relative changesets + derived trees | **Leading reference** | A beats it on representative full lifecycle or B delivers decisive causal workflow benefits |
+| Offline local operation, online thin-client option | Required | Product scope fundamentally changes |
+| No checkout required for queries/writes | Required API capability | A specific operation needs a filesystem, documented explicitly |
+| Resource-scoped roots/target CAS | Required concurrency behavior | Correctness counterexample exposes insufficient scope |
+| Private bounded recovery | Required UX, retention and privacy | User evidence changes admission/retention policy |
+| Conservative typed conflicts | Required safety | A formally justified and empirically safer merge alternative |
+| SQLite local small-object reference | Implementation starting point | Fault/throughput tests favor journal/segments |
+| Deterministic derived tree encoding | Open format | Benchmarks favor another structure; derive version changes safely |
+| Subtree moves/large binaries | Open canonical semantics | Large-directory/multi-language project fixtures reveal requirements |
+| Native synchronization and Git bridge | Planned capabilities | Adoption/ops research calls for changed priority |
+| Project name | Unresolved | User selection after name collision review |
 
-## Primary sources
+**Next engineering question:** build the smallest credible C-versus-A reference with identical source semantics and durable operation outcomes. Verify cold historical reads, first materialization, repeated tiny edits, GC and bulk directory changes. Only then should AVC stabilize a changeset format.
 
-Dates refer to the specific publication/version reviewed, not an assertion that every component is the newest release. Living documentation was consulted on 2026-10-14. Production results are author-reported; preprints are distinguished from peer-reviewed papers. No new user interviews or representative population survey were performed.
-
-1. Anthropic, **Redesigning source control at Anthropic**, 2026-10-13: https://www.anthropic.com/engineering/redesigning-source-control
-2. GitHub, **Building Git infrastructure for agent-scale development**, 2026-10-06, updated 10-07: https://github.blog/engineering/architecture-optimization/building-git-infrastructure-for-agent-scale-development/
-3. Dwivedi et al., **GitFarm**, preprint v1, 2026-04-13: https://arxiv.org/html/2604.11977v1
-4. Sapling, **Scaling source control**, living architecture: https://sapling-scm.com/docs/scale/overview/
-5. **Fork, Explore, Commit: OS Primitives for Agentic Exploration**, BranchFS, preprint v1, 2026-02: https://arxiv.org/html/2602.08199v1
-6. **Git Takes Two**, preprint v1, 2026-02: https://arxiv.org/html/2602.19714v1
-7. **GitGoodBench**, 2025 paper: https://arxiv.org/html/2505.22583v1
-8. Jujutsu, **Technical conflict model**, including same-change rule: https://docs.jj-vcs.dev/latest/technical/conflicts/ ; architecture: https://docs.jj-vcs.dev/latest/technical/architecture/
-9. Pijul, **Theory**, living manual: https://pijul.org/manual/theory.html ; Darcs conflict representation: https://darcs.net/Theory/Conflictors
-10. Gentle and Kleppmann, **Collaborative Text Editing with Eg-walker**, EuroSys 2025; paper/artifact index: https://martin.kleppmann.com/2025/03/30/eg-walker-collaborative-text.html ; examined manuscript: https://arxiv.org/html/2409.14252v1
-11. **The Art of the Fugue: Minimizing Interleaving in Collaborative Text Editing**, manuscript: https://arxiv.org/abs/2305.00583
-12. **Certified Mergeable Replicated Data Types**, PLDI 2022 extended version: https://arxiv.org/html/2203.14518v1
-13. **MergirafSemi: A Language-Agnostic Semistructured Merge Tool**, preprint, 2026-08: https://arxiv.org/abs/2608.11345 ; Mergiraf implementation architecture: https://mergiraf.org/architecture.html
-14. **Summer: A Universal Textual Merge Strategy Based on Tokens**, preprint v1, 2026-04: https://arxiv.org/html/2604.13813v1
-15. **Merge-Bench**, 2026-05 manuscript: https://arxiv.org/html/2605.25890v1
-16. Wang et al., **ForkBase**, PVLDB 2018: https://www.vldb.org/pvldb/vol11/p1137-wang.pdf
-17. Dolt, **Announcing Fast Merge**, 2025-07-16: https://www.dolthub.com/blog/2025-07-16-announcing-fast-merge/
-18. GitHub, **Managing a merge queue**: https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue
-19. Bazel, **Remote caching**: https://bazel.build/remote/caching
-20. SQLite, **WAL**: https://www.sqlite.org/wal.html ; **Atomic commit**: https://www.sqlite.org/atomiccommit.html ; **synchronous**: https://www.sqlite.org/pragma.html#pragma_synchronous
-21. **Rethinking Trust in Forge-Based Git Security**, NDSS 2025: https://www.ndss-symposium.org/wp-content/uploads/2025-1008-paper.pdf
-22. Mohan et al., **Finding and Understanding Bugs in File Systems**, CrashMonkey/ACE, OSDI 2018: https://www.usenix.org/conference/osdi18/presentation/mohan
-23. Git, **Pack format**: https://git-scm.com/docs/gitformat-pack ; **Conditional ref updates**: https://git-scm.com/docs/git-update-ref
-
-## Scope of the completed work
-
-Completed: primary-source comparison, inspection of the current repository design, three concrete architecture candidates, a scoped reference design, and five reproducible contract probes. Not completed: implementation or benchmark of a full native engine, Pijul/Jujutsu runtime comparison, power-loss verification, or a representative user trial. The contract probes eliminate several unsound assumptions but cannot rank complete VCS implementations.
+No additional accumulating decision documents are needed; the maintained design, this research, roadmap and narrowly scoped executable probes are the owners of their respective concerns.

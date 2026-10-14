@@ -43,19 +43,27 @@ Identity-bearing objects use versioned, domain-separated deterministic encoding 
 
 ## 4. Native objects and transaction authority
 
-Use an **immutable object store with append-only segments**, sealed immutable indexes and compaction, plus one **authoritative local metadata transaction store**. The metadata authority owns current repository/view roots, workspace generations, retention pins, idempotency results and event intents. Derived object-location, graph and path indexes can be dropped and rebuilt. The metadata authority itself is not a disposable cache.
+Separate **one authoritative logical transaction mechanism** from immutable source objects and disposable indexes. Current root selection, workspace generations, retention pins, accepted request outcomes and publication intents must have one durability/visibility authority. Object-location, graph and path indexes may be rebuilt; root/operation authority may not silently disappear with a cache.
 
-Use SQLite initially for short metadata root transactions rather than inventing a WAL. Source payloads do not need to be written again inside the database. This is selective reuse of a proven transaction component, not adopting another VCS's source model. Respect SQLite's actual filesystem/durability assumptions; network filesystem support is not implicit.
+**The previous append-only segments plus SQLite combination is a candidate, not a finalized physical design.** Compare three real implementations before freezing it:
+
+1. A native append-only transaction journal with immutable object records and durable root-selection records; SQLite, if present, holds only rebuildable indexes. One durable append boundary, but greater responsibility for log recovery, compaction and concurrent transactions.
+2. Immutable object segments plus an authoritative SQLite WAL database for root and coordination transactions. Supports expressive CAS/metadata queries and avoids copying every blob into the WAL, but requires correct object-sync-before-root-commit ordering and protects objects prepared during concurrent GC.
+3. SQLite-backed small objects and root metadata committed together, with separately durable large-object storage. Strongest simple atomicity for common small updates, but evaluate WAL write amplification, large repositories and backup/checkpoint cost.
+
+Prefer the simplest design that meets durability and full-workload performance gates, not the least number of named components. SQLite's FULL synchronous mode in WAL is materially different from NORMAL for power-loss durability; also respect filesystem and network-share constraints. The original native single-append-journal idea deserves direct evaluation rather than being discarded merely because SQLite exists.
+
+**Avoid a single logically mutable repository-wide head for all workers.** The authoritative state contains independently versioned workspace roots and public targets. Workspace A advancing does not invalidate B's unrelated write. A shared change, named target, or multi-workspace transition still requires the appropriate exact preconditions and one atomic coordination transaction. One local database writer or append-log sequencer may serialize short physical commits; that is separate from *logical* conflicts between independent workers. A repository-wide view can be computed for queries or exported as a snapshot, not imposed as the one head each local edit must move.
 
 Native source operation protocol:
 
-1. Read immutable expected view and workspace generation.
-2. Construct new immutable source objects and operation/view, allowing independent workers to prepare concurrently.
-3. Make the complete referenced closure durable and GC-protected.
-4. In **one short authoritative metadata transaction**, verify expected state and idempotency identity, select the new root, update relevant pins/outcomes and record event intents.
-5. Commit durably and acknowledge only after that commit.
+1. Read the immutable input revision and the **affected** workspace/target generations.
+2. Construct new immutable source objects and operation records concurrently with unrelated workers.
+3. Protect prepared objects from GC (for example with registered staging segments/leases); durably write the referenced object closure and any required segment/manifests.
+4. Commit one authoritative root transition: check only the affected expected generations, select new workspace/target roots, and record pin transitions, idempotency outcome, and required events.
+5. Acknowledge only after that transition is durable. A lost reply must resolve to the original accepted outcome on retry.
 
-Before step 4 commits, prepared objects may be orphaned and reclaimed later. After it, the committed root must never reference missing objects. There are no independently authoritative Git refs or Jujutsu operation heads in native mode. Compaction swaps durable manifests atomically; live readers and in-flight operations protect referenced objects. All state transitions and crash points require model and fault-injection tests.
+Before step 4 commits, prepared objects may be orphaned and reclaimed later **only after in-flight transactions and references are reconciled**. After it, the committed root must never reference missing objects. A GC snapshot must not race a newly prepared and committed object into deletion. There are no independently authoritative Git refs or Jujutsu operation heads in native mode. Compaction publishes fully durable new segments and manifests before retiring old ones after reader/in-flight protection; it must preserve old or new valid state on interruption. The root authority and immutable closure must be included together in backup/restore; losing an authoritative database is not equivalent to dropping an index. Test every transition and failure point.
 
 Do not hold a global transaction lock while agents run tests, editor processes edit, merges compute, or files are hashed. Initially serialize the short current-root CAS; scale with real contention measurements.
 
@@ -75,7 +83,7 @@ Object integrity does not mean object confidentiality. Native remotes must autho
 
 Independent workers receive **independent writable directories/workspaces sharing immutable objects**. This is source-file isolation, not a sandbox for processes, credentials, network access or external services. A stale process can keep writing a directory even if its API lease expires; never reuse that directory without separating or revoking physical access.
 
-Workspace generations and owner/fencing tokens protect managed writes. Every mutation specifies expected revision/view ID and workspace generation when relevant. Concurrent modifications explicitly diverge or return a stale-precondition error; no last-timestamp-wins rule.
+Workspace generations and owner/fencing tokens protect managed writes. Every mutation specifies an expected immutable revision plus the **specific resource** and expected generation. Different workspaces can advance independently; two updates to the same change/revision or target explicitly diverge or return a stale-precondition error. No last-timestamp-wins rule. A logically shared operation that intentionally updates multiple resources validates and commits them together. Metadata locks must not be held while running agents, merges, or CI.
 
 The canonical library API works **without a checkout**: read tree/file/range, diff and history; create/edit revisions with exact expected blob IDs; inspect/resolve conflicts; compose changes; create candidate/proposal; inspect validation; request integration. CLI, local structured requests and optional remote RPC use one semantic implementation. Queries are bounded and paginate over an immutable specified view.
 
@@ -135,7 +143,13 @@ Compare tuned Git and current Jujutsu against the native system on ordinary soft
 
 The aim is a general-purpose improvement; don't sacrifice ordinary small-repository behavior to win an exotic fleet workload. Design freedom is an opportunity, **not evidence of an achieved speedup**.
 
-## 11. Effect on previous design
+## 11. Source identity, renames, and portability
+
+Paths are logical names, not reliable permanent file identities. Stable file IDs could improve move/rename handling and help independently edited files retain provenance, but filesystem editors can rename or copy files without notifying AVC of intent. An inode or file-content hash alone cannot distinguish rename from copy. First implement deterministic rename/copy inference as **provenance metadata**, not an unconditionally correct canonical file identity. Evaluate explicit native move operations with stable optional identities against ambiguous external filesystem changes before fixing the format.
+
+Store canonical path components without silently normalizing away distinct bytes. Define an explicitly portable naming profile and report unsupported names, symlinks, casefold collisions, reserved paths, and Windows/macOS/Linux differences. Hash algorithm choice (BLAKE3-256 versus SHA-256), domain separation, complete serialization and migration paths require byte-level vectors and threat review; the selected digest is part of the immutable object ID, while Git object IDs remain a distinct namespace.
+
+## 12. Effect on previous design
 
 **Retain:** local-first, immutable snapshots, stable changes, operation-history undo, structured conflicts, bounded private recovery, isolated workspaces, quiet draft synchronization, deliberate validation and publication.
 

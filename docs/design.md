@@ -1,243 +1,205 @@
-# AVC architecture: independent work, composable source states
+# AVC: concrete reference design and decision boundaries
 
-**Design iteration:** 2026-10-14  
-**Status:** Proposed native architecture; not an implemented or benchmarked system  
-**Scope:** A general-purpose, local-first VCS suitable for solo development, collaborative teams, and concurrent agents
+**Reviewed:** 2026-10-14.  
+**Status:** Candidate A for implementation and comparison; not a frozen source format or a validated production system.  
+**Evidence:** [research.md](research.md). **Qualification:** [roadmap.md](roadmap.md).
 
-This is a clean-sheet model, not an attempt to combine Git, Jujutsu, Scion, Pijul, and others feature-by-feature. [Research](research.md) evaluates alternatives and primary sources; [roadmap](roadmap.md) defines experiments and release gates. The old Git-backed Rust prototype has none of the safety properties claimed here.
+The product is free to be native. Git and Jujutsu are not required as its storage or history engine. The previous selection of State/WorkVersion/Application as a novel fundamental model is superseded: it described provenance but did not demonstrate a better merge algorithm. A causal change graph and a delta-first changeset store remain complete competing candidates described in the research record.
 
-## 1. Design goal and irreducible requirements
+## 1. Objective and why this candidate leads
 
-Optimize **develop → preserve → compose → verify → share**, including abandoned and speculative attempts. A user should be able to work safely and offline in an ordinary directory. More workers should make independent progress without unnecessary mutual coordination or repeated full clones. A small project must not pay for an enterprise-scale service.
+The target is ordinary software projects, from a solo developer to teams running many agents, with an optional path to large hosted repositories. Optimize inspect/edit/recover/compare/integrate tasks, including failed attempts. Require exact bytes, understandable history, offline work on retained data, clear conflicts, safe publication and explicit interoperability.
 
-A useful VCS must answer distinct questions:
+Candidate A uses immutable source-tree revisions, explicit change evolution, isolated workspaces, transactional resource updates and checkout-free APIs. This is selected as the **reference design** because it handles arbitrary filesystem-produced source without requiring a parser or an exact event stream from every editor. It exposes the source tested by CI directly and provides a clear Git-history projection.
 
-1. **What are the exact bytes?** Any named source state must reconstruct unambiguously, including opaque files and invalid or incomplete programs.
-2. **What work was authored?** Authored intent and its evolving versions should retain identities independent of where they are eventually applied.
-3. **What depends on what?** Causal dependencies, observed inputs, ancestry, and replacement history are different relations.
-4. **What was combined?** A result must identify its inputs, transformations, conflict decisions, and exact resulting source state.
-5. **What is accepted?** Shared targets have explicit conditional transitions and applicable validation/authority.
-6. **What can be recovered?** Local intermediate work is protected without turning every editor save into a permanent semantic change or remote event.
-7. **What is actually known?** A textual merge, successful file-level CAS, and a passing test attest to different properties. None establishes arbitrary program correctness.
+Those reasons do not prove that snapshots are inherently faster or safer than a well-indexed change graph. Candidate B may win where causal selective undo and repeated reapplication dominate. Candidate C may win where admitting many rarely read draft versions dominates. Do not silently promote this reference choice to a stability commitment before the comparisons in the roadmap.
 
-Safety and comprehensibility are constraints, not negotiable performance dimensions. Optimize latency, storage, bandwidth, and coordination only within the correct semantics.
+## 2. User model
 
-**Core decision:** build a native system with source-state identity, immutable authored work, context-specific applications, independent workspace roots, and accepted target transitions. Git is an interchange format, not the canonical store. Existing algorithms and libraries are eligible for reuse, not mandatory architectural ancestors.
+A person works in a **workspace**, groups work into **changes**, and deliberately updates a **shared target**. Internal revisions and recovery records are inspectable without requiring a user to manage all of them.
 
-## 2. The minimal conceptual model
+Proposed operations, not commands supported by today's prototype:
 
-The ordinary user works with **a workspace**, **a change**, and optionally **a target**. Internally, these map to six different concepts:
+```text
+new "Add parser"          begin a logical change
+capture                   preserve admitted filesystem bytes privately
+finish                    create a described source revision; no publication
+workspace create <base>   give another worker an independent directory
+merge <revision>          create an integration result or typed conflicts
+restore <revision> --to <new-directory>
+propose <revisions>       create/update an exact review subject
+land <candidate>          request policy-controlled target advancement
+```
 
-| Entity | Identity | Meaning |
-| --- | --- | --- |
-| **State** | Content-addressed StateId | Exact source tree, including typed unresolved conflicts where necessary; no history or author implied |
-| **Work** | Random, stable WorkId | Logical unit of intent; a named task/change, not a branch or a filesystem checkout |
-| **WorkVersion** | Immutable content-addressed VersionId | One authored version of a work unit, with authored base state, resulting state, predecessors and explicit dependencies |
-| **Application** | Immutable content-addressed ApplicationId | Applying selected WorkVersions against a specified state, including transformation choices, conflicts, and resulting state |
-| **Workspace** | Stable WorkspaceId plus generation | One mutable working environment, active work identity, protected recovery, and independent current source root |
-| **Target** | Named target plus generation | One accepted shared state with publication history and policy; moving it is an explicit conditional transaction |
+Automated capture is opt-in per workspace or established repository policy, visible, bounded and independent of review. New files are discovered but not all silently retained. Alternative experiments and compositional tasks both use workspaces; deleting other workers after one succeeds is not an implicit VCS policy.
 
-Other records: a **recovery capture** is a private, retention-bounded observation; an **operation** is a durable state transition used for undo and audit; a **proposal** asks to review an exact application; **validation evidence** and **acceptance** refer to that immutable candidate; a **publication receipt** records a completed target transition.
+The VCS does not orchestrate agents, run an unrequested build, create a sandbox, deploy software, or infer that every tool call deserves a commit. A server is unnecessary for local operations.
 
-### 2.1 State is not a commit
+## 3. Authoritative records
 
-State is a hierarchical map of canonical path components to source entries. Entries can denote regular file content plus executable bit, symlink target bytes, directories, or typed unresolved conflicts. The root is a content-addressed commitment to the exact logical tree. It contains **no author, timestamp, branch, ancestor, or agent transcript**. Equal source trees have equal StateIds regardless of the path taken to create them.
+These are logical schemas. They define interpretation, not a stable binary layout:
 
-The State graph is a persistent Merkle directory map: immutable content and equal subtrees are shared. Do not confuse a snapshot with a physical copy of the entire repository. A State object may be stored in segments, as a database value, or retrieved remotely; its identity must not depend on physical placement.
+```text
+Tree = ordered map<PathComponent, Entry>
+Entry = File(content_id, executable) | Symlink(target_bytes)
+      | Directory(tree_id) | Conflict(conflict_id)
 
-### 2.2 Work is not its application
+Revision = {
+  format, tree_id, ordered_parent_ids,
+  change_id, author, description, authored_metadata
+}
+Evolution = {kind, predecessor_revision_ids, successor_revision_ids}
+Conflict = {kind, base_terms, ordered_side_terms, source_revision_ids, driver_id}
 
-WorkVersion records an authored **base State**, **result State**, predecessor WorkVersions of the same WorkId, and explicit dependency WorkVersions. The transformation from base to result is derivable exactly from those states; optional changed-path manifests, explicit move/hunk intent and observed inputs accelerate safe application but cannot contradict the committed result.
+Resource = {kind, resource_id, generation, value}
+WorkspaceValue = {revision_id, materialization_state, ownership_generation}
+TargetValue = {revision_id, policy_version}
+Capture = {workspace_id, tree_id, observed_generation, coverage, expiry}
+Operation = {request_identity, affected_resources, before_values, after_values}
+Candidate = {base_revision, expected_target_generation, selected_revisions,
+             result_revision, recipe_id, validation_policy_version}
+Evidence = {candidate_id, validation_inputs, runner_identity, result}
+```
 
-There can be concurrent divergent WorkVersions under one WorkId. A newer timestamp doesn't choose the winner. Split/fold create explicit many-to-many lineage; they are not silently the same identity as their components. Revisions of authored work are immutable even after integration.
+A full schema must distinguish source author time from capture/receipt time; neither is a concurrency ordering mechanism. Change IDs are stable labels for intent, not a magical transformation law. Revision IDs identify immutable bytes and metadata. Amend/rebase may create new revisions with the same change ID; concurrent successors remain distinct. Splits and folds use explicit many-to-many evolution records. No timestamp chooses a globally latest variant.
 
-**Applying work to a different base does not rewrite the authored WorkVersion.** Instead an Application records the target base, selected exact WorkVersions, ordering/dependency choices, merge algorithm and version, any conflict resolution, and the resulting State. Different applications can reuse the same authored work against different contexts. An actual intentional edit to a work unit produces a new WorkVersion.
+The source tree identifies source bytes and relevant file kinds/modes; it does not by itself identify causal history or which independent edits contributed identical text. Parents, evolution and merge provenance preserve history separately. Do not promise causal selective undo solely because that metadata exists: the transformation law still has to be specified.
 
-This distinction prevents an advancing shared target from forcing a cascade of rewritten authored versions merely to describe where work was integrated. It also gives review and provenance an immutable authored subject. It does *not* eliminate the cost of computing composition or validation on a changed base.
+### Object identity
 
-### 2.3 Example
+Use a domain-separated hash of object kind, logical format version and canonical payload. A reference implementation may use SHA-256 and publish byte-level vectors; this does not decide a final hash/performance policy. Short hashes are display-only. Maps, parent ordering, lengths and metadata bounds need canonical rules.
 
-~~~text
-S0: shared source state
+Changing compression, segment location or physical delta packing must not change IDs. Changing a canonical directory's paging layout or chunk-manifest encoding **can** change its ID. Equal logical content yields equal IDs within the specified format; do not assert representation-independent roots without a matching commitment scheme. Keep native IDs and imported Git object IDs in distinct namespaces.
 
-agent A authors work WA-v1: S0 -> SA
-agent B authors work WB-v1: S0 -> SB
+The first tree representation is hierarchical sorted entries, with whole-file blobs. Empty directories, executable bits and symlinks have explicit semantics. Devices/sockets and unsupported metadata are rejected. Canonical filename bytes and each platform's materializable subset are different; refuse case/normalization/reserved-name collisions rather than silently alter spelling.
 
-compose(base=S0, work=[WA-v1, WB-v1]) -> application C1, state SAB
-publish(target=main, expected=S0, candidate=C1) -> main=SAB
+## 4. Source operations and merge algorithm
 
-later base S1:
-compose(base=S1, work=[WB-v1]) -> application C2, state SB-on-S1
+### Direct edits
 
-WB-v1 remains the same authored work in both C1 and C2.
-C1 and C2 record different context-specific applications.
-~~~
+`apply_edits(base_revision, edits, expected_resource_generation)` creates a new source tree from immutable inputs. Each edit identifies its path and expected previous entry/content ID, including absence. Validate the entire edit set against the base before publishing any result. A stale generation or entry returns a typed conflict, not partial success or implicit fuzzy patching.
 
-A user can still have a familiar linear display of accepted changes. Internally, accepted target ancestry and authored-work dependency are distinct relationships. A deterministic Git export may synthesize linear or merge commits representing a selected target history, but cannot always preserve native IDs or all provenance.
+Source updates through this API are atomic at the repository level. Updating ordinary filesystem files is a separate operation described below.
 
-## 3. Composition and causality
+### Integration
 
-Composition is the architectural center, not branch rebasing. Its inputs are immutable: an exact base State, exact WorkVersion IDs, an explicit dependency closure, the selected merge policy and any resolutions. Its output is one immutable Application and State (possibly conflict-bearing).
+`merge(base, left, right, driver_policy)` begins with a deterministic tree comparison. For each entry, the reference rule is:
 
-Algorithmic contract:
+```text
+left == right : select those bytes, retain both source identities in provenance
+left == base  : select right
+right == base : select left
+both directories : recurse
+supported text : run the explicitly selected, versioned merge driver
+otherwise : retain a typed conflict with base and alternatives
+```
 
-1. Verify each WorkVersion's stored base/result relationship and dependency closure; reject missing or inconsistent objects.
-2. Check application provenance before altering source. The same exact WorkVersion must not be inadvertently applied twice to one candidate/target; content equality alone cannot prove prior application. For one WorkId, selecting incompatible divergent WorkVersions requires an explicit selection or a separately authored resolution, not timestamp precedence. Dependencies on exact predecessor versions must be satisfied or **explicitly substituted/reconciled**; a clean textual merge cannot silently satisfy a stale declared dependency.
-3. Choose a deterministic dependency-respecting plan. If two changes are incomparable but order affects outcome, report that ambiguity or require an explicit plan; do not invent an author-intent ordering from timestamps.
-4. Prefer exact object/path preconditions for cheap application. A disjoint, type-safe path update is mechanically composable, including deletion and modes under clearly specified rules.
-5. For changes that overlap or whose context is stale, compute a deterministic three-way/multiway merge (base, authored result, current candidate); preserve all alternatives as typed conflicts if unresolved.
-6. Produce the exact resulting State and an Application record. Any changed-path hint or cached resolution must be verified against the final State.
-7. Independently validate the composed candidate for integration under the applicable policy. Clean textual composition is **not** semantic independence.
+Directory/file collisions, delete/modify, modes, symlinks and binary replacements are entry-level conflicts unless a specific safe rule applies. Renames are explicit hints or deterministic inference, never unquestionable identities extracted from an inode or matching content. Copy and move are different relations. Unknown or malformed syntax remains valid source data; a parser may decline and leave a conservative conflict.
 
-A completed Application must be reproducible from immutable inputs plus pinned deterministic algorithm/driver identities and resolution data. It records the exact applied-work provenance needed to avoid accidental duplicate integration, and a target's accepted lineage is queryable independently of coincidentally equal source bytes. External LLM calls or mutable services can *propose* a resolution but are never implicit inputs to canonical object decoding or replay.
+For multiple merge bases, calculate an explicit virtual base using the same conflict-preserving rules and record it. Do not quietly choose an arbitrary ancestor. For more than two selected revisions, use an explicit integration order/plan; there is no claim that arbitrary merges are associative or that checking all possible orders is cheap. Text, token and structural drivers are replaceable components with separately measured correctness.
 
-### 3.1 What commutes?
+The result is a new revision with parent/provenance references to its inputs. Existing authored revisions remain immutable, as they can in existing VCSs. A separate Application object is not necessary merely to restate that fact. An operation or candidate records an exact merge recipe where useful.
 
-For two effects A and B, true context-independent commutation means there are valid transformed forms A' and B' preserving work identity such that:
+Conflicts are records, not only marker text. Preserve original alternatives and any remaining merge terms. A resolution is a new source revision tied to its actual conflict inputs. Reuse a previous resolution only under a declared matching context; otherwise propose it for inspection or keep the conflict. A clean result is not proof of program compatibility.
 
-~~~text
-apply(apply(S, A), B') = apply(apply(S, B), A')
-~~~
+### Same-change policy and undo
 
-Identical end bytes alone do not establish that the *intended* changes were preserved. This relation is not automatically satisfied by ordinary file diffs. A disjoint path CAS can commute mechanically if directory names, types and exact read/write preconditions do not interfere. Nearby text edits, renames, delete/recreate, copies, binary replacements, and structural edits can be ambiguous.
+The reference user policy coalesces independently identical changes in the rendered file while retaining source provenance. Jujutsu documents a similar usability-versus-algebra tradeoff; see the research record. We do not promise that reverting A retracts only A's causal effect while preserving an independently identical effect B.
 
-**Decision:** use a state-anchored transformation/composition model with explicit Work identity. Investigate a genuine patch algebra as a competing **canonical** source model during Phase 0, not merely as an optional speed trick. If patch algebra can preserve identity/conflicts, work on opaque data, and reconstruct arbitrary historical states better, revise the core before format stabilization. Do not claim Pijul's commutation guarantees while actually implementing Git-style three-way merges.
+`undo` restores prior local resource values under current preconditions and retention limits. `revert` creates an inverse-content change on current source, possibly conflicting. **Causal selective undo** is a distinct challenger requirement. It must name the intended behavior for repeated identical deletes, later edits, dependencies and delete/recreate before being implemented or advertised.
 
-### 3.2 Conflict states and resolution reuse
+A target that integrated a change, reverted it, and later intentionally reapplies it must remain supported. An eternal set of ever-seen ChangeIds is not a valid duplicate filter. Deduplicate retries by request identity; distinguish ancestry merge, explicit cherry-pick/reapply and change evolution.
 
-A conflict object retains source base, alternative terms, file/path/type changes and provenance; it is not just marker text in a working directory. Conflicting State roots remain valid for private work, inspection and further composition; unresolved source cannot be silently declared buildable or exported as ordinary Git content.
+## 5. Independent roots and one transaction boundary
 
-A resolution is an authored transformation against an **exact conflict identity** and explicit surrounding context. Reuse it only when the new conflict matches the conditions it declares. A “resolved once” rule is not automatic when a base or input version changes. Preserve prior alternatives and make losses of intent visible.
+Mutable resource keys include workspaces, local names, proposals, retention pins and shared targets. Each has a generation. A source mutation checks only the resources it actually changes; a multi-resource operation checks them together. A single local writer may serialize short physical transactions without causing false logical conflicts between unrelated workspaces.
 
-### 3.3 Different relations must remain different
+Prepare hashing, diff, merge and candidate computation outside the write transaction. Do not hold it while a model, editor, build or remote service runs. The source operation publishes its objects and resource transition together, then returns an immutable result ID.
 
-- **Source equality:** same StateId, regardless of how reached.
-- **Authored evolution:** WorkVersion predecessor/successor/divergence.
-- **Dependencies:** one WorkVersion declares prerequisite versions or constraints.
-- **Observed inputs:** optional file/object/directory reads, including negative lookups; may be incomplete and cannot certify semantic independence.
-- **Application provenance:** exact selected WorkVersions plus context-specific resolution/result.
-- **Accepted history:** target state transitions, with receipts and policy.
+For the reference implementation, use **one local SQLite database for small immutable objects, resource roots, operation records, request outcomes and event intents**, with explicit durable configuration and size/resource bounds. This minimizes cross-file authority during correctness work. It is not a measured storage winner or a mandate to put large assets in SQLite indefinitely. Keep the repository logic separate from physical storage without inventing a broad plugin framework.
 
-A single parent-commit graph cannot faithfully replace all these relations. Do not create another globally mutable “latest revision” to hold them together.
+Conceptual transaction:
 
-## 4. Workspace and operation semantics
+```text
+prepare canonical objects and requested result
+BEGIN IMMEDIATE
+  verify actor/request epoch and canonical request digest
+  return a recorded duplicate outcome, or reject conflicting identity reuse
+  check all affected resource generations and current policy when applicable
+  insert missing immutable objects; verify complete required closure
+  update affected roots and their generations
+  record before/after operation, retention pins, result and needed outbox events
+COMMIT with the selected durable guarantees
+acknowledge result
+```
 
-Every independent worker edits its **own mutable directory or virtual workspace**, sharing immutable content and caches, not dirty filesystem state. One authenticated actor may have many sessions and Workspaces. File ownership and session IDs are not the same as actor identity. Do not turn a VCS workspace into an assumed process, credential, service, or network sandbox.
+WAL mode with synchronous=FULL is a reference configuration, subject to the actual SQLite build/filesystem assumptions. Normal process termination tests do not establish power-loss safety. Long-running readers/checkpoints, transaction size and single-writer contention require measurement. A database is authoritative here, not a cache that may simply be deleted.
 
-Each WorkspaceRoot is versioned independently: workspace ID, generation, current State, active WorkId, latest accepted WorkVersion (if any), and protection/materialization state. A mutation checks that workspace's expected generation and exact source inputs. Unrelated workspaces can advance without logical CAS conflicts. Short physical commits may still be serialized within one local storage engine.
+A larger-store design can put source payloads in immutable segments. Then the protocol must durably register/protect staging data, flush objects and required directory/manifests, and only afterward publish roots. GC must observe staging references or equivalent generation barriers. The toy probe reproduces how root CAS alone fails. A single append-only object/root journal is another challenger; its recovery and compaction need the same observable contracts.
 
-No **one global operation head** should be moved by each background save or independent worker. Instead, durable operation transitions identify the resources/generations they affect, link to earlier transitions on those resources for undo, and contain inverse or previous-root information. A multi-resource operation checks/updates all affected roots atomically. A repository-wide coherent view can be *queried* at a transaction sequence/generation; it need not be one mutable object rewritten on every edit.
+Backups include a consistent authority snapshot and required object closure. Physical compaction must wait for reader/in-flight protection before retiring old data. Root logs and operation records require actual pruning rules; calling something append-only does not solve retention.
 
-Undo appends a new authorized transition restoring prior logical roots if current preconditions permit. Published targets require new publications/reverts, not private undo. Restoring logical source state is separate from materializing a filesystem and cannot reverse external CI, messages, or deployments.
+## 6. Working copies, capture and restoration
 
-Named branches/bookmarks are optional labels on work or local roots; targets represent intentionally accepted shared states. Do not require a public branch per agent or exploratory attempt.
+Each independent writer gets a separate mutable workspace. Immutable content and safe read caches may be shared; mutable hard links must not cause one workspace's writes to alter another. Reflinks, sparse materialization or a virtual filesystem are accelerators, not correctness assumptions.
 
-## 5. Recovery is separate from authored history
+An actor can own several sessions and workspaces. Generation/fencing tokens restrict managed API writes, not arbitrary OS writes by a process holding access. A workspace is not a credential/network/process sandbox. Administrative takeover cannot revoke a stale file descriptor merely by changing a database row.
 
-Normal editing must not create a permanent semantic WorkVersion on every file change. Automatic capture records private, bounded **recovery observations** (base State or prior capture plus changed content, per-path outcome, generation and capture status). A compact append of file-content references and changed paths can be cheaper than hashing a complete immutable tree for each keystroke; materialize a stable State when necessary for an authored version, named checkpoint, handoff or validation.
+Capture admits tracked/explicitly included paths, detects changed bytes and builds a recoverable source state. Watcher notifications and stat caches are hints; overflow or uncertainty causes reconciliation. Files can change across or during reads, and unsaved buffers are invisible. Report exact capture coverage and the last durable result. Validation runs on a separately materialized immutable source root rather than an assumed simultaneous directory scan.
 
-This is a recovery representation, not a second independent source authority: reconstruct a capture deterministically against its pinned base; check content identity and retained references. It may be pruned under published time/space policy. Named checkpoints pin selected recoverable states explicitly.
+**Restoration has two explicit contracts:**
 
-Filesystem notifications, mtimes and editors are hints, not truth. A scan can mix files from different instants when other writers continue editing. Mark it best-effort; never label it an atomic multi-file capture unless the writer quiesced or a suitable filesystem snapshot/controlled API established that property. Unsaved editor buffers are outside filesystem protection.
+- In an ordinary directory with uncontrolled editors, a pre-write check detects many stale states but cannot guarantee no-clobber. The reference safe recovery operation materializes into a **new directory** without replacing current files. In-place switches require a cooperative/quiescent ownership contract, explicit dirtiness checks and preserved before-images; limitations remain visible.
+- In a controlled workspace where every writer is excluded or fenced at the actual filesystem boundary, record a durable materialization intent, preserve required original data, stage replacements and finish them under that exclusion. On interruption, resume or preserve both versions; report pending materialization separately from committed source state.
 
-Capture tracked or explicitly admitted source files. Discover new files without silently storing ignored files, caches, or secrets. A previously captured secret remains in prior retained history until properly purged; ignoring it later is not erasure. Show last durable capture time, coverage, failures and retention horizon.
+Do not claim a universal atomic compare-content-and-replace operation on ordinary portable filesystems. Do not silently weaken this contract merely to make `restore` look simpler.
 
-**Critical rule:** a durable repository transaction and a mutable checkout are separate things. A restore/switch stores its intended old/new state, protects original file bytes, compares *current* filesystem contents immediately before any overwrite, and reports incomplete/pending materialization on interruption. Never replay an old operation onto unobserved newer edits.
+## 7. Recovery retention and privacy
 
-## 6. Storage engine: logical decision, physical competition
+A successful automatic capture means its bytes are durable within a documented retained horizon. It does not mean review, remote backup, or publication. Show those states separately. Do not permanently link every capture through strong immutable parents; otherwise time-based pruning cannot reclaim source objects.
 
-**Selected logical storage:** immutable typed content-addressed objects; deterministic canonical encodings with version and domain separation; one authoritative durability boundary for mutable resource roots; rebuildable derived indexes; retention and GC based on reachable pinned roots.
+The initial capture implementation may store a tree root directly. A bounded delta/overlay chain can be introduced only with a maximum reconstruction path, pinned bases, verified effects and measured benefit. An overlay is not an independent byte authority allowed to replay over newer editor writes.
 
-**Not yet selected:** the physical object store or local journal. Three credible designs must compete *under identical logical and durability contracts*:
+Retention has separate classes: expiring private captures, explicit checkpoints, draft/proposal roots, accepted history, and in-flight/reader protection. Storage pressure cannot silently evict a named pin or an accepted revision. Ignoring a captured secret is not erasure; purge behavior must cover backups and remotes. Build outputs, test logs and model transcripts have separate storage and retention by default.
 
-| Candidate | Strength | Difficulties to prove |
-| --- | --- | --- |
-| One append-only object/transaction journal, derived indexes | Object data and root-commit record in one durable stream; strong sequential write properties | Recovery parsing, segment rollover, multiwriter ordering, compaction, reader epochs |
-| Immutable object segments + authoritative SQLite root/metadata transaction | Mature short metadata CAS, source objects outside its WAL | Ordered object fsync before root CAS, staged-object GC races, cross-file backup/recovery |
-| SQLite small objects + roots; external large blobs | Simple small-object atomicity and backup, fewer separate small-file write steps | WAL/checkpoint amplification, large-object ordering, contention, long-history size |
+## 8. Machine interface and distributed use
 
-Choose by crash correctness, full workflow latency, write amplification, retention/GC, recovery and maintenance—not by whether the code has a familiar database name. Physical storage does not determine StateId, VersionId or ApplicationId.
+All source reads and candidate-producing writes operate on exact immutable IDs. Core methods include read/list/range, diff, history, ancestry, apply_edits, merge, resolve, capture registration, propose and target advancement. CLI and remote methods share semantics, not necessarily the same physical execution path. Machine mode has bounded output, stable cursors bound to a revision, structured errors, cancellation and no terminal prompts.
 
-GC must coordinate *in-flight prepared objects* and readers with compaction, not merely mark currently visible roots. Make complete object closure durable before an acknowledged root points to it. Segment retirement waits for reader/transaction epochs. Backups contain a **consistent authority and all referenced immutable objects**, not just a copy of the root DB or caches.
+Requests carry schema, repository, actor scope, authority-issued request epoch, unique request ID, canonical request digest and relevant expected generations. Preserve outcomes while an epoch is active. Retire epochs explicitly; a delayed retry from an expired epoch cannot become an apparently new write. Lost responses produce queryable outcomes, not distributed exactly-once promises.
 
-For hierarchical source trees, sorted flat small directories are a baseline; use canonical paged Merkle maps when wide-directory benchmarks establish a benefit. Test equal-content roots across insertion orders and adversarial path distributions, including shifted page boundaries. Whole blobs are the default; chunking and physical deltas are conditional on real large-content workloads. Hash choice (e.g. BLAKE3-256 versus SHA-256) and exact byte encoding require pinned vectors, migration rules and a security review.
+Full local stores work offline. Partial clients explicitly know which objects are promised and can pin a working set. Missing remote content fails or hydrates; it is never an empty file or a silently omitted ancestor. Native transport batches requested objects and queries, verifies hashes/closure, supports resume and authorization, and permits optional node/regional caches. A small local project does not need that infrastructure.
 
-## 7. Efficient queries and optional materialization
+For a hosted service, immutable objects can live in durable blob storage while stateless compute and derived indexes scale independently. Keep coordination around named target updates small. Avoid imposing local pack maintenance on every job, but compare network bytes and cold-cache compute before abandoning useful physical delta compression.
 
-Every core operation must work against immutable State/Work/Application IDs without a checkout: read file/range/tree, compare states, inspect ancestry, list changed paths, determine dependencies, construct work, apply work, inspect conflicts and build an integration candidate.
+## 9. Review, validation and publication
 
-Derived structures—path history, blame, ancestry generations/skip indexes, changed-path indexes, rename/copy candidates, perhaps syntax/symbol data—are keyed by immutable input roots and algorithm/configuration versions. Their loss affects latency only; authoritative source and operation answers remain reconstructible. Compute lazily or eagerly by measured demand, recursively and incrementally where possible.
+Capture, restricted draft sync, proposal update and target publication are separate event classes. Ordinary Git pushes may not provide quiet draft semantics; expose that capability instead of silently claiming it.
 
-Ordinary full local repositories are self-contained offline. Sparse/lazy clients may possess a **promised** incomplete object set, but missing promised content is never silently treated as deletion or empty input. On-demand queries, shared node cache and remote cache tiers can accelerate enormous hosted monorepos without changing logical semantics. Physical materialization can use ordinary directories, reflinks, sparse checkouts or optional virtual filesystems; no custom filesystem is required for safe basic operations.
+A Candidate names its exact result revision, expected target/base, selected inputs, integration recipe and policy version. Evidence references the Candidate and its actual toolchain, test recipe, external inputs and runner identity. Candidate identity does not contain its future evidence; that would be circular. A build action may safely reuse output only when its declared full inputs match, not because two changes touch different paths.
 
-## 8. Sync, review and publication
+Validation never holds the target lock. For a protected target, atomically check its current generation, applicable policy and live authority, then update it and record receipt/outbox. If the base changed, construct and validate the new relevant candidate. Recheck revoked authority and altered policy rather than trusting an old approval forever. Delivery is at least once with stable event IDs.
 
-Separate four independent boundaries:
+A serial validated batch containing k changes and requiring T time has an approximate k/T capacity limit before failures/overheads. Support bounded queues, grouping, superseded-work cancellation and sound caching. Alternatively a repository owner may separate accepted and verified targets or choose post-merge/pre-deploy validation. These have different guarantees; none makes arbitrary concurrent changes semantically independent.
 
-| Action | Meaning | Default side effect |
-| --- | --- | --- |
-| Capture | Recover local unfinished edits | No public event, no network |
-| Draft sync | Opt-in protected transfer of selected private work | Restricted roots; no public review/CI |
-| Propose | Present exact authored WorkVersions and a composed candidate | Review/validation as configured |
-| Publish (land) | Advance one accepted shared target if exact conditions hold | One target transition and audit/outbox event |
+Git-hosted targets remain under their host's authoritative policy and conditional writes. A local transaction cannot atomically own the remote branch, review database and local receipt. Adapters reconcile durable intent and uncertain network results, using actual host protections/merge queues where available.
 
-Native sync exchanges immutable objects and declared roots with resumable batching, verification and authorization over the reachable object closure. Do not require a full clone to answer a query, and do not force a network request per tiny object. Local user operation remains possible without the remote service.
+## 10. Interoperability and safety boundary
 
-A Candidate references an exact base State and target generation, ordered/dependency-respecting selected WorkVersions, application result State, deterministic driver/recipe identifiers and policy epoch. Test results, reviews and attestations refer **to** that Candidate; they are not included in its own content hash (avoiding self-reference). An Acceptance references qualifying evidence and subject; a publication receipt references Acceptance and the committed target transition.
+Git is an import/export boundary, not the core. Preserve unchanged imported Git objects or retain mappings to exact originals. Native rewriting usually creates different Git objects; signatures, change evolution and native conflicts may not translate. Test byte content, modes, parent ordering, tags/signatures, attributes/filters/EOL, ignores, path encodings, LFS, submodules and shallow/partial histories. Refuse unsupported mutation before damage. Initial native workspaces must not race a Git writer on the same index/directory.
 
-For a managed server, target CAS, current policy/authorization and receipt/outbox are one authority transaction. The target generation is updated **per target**, not under a global repository lock. Tests run outside locks against immutable candidates. If base, candidate, policy, or relevant required inputs change, recompose and revalidate as required. A merge queue may batch multiple work units and validate the combined State; that does not certify every possible intermediate ordering or semantic correctness.
+A content hash is not authorization, a signature is not a test, and neither provides transport confidentiality. Authorize object retrieval and reachable closure; avoid cross-tenant existence leaks. Repository configuration and fetched content do not implicitly execute hooks/plugins. Process sandboxing belongs to the caller/runner with explicit authority.
 
-There is no universal free solution to shared target ordering: a single linear target has an essential serialization point. Optimize *accepted validated changes per unit cost/time*, not merely raw change-creation rate. Some organizations may choose post-merge/pre-deploy verification; express the weaker guarantee explicitly instead of claiming it is equivalent to pre-publication validation.
+## 11. Complexity targets and things not promised
 
-External Git hosts own their own branch protection and review/CI policy. An AVC client cannot atomically enforce a third-party host's state in a local transaction. Export/import adapters must use host guarantees and reconcile unknown outcomes, never invent stronger ones.
+Tree equality is a digest comparison within a logical format. Path lookup follows directory nodes. A snapshot edit rewrites changed content and ancestors; a very wide flat directory can still cost its full width. Tree diff can skip equal subtrees, but worst-case merge and ancestry queries can be large. Indexes need explicit versioning and rebuild cost.
 
-## 9. Git interchange and broad project use
+Clean status can be cheap under a valid observation boundary; arbitrary watcher loss or uncoordinated filesystem mutations may require scanning. Metadata-only workspace creation can be constant work while materializing its requested files is not. No tree design, CRDT, stable change ID or CI policy makes all these operations constant time.
 
-Git should be supported as an explicit translation boundary, **not** the canonical repository engine. Import Git source/history with mappings to original Git object IDs and metadata. Export selected resolved source states plus accepted lineage to valid Git history and existing review services. A synthetic Git commit/merge may be required to represent one native multi-work application; document losses of native WorkVersion/Application identity, alternative states and conflict metadata. Original immutable Git objects may be preserved where actually unchanged; never promise hash preservation after conversion/rewrite.
+The reference design deliberately does not promise patch commutation, causal selective undo, perfectly inferred rename identity, free old-client compatibility after causal pruning, or semantic correctness from merge success. Those require different contracts and evidence.
 
-Build and test a compatibility matrix covering path bytes/Unicode/case collisions, ignore rules, executable bits, symlinks, attributes/EOL/filters, tags and signatures, LFS, submodules, large binaries, shallow/partial repositories and nested tooling. Refuse unsupported mutation/export **before** losing data. A native writer must not race an ordinary Git writer on the same mutable checkout/index.
+## 12. What would replace this candidate?
 
-Native source truth must not depend on a package manager, language parser, AST, model, agent logs, or build environment. Those are optional derived tools. Nonmergeable assets may use explicit, server-enforced publication leases; offline drafts remain possible but cannot claim online exclusivity.
+Choose causal graph B if controlled comparisons establish substantially better conflict preservation/selective undo/reapplication with acceptable generic editing, cold reads, retention and interoperability. Choose delta-first C if measured draft admission savings exceed deferred materialization and recovery costs for the intended population. Choose an existing history engine if the native model provides no material user benefit; the freedom to design natively is not a requirement to ignore that outcome.
 
-## 10. Safety and correctness invariants
-
-**Release-blocking invariants:**
-
-1. Equal logical State content always yields equal StateId across physical stores and update orders.
-2. Every WorkVersion's base/result/dependency closure is complete; optional effect metadata cannot contradict its result.
-3. Application output reconstructs deterministically from exact recorded inputs, pinned algorithms and resolutions, with every unresolved alternative preserved.
-4. Acknowledged root mutations have complete, durable, reachable objects and stable idempotent retry outcomes.
-5. Concurrent independent workspaces can advance without falsely conflicting on one global logical head; overlapping resource updates cannot silently overwrite.
-6. Recovery, undo and interrupted filesystem materialization never clobber newer unobserved files; status may explicitly remain pending.
-7. Expired automatic captures become reclaimable, but GC/compaction never deletes live, pinned, reader-held, in-flight or published objects.
-8. A private capture never implicitly triggers public notification, CI or upload.
-9. Candidate evidence and policy bind to the exact State/Application and authority at publication time.
-10. Derived indexes can be deleted and rebuilt without changing answer semantics.
-11. Git exchange preserves its *declared supported subset*; unsupported semantics error rather than silently corrupting source.
-12. Offline operation and remote divergence preserve both sides instead of using timestamps as conflict resolution.
-
-Model and fault-test these properties, including malformed/untrusted objects, API request replay, crash at every durability edge, GC races, path/symlink attacks and cross-platform filesystem behavior. An integrity hash detects some corruption, but is not an independent repair mechanism. Independent backups and inspectable exports remain necessary during incubation.
-
-## 11. Concrete scenarios to falsify the design
-
-- **Disjoint files, broken API:** one agent changes a public API; another edits a separate caller based on the old API. Composition can be mechanically clean but candidate validation fails or stale-read observations warn.
-- **Dependency evolves:** B depends on A-v1 while the target contains A-v2. B's original WorkVersion remains immutable; the Application must reject an unsatisfied exact dependency or explicitly record and validate an authorized substitution. It may produce a transformed application without pretending B's authored version changed.
-- **Two variants of one work:** agents concurrently author A-v2 and A-v3. Both remain visible; composing both requires explicit divergence resolution, not last-writer-wins selection.
-- **Duplicate integration:** the same WorkVersion is selected for an accepted target twice. Source equality or textual idempotence cannot hide duplicate application; the application planner consults recorded accepted-work provenance and rejects or explicitly treats a repeated version as already applied.
-- **Rename versus edit:** an editor renames a file as another worker edits the old path. Optional explicit move provenance helps, but ambiguous filesystem inference must not silently drop content.
-- **Crash between root commit and checkout:** the source transaction is durable, the materialization remains pending, and newer editor bytes are protected.
-- **A million captures:** recovery retention remains bounded without leaking source objects through immortal operation views.
-- **Offline target divergence:** both accepted remote/local target proposals are preserved until an explicit reconciliation or a proper target CAS chooses one.
-- **High-rate agent integration:** batching reduces shared target transitions but does not substitute for candidate-based tests or reviewer policy.
-
-A numerical performance claim only counts after a reproducible workload comparison against maintained Git, modern Jujutsu and relevant alternatives.
-
-## 12. What is actually decided
-
-**Selected:** native architecture; independent State/WorkVersion/Application identities; local-first source state; separate bounded recovery; per-workspace and per-target root authority; checkout-free API; typed conflicts; candidate-based publication; Git translation boundary.
-
-**Strong working hypotheses:** snapshot-root source representation with verified change metadata; small flat directories with deterministic paged large maps; whole ordinary blobs; conservative three-way merge supplemented by exact-path composition.
-
-**Open to replacement:** the canonical patch/state relationship if a real commuting-change model outperforms it; physical object/journal design; tree paging algorithm; hash and canonical codec; chunk/delta policy; recovery overlay encoding; lazy filesystem strategy; first-release Git interoperability subset.
-
-This is a single product model designed from target workflows and correctness requirements, not a commitment to reproduce any particular existing VCS internals. The next iteration must use independent prototype evidence to resolve the open physical and patch-algebra questions.
+Until then, this document supplies an implementable reference, not another unsupported claim that its labels or components make it state of the art. The mandatory commitments are the user-facing and integrity contracts; source representation and physical formats remain reviewable before stabilization.

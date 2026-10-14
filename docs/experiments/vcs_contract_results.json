@@ -1,0 +1,63 @@
+{
+  "scope": "Deterministic contract counterexamples; not comparative performance or production qualification",
+  "python": "3.13.5",
+  "git": "git version 2.47.3",
+  "platform": "Linux",
+  "checks": {
+    "identical_deletions": {
+      "reproduced": true,
+      "after_merge": "keep\n",
+      "after_revert_A": "keep\nobsolete\n",
+      "meaning": "Git applies the inverse content change. It does not promise to retract only A's deletion label while retaining B's identical deletion effect.",
+      "not_established": "No Git defect or superiority of a change-graph VCS is inferred."
+    },
+    "semantic_interference": {
+      "reproduced": true,
+      "individual_tests_pass": true,
+      "text_merge_succeeds": true,
+      "combined_test_pass": false,
+      "failure": "TypeError: can only concatenate str (not \"int\") to str",
+      "meaning": "Disjoint writes and successful merge do not validate the composed program."
+    },
+    "restore_check_replace_race": {
+      "reproduced": true,
+      "check_then_replace_loses_intervening_write": true,
+      "restore_into_new_directory_preserves_original": true,
+      "meaning": "A pre-write content check alone cannot promise no-clobber against an uncoordinated concurrent writer.",
+      "not_established": "No production checkout protocol or cross-platform power-loss guarantee was tested."
+    },
+    "prepared_object_gc_race": {
+      "reproduced": true,
+      "valid_interleavings_checked": 6,
+      "unsafe_without_staging_pin": [
+        [
+          "prepare",
+          "mark",
+          "publish",
+          "sweep"
+        ],
+        [
+          "prepare",
+          "mark",
+          "sweep",
+          "publish"
+        ]
+      ],
+      "unsafe_with_model_staging_pin": [],
+      "meaning": "Root CAS alone does not keep concurrently prepared objects alive.",
+      "not_established": "Actual pin persistence, segment reclamation, reader epochs and crash recovery remain untested."
+    },
+    "resource_scoped_cas": {
+      "reproduced": true,
+      "one_global_precondition": [
+        true,
+        false
+      ],
+      "scoped_workspace_preconditions": [
+        true,
+        true
+      ],
+      "meaning": "Serialize the short physical commit when necessary; do not manufacture a logical conflict for an unrelated workspace."
+    }
+  }
+}

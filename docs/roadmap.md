@@ -1,144 +1,91 @@
-# AVC roadmap: prove the native model before stabilizing it
+# AVC evaluation and implementation roadmap
 
-**Updated:** 2026-10-14  
-**Architecture:** [design.md](design.md)  
-**Evidence and alternatives:** [research.md](research.md)
+**Reviewed:** 2026-10-14. **Design:** [design.md](design.md). **Evidence:** [research.md](research.md).
 
-The Rust 0.0.1 implementation is still a Git-command wrapper with a separate JSON operation log, not the proposed native VCS. Do not layer new safety promises over the old Git reset/squash flow. Replace it incrementally only once a native vertical slice actually works. Detect and preserve existing .avc repositories; do not silently interpret the legacy format as a native one.
+The existing Rust 0.0.1 implementation remains a Git wrapper; this investigation does not change or qualify it. The reference snapshot-oriented candidate is not a final canonical-format decision. Do not implement the previous State/WorkVersion/Application hierarchy merely because it appeared in an earlier design.
 
-**Delivery objective:** the smallest coherent local VCS that proves authored work can be composed against changing bases **without rewriting the original authored version**, while exact source states, recovery and concurrent workspace roots remain safe. Do not start by building a distributed forge, agent scheduler, full virtual filesystem or a generic framework of untested storage backends.
+## 1. What has actually been checked
 
-## Phase 0 — Specify competing complete models
+[Contract probes](experiments/vcs_contract_probes.py) and [recorded results](experiments/vcs_contract_results.json) reproduce five narrow cases on Linux, Python 3.13.5 and Git 2.47.3: identical deletion versus causal retraction; disjoint edits breaking a combined program; a restore check/replace race; prepared-object GC races in a small state model; and unnecessary global-generation conflicts.
 
-### A. Executable state machine and oracle
+Run:
 
-Model the immutable source State, stable Work identity, WorkVersion variants, Application with explicit base/result, typed conflicts, Workspace roots/generations, recovery captures and shared targets.
+```sh
+python docs/experiments/vcs_contract_probes.py --output results.json
+```
 
-Operations: create work, author version, create divergent version, declare dependency, apply one or several works, resolve conflict, advance an independent workspace, undo workspace operation, capture/expire recovery, propose, and conditionally publish. Write a **small independent oracle** (not production types feeding themselves) with exhaustive or property-based traces for short histories.
+They are research fixtures, not a VCS benchmark or proof of crash safety. Passing means the counterexamples were observed. No native engine, current Jujutsu/Pijul runtime comparison, user trial or power-loss qualification has been completed.
 
-Required counterexamples:
+## 2. First useful implementation, not three entire VCSs
 
-- Two workers from the same base, disjoint edits and overlapping edits.
-- Stale input dependency even when edited paths are disjoint.
-- A depends on B-v1, but target has B-v2.
-- Two divergent authored versions with the same WorkId; explicit version selection or resolution instead of last-writer-wins.
-- Duplicate application of a previously accepted WorkVersion: integration provenance detects the repeat even when source bytes look identical.
-- Declared exact dependency A-v1 is not silently considered satisfied by A-v2; authorized substitution must be recorded.
-- Conflict reappearance and exact-context resolution reuse.
-- Offline divergent target roots and later synchronization.
-- Split/fold and revert, preserving authored provenance.
-- Path rename versus edit, delete/recreate, binary replacement and directory/type collisions.
-- Lost response after committed root transition and duplicate request.
-- Capture interrupted by concurrent filesystem edits; attempt to restore after further edits.
+Implement the concrete Candidate A local loop in the existing Rust project: immutable files/trees/revisions, resource generations, explicit capture, history/diff, merge with typed conflicts, and safe restore to a separate directory. A transactional local reference backend should keep objects and root transitions under one authority before optimizing storage.
 
-**Decision gate:** the leading model must give unambiguous outcomes, no source-loss path, and a simple human interface. A hidden second authority or unspecifiable “same semantic intent” breaks the design.
+Keep the production model separate from a small independent oracle. Before any stable on-disk format, test parent/source interpretation, amendment divergence, split/fold lineage, resource-scoped CAS, retry outcomes and retention reachability. Test `integrate`, content `revert`, explicit `reapply`, and local `undo` as different operations. Do not use one eternal ever-applied ChangeId set to reject legitimate reapplication after a revert.
 
-### B. Real source-model competition
+Preserve old .avc data before any migration. Replace obsolete Git-wrapper paths only when the native replacement works; do not attach new atomicity claims to the separate Git/JSON operations.
 
-Implement **small, comparable prototypes** on identical source fixtures:
+Acceptance: reopen exact retained bytes; no partially selected resource transitions; deterministic conflict output; stale requests do not overwrite current roots; private captures do not move public names; recovery into a new directory preserves the original. Keep in-place uncontrolled-writer limitations explicit.
 
-1. Immutable persistent tree State + authored WorkVersion + Application, with verified changed-path/precondition effects.
-2. A true patch/change graph with an implementation of commutation and conflict/dependency laws—not a collection of normal text diffs branded as patches.
-3. A canonical changed-file-log model with derived/rebuilt tree snapshots, testing arbitrary offline historical reads and reconstruction.
+## 3. One bounded comparison for each consequential bet
 
-Use the same opaque-file, rename, repeated-line, binary, multiway conflict and independent-worker traces. Compare identities under reordering, conflict quality, total bytes, CPU/memory, tree reconstruction latency and history evolution. Treat ambiguous transformations as conflicts rather than adjusting expected results to make the prototype pass.
+### History semantics
 
-**Decision gate:** choose and specify **one authoritative source model**. Keep the snapshot/WorkVersion/Application model only if it actually wins the chosen correctness, generality and complete-workload criteria.
+Compare the same histories in the reference snapshot model and an existing Pijul/Darcs-style implementation or a faithful small causal interpreter. Do not write a toy anchored insertion structure and describe it as a complete patch calculus.
 
-### C. Tree and local durability competition
+Cases: concurrent identical deletes and selective undo; same-position insertion ordering; move/edit and copy/edit; delete/recreate; binary replacement; a change reverted and intentionally reapplied; dependency v1 versus v2; repeated reapplication after conflict resolution; long-offline divergence; effects introduced by ordinary atomic-save editors rather than controlled APIs. Report exact retained intent and conflicts, not just final byte equality.
 
-Tree structures: sorted flat directory baselines; deterministic paged Merkle maps; history-independent immutable search trees. Sweep realistic trees plus directories of 10, 1,000, 100,000 and 1,000,000 entries, adversarial sorted/colliding names, rename/move, one-path updates, sparse diffs and page-boundary shifts. Require canonical equal-content/equal-root property and bounded pathological behavior.
+Decision: prefer graph B only for demonstrated semantics worth its capture/materialization/retention costs in target workflows. A source-state system may need richer provenance to match those semantics; count that cost fairly.
 
-Physical stores must implement the **same** object and resource-root transitions:
+### Snapshot commitment versus deferred materialization
 
-- one append-only object/transaction journal with derived indexes;
-- immutable segments plus SQLite authoritative root transactions;
-- SQLite small objects/roots plus external large objects.
+Use a common object/query boundary to compare snapshot roots against parent-relative changed-file records plus indexed/checkpointed materialization. Measure admission, cold and warm historical read, first checkout, full index rebuild, GC and offline pinning. Keep source bytes and durability level identical. This experiment need not reproduce all of Scion's distributed infrastructure.
 
-Measure explicit durability barriers, read latency, foreground p50/p95/p99, sync/write amplification, 1/8/32 writers, GC/compaction, startup recovery, saved-space retention and consistent backup/recovery. Do not extrapolate from unrelated KV-storage benchmarks. Test correct object admission against concurrent collection, reader leases, segment replacement, and directory-entry persistence.
+Decision: adopt C when admitting rarely consumed drafts materially improves the complete workload after accounting for first-read and repair costs, not solely its append microbenchmark.
 
-**Decision gate:** select the simplest engine passing the strictest safety invariants and representative workload performance. Document assumptions for APFS, ext4/Btrfs and NTFS as supported; process-kill tests do not prove power-loss durability.
+### Physical storage and large directories
 
-### D. Git compatibility canary
+Start from the reference transactional store. Build only the measured necessary alternatives: one object/root journal or staged immutable segments with metadata authority. Compare fsync level, objects and resource transactions fairly. Test disk-full, truncated records, wrong hashes, concurrent staging/GC, long readers, checkpoint pressure and interrupted compaction.
 
-Before stabilizing formats, use a **real Git fixture** with ASCII and non-UTF8 paths, modes, symlinks, rename, merges, signed objects, attributes/EOL, LFS/submodules, and a shallow/partial example. Identify which forms must be preserved and what cannot round-trip. Declare errors for unsupported subsets. This is a design feasibility experiment, not complete interchange implementation.
+Compare flat hierarchical directories with a deterministic paged candidate on ordinary trees and deliberately wide 10/1,000/100,000/1,000,000-entry cases. Check insertion-order identity within the specified format, page-boundary shift behavior, small-repository overhead, rename and sparse diff. Do not freeze the canonical paging/chunk layout while calling it a physical implementation detail.
 
-## Phase 1 — Native local vertical slice
+## 4. Complete human and agent workflow evaluation
 
-Implement in Rust, starting with cohesive source-object, repository-transaction, working-copy, and CLI responsibilities in the existing crate. Split into more crates when actual boundaries justify it.
+Use maintained upstream Git with appropriate worktree, maintenance, commit-graph and sparse/partial features; pinned current Jujutsu; relevant graph baselines; and AVC. Record versions and supported features. The installed Git 2.47.3 used for contract probes is not the future performance baseline.
 
-Working user loop (command spellings are provisional):
+Include three different agent modes: sequential edit/test/capture; competitive alternatives where one is chosen; compositional parallel tasks where several are integrated. Sweep 1, 8 and 32 workers as experimental conditions, not claimed typical population counts. Include external services and build-cache interference when a test purports to measure sandbox isolation.
 
-~~~text
-avc init
-avc status
-avc change new "Add parser"
-edit files normally
-avc change finish
-avc history
-avc undo
-avc restore <checkpoint>
-~~~
+Measures: task success, source-loss incidents, recovery success, stale retries, wrong auto-merges, unnecessary conflicts, review work, p50/p95/p99 latency, CPU/memory, network and disk bytes, retained space after collection, offline availability, CI compute and notification count. Include failed attempts and maintenance. A faster automatic wrong merge is a regression.
 
-Behind it: immutable States; authored WorkVersions with exact base/result; at least simple Applications; independently versioned WorkspaceRoot; durable operation events for undo; explicit source/checkout separation; status and diff over current bytes; format version detection.
+Adapt GitGoodBench cases to native task outcomes with equal model/tool budgets. Do not reward either CLI for imitating a particular command sequence. Use human trials for state understanding, first-use errors, interrupted-work recovery and experienced efficiency. Current research supplies requirements and cases, not a measured population survey.
 
-**Gate:** safe reopen and restore after injected failure at every object/commit/materialization boundary; no acknowledged State with missing closure; no silent loss of dirty editor bytes; exact source restoration after a failed operation. Ordinary small-repo responsiveness without network or daemon.
+## 5. Durability and filesystem qualification
 
-## Phase 2 — Independent work and recovery
+Use independent state-machine/property tests for transactions and generation checks. Fault-inject each persistence stage. Distinguish process crashes, write failures and actual power-loss assumptions. Restore authority and immutable closure together; verify objects, not just row counts. Use supported APFS/Linux/NTFS configurations explicitly rather than extrapolating from one container.
 
-Implement multiple isolated workspaces over one shared immutable store; group application of authored work against a chosen State, exact preconditions and dependency closure, deterministic merges with typed conflicts, explicit divergence, optional move provenance and structure-aware drivers only where proven.
+Test the reproduced restore race. An API token or an immediately preceding content check is not writer exclusion. Guaranteed recovery must use a new destination or an actual controlled-writer boundary. Before-images protect what was observed; they do not magically preserve writes made after their capture.
 
-Add private auto-capture and named pins: tracked/admitted files, watcher hints with verification/reconciliation, bounded time/count/size retention, visible last durable capture, GC with staging/reader protection and explicit protection-status errors. Captures must not create permanent authored revisions or public events.
+Retention tests must include expiring captures, named pins, published history, in-flight imports, readers and segment/graph references required by old retained revisions. A causal graph must demonstrate what happens when a client returns with references older than a pruned epoch.
 
-Expose **the same semantic API without requiring a checkout**: inspect, diff, update a State, create/evolve WorkVersion, apply/compose, resolve conflict, list revision/operation history, and recover. Schema-versioned machine requests use exact expected IDs, workspace generations, bounded output and idempotency epochs. A CLI, an editor and an agent library call the same core.
+## 6. Git exchange and native collaboration
 
-**Gate:** 1/8/32 independent workers; no spurious logical CAS contention on a global head; shared-actor/different-session isolation; divergent changes remain visible; original authored versions survive reapplication to new bases; no accidental conflict-resolution reuse. Reproduce Trellis-style stale-materialization clobber scenarios. Prove recovery retention actually frees bytes.
+Qualify import/export early on real source/mode/history fixtures, and move the adapter into ordinary use once the local loop is safe. Preserve unchanged original objects where promised and expose native metadata loss. Cover attributes/EOL/filters, symlinks, names, signatures/tags, submodules, LFS and shallow/partial history. Unsupported operations fail explicitly before alteration. Avoid live dual-writer colocation initially.
 
-## Phase 3 — Git import/export and external collaboration
+Then add optional restricted draft sync and a minimal target service. Transfer immutable objects in batches, validate closure/authorization, keep uploads protected until admission, and make target CAS plus policy/receipt/outbox one authority transaction. Test revoked authority during validation, stale evidence, post-commit lost replies, retries and duplicate events.
 
-Import source and history with original-ID mapping; export selected **resolved** native States/accepted applications to genuine Git refs and commits, with declared native metadata loss. Work through at least one ordinary Git host's existing review and merge protection, without creating a dual-writer checkout/index.
+Existing Git hosts retain their own guarantees. Use their actual protection/merge queues and reconcile uncertain outcomes. Native capture must not be translated into a public push per editor change.
 
-A compatibility matrix must specify supported and rejected cases for: paths/Unicode/casefold, executable modes, symlinks, ignore rules, attributes/filters/EOL, tags/signatures, submodules, LFS, binary files and shallow/partial history. All unsupported mutations must fail before corrupting or silently changing source. Verify conversion by exact byte/mode fixtures, not just matching numbers of commits.
+## 7. Exit criteria for architectural selection
 
-**Gate:** a native user can collaborate with an ordinary Git user on a qualified repository, with no private recovery roots pushed; host timeouts and unknown outcomes can be reconciled. Compare the experience with current Git worktrees and Jujutsu, including changed-base reapplication and exact-candidate validation. If the native benefit is marginal, revisit the product model, not just the CLI.
+Select a canonical model and stabilize its format only after the competing mechanism has been evaluated on the requirements where it plausibly wins. The whole project need not wait for every optimization or a complete enterprise service.
 
-## Phase 4 — Optional native sync and accepted integration
+Hard gates are source integrity, explicit conflict/undo semantics, trustworthy capture/restore, supported interoperability, and no silent authority bypass. Performance gates come from recorded baselines, not invented speedup multiples. A feature earns inclusion when it improves important full workflows without unacceptable ordinary-project regressions.
 
-Implement resumable batched object/State fetch and push, root negotiation, quarantine/hash/closure checks, authorized restricted draft sync and independent public targets. No always-online requirement for ordinary source editing.
+Keep naming separate; Tavi is not approved. Do not rename packages, directories or versions during this design work.
 
-Add immutable composed Candidates, versioned validation policy/recipe, evidence and acceptance referencing exact candidate IDs, and per-target conditional publication/receipt/outbox. Shared-target tests run **outside** publication locks. Requests with stale target, changed policy, revoked actor, missing evidence or incompatible dependency never silently land. Group application can reduce the number of target transitions, but the final group State still needs required validation.
+For future Rust implementation changes, run the project gates in addition to the relevant scenario checks:
 
-**Gate:** network partition, retries, target drift during CI, wrong evidence digest, changed toolchain/recipe, post-commit lost responses, at-least-once duplicate events and quota/authorization failures. Strong guarantees apply only where AVC owns target authority; an external Git host retains its own rules.
-
-## Phase 5 — Scale selected by evidence
-
-Candidates include canonical paged wide directories, selective file-content chunking, bounded delta compression, sparse/virtual materialization, recursive graph/path/blame indexes, cache tiers, syntax/symbol-derived merge support and per-path publication leases for nonmergeable assets.
-
-Each feature needs a measured limiting workload and a simpler tuned baseline. Evaluate full lifecycle cost: read amplification, memory, storage, compaction, cold cache, recovery, Git bridge, synchronization and CI/notification events. Do not impose fleet-only complexity on a five-person project.
-
-## Continuous quality gates and comparison workloads
-
-| Question | Evidence |
-| --- | --- |
-| Can the source be reconstructed? | Canonical encoding vectors, independent reference States, malformed-object fuzzing and model traces |
-| Can acknowledged work be lost? | Crash/power-loss-specific fault testing at every persistence barrier, GC/reader interleavings and consistent backup/restore |
-| Can a restore clobber newer edits? | Concurrent external editor, watcher overflow, interrupted materialization and stale workspace tests |
-| Can independent workers progress? | 1/8/32 worker contention/conflict benchmarks, measured logical vs physical serialization |
-| Does change identity survive context shifts? | Authored WorkVersion reused in two Applications, dependency rewrite, divergence and revert traces |
-| Does composition preserve intent? | Deterministic outcomes, typed conflicts, exact preconditions; semantic-interference scenarios with CI |
-| Is Git exchange trustworthy? | Qualified round-trip bytes/modes/metadata, sign/attr/LFS/submodule failures explicit |
-| Is the product better? | Complete solo and agent tasks vs maintained Git/Jujutsu, measuring user time, retries, bytes, latency, storage and CI cost |
-
-Reference workloads: typical small/medium projects, large monorepos, wide directories, long histories, 100,000 named revisions, 1,000,000 bounded private captures, binary edits, overlapping/nonoverlapping agent proposals, read-heavy no-checkout queries, and batched validated publication.
-
-Record hardware, filesystem, pinned source versions, exact commands/configs, fixed random seeds, cold/warm cache and raw results. Upstream published speedups (e.g. Scion) are not AVC benchmarks. Correctness failures block release regardless of speed. Experimental users need independent backups and explicit usable export until the full safety and compatibility contracts are qualified.
-
-Existing Rust prototype checks remain:
-
-~~~sh
+```sh
 cargo test
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
-~~~
-
-No Rust implementation change is implied by this design update, and those checks alone cannot verify native VCS guarantees.
+```

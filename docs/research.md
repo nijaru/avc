@@ -228,3 +228,21 @@ Darcs's [patch theory](https://darcs.net/Theory/MergersDocumentation) specifies 
 **Implication:** reserve an optional versioned path/file policy for pessimistic *publication* protection of nonmergeable assets (including ownership fencing and expiry). Ordinary code remains optimistic and concurrent. An offline revision created while another actor holds an asset lock must remain recoverable but not be misrepresented as authorized for landing.
 
 These systems do not justify copying their UIs or protocols. Their useful contributions are narrow, testable invariants that a clean-sheet VCS should deliberately choose or reject.
+
+
+## 15. Trellis: a concrete dual-authority failure case
+
+The local-first [Trellis VCS documentation](https://www.trellis.computer/api/vcs) describes a causal operation graph, auto-recorded filesystem events, milestones/checkpoints, semantic diffs, agent lanes and eventual promotion. It is more directly adjacent to AVC's intended developer experience than a generic Git client. Its [README/source repository](https://github.com/trentbrew/trellis) also presents Trellis as a broader agent and graph substrate, not only source control.
+
+**Most consequential primary-source finding:** the accepted [ADR 0038, Git-authoritative file tier](https://github.com/trentbrew/trellis/blob/main/docs/adr/0038-git-authoritative-file-tier.md) reports **two incidents of source materialization reverting changes**, including a documented 77-file / 8,809-line loss in the second incident, later recovered. This is the project's own account, **not independently reproduced here**. Trellis therefore demoted its operation log to **non-materializing provenance** and made Git the sole file-byte authority, using Git worktrees for physical agent isolation. The docs state that newer lane op logs do not materialize file state.
+
+This is useful evidence on two fronts:
+
+1. **Against naïve layering:** an append-only op journal plus an independently mutable VCS/working tree is *not* one safe source of truth. A guard around dangerous replays cannot substitute for one owner of byte state and a recovery protocol that compares current filesystem contents before replacing them.
+2. **Against naïve native optimism:** selecting a native single authority on paper does not prevent the same failure if checkout, watcher capture, or crash recovery can overwrite unobserved newer file bytes. The ordinary mutable filesystem is an **external writer** even when the native object store and its metadata are perfectly transactional. Model each materialization as a separate recoverable operation with protected before-images, exact expected source state, and a no-clobber rule.
+
+The accepted [ADR 0054, lane-scoped file ownership](https://github.com/trentbrew/trellis/blob/main/docs/adr/0054-lane-scoped-file-ownership.md) reports that all sessions sharing one host agent identity made an agent-ID-only file-ownership guard ineffective; lane/session identity was needed. It also notes that constructing an owner map by reading every lane log is **O(number of lanes)** and can make per-edit enforcement prohibitively slow.
+
+**AVC decision:** worker identity, workspace identity, file ownership claims and process authority are separate entities. Workspace-root CAS is per workspace. Guard/provenance queries must be incremental/indexed, not a scan of every agent's history for each file write. Per-path ownership is *advisory* unless enforceable at the actual filesystem/operation boundary; it does not justify a new mandatory per-edit global lock. Use end-to-end multiworker clobber and crash scenarios as release gates.
+
+Trellis is not proof that Git must be AVC's core. It is evidence that **making op logs another writable byte authority is unsafe** and that human/agent identity and process/workspace identity must not be conflated. The evidence is project-reported; its risk implications are independent design reasoning.

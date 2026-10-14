@@ -1,33 +1,37 @@
 # AVC
 
-**Experimental native version control for humans and agents.**
+**Experimental native version control for people and concurrent coding agents.**
 
-AVC is being redesigned from first principles as a **local-first VCS with its own source representation, storage, history, transaction and synchronization protocols**. Git and Jujutsu are important references, not its canonical engines.
+AVC is a clean-sheet, local-first VCS design. Its core idea is to separate **exact source state**, **independently authored changes**, and **the application of those changes to a particular target state**. That allows workers to keep their original authored work while a composition operation brings selected results together for verification and publication.
 
-The goal is not a marginally nicer Git client. The value proposition is reliable automatic recovery, stable logical changes, inexpensive isolated workspaces, checkout-free source operations, safe multiworker composition and deliberate validated integration—without requiring a hosted service for ordinary use.
+The goal is to improve entire developer workflows, not merely Git commit speed or command syntax: safe recovery, easy independent experiments, cheap workspaces and checkout-free queries, deterministic conflict handling, and deliberate integration with less unnecessary coordination.
+
+**Git and Jujutsu are benchmarks and design references, not the authoritative AVC engine.** Git import/export is planned for adoption, while ordinary local editing and recovery must work without a server. A native implementation must demonstrate meaningful improvements and pass strict source-integrity tests before it should be trusted with irreplaceable work.
 
 ## Status
 
-**This architecture is a design, not working code.** The Rust 0.0.1 prototype still invokes Git and separately appends a JSON operation log. It has not established the proposed native durability, recovery, garbage collection, interoperability, or concurrency guarantees. Keep independent backups; do not use this prototype as the only copy of important work.
+**Design only. The native system is not implemented.** The existing Rust 0.0.1 prototype still uses Git commands and an independently appended JSON log. It does not provide the durability, automatic recovery, concurrent workspace safety, or composition semantics described in the new architecture. Keep independent backups and do not use it as the sole copy of important work.
 
-The new architecture will replace the old Git-command loop rather than preserve it as a legacy core. Git import/export and existing-host collaboration remain essential adoption paths, but they must not constrain native objects and operations.
+The current design commits to the logical distinctions and safety requirements while deliberately leaving patch algebra versus canonical snapshots, physical object-store layout, wide-directory representation, and other measured algorithm choices open to focused experiments.
 
 ## Documents
 
-- [Architecture](docs/design.md): native source model, transaction and recovery rules, workspaces, agent interfaces and collaboration semantics.
-- [Research](docs/research.md): tradeoffs against Git/Jujutsu, lessons from Scion, Sapling and Pijul, limitations and naming.
-- [Roadmap](docs/roadmap.md): implementation milestones and required data-safety and performance evidence.
+- [Architecture](docs/design.md) — source State, authored WorkVersion, context-specific Application, workspace and publication semantics, storage contracts and safety invariants.
+- [Research](docs/research.md) — independent comparison with Git, Jujutsu, Pijul/Darcs, Scion, Sapling and other systems, including reasons to reconsider the model.
+- [Roadmap](docs/roadmap.md) — competing prototypes, acceptance criteria, Git exchange, durability verification and end-to-end benchmarks.
 
-**Tavi** remains a proposed name, not an approved rename. The repository, crate, executable and .avc path retain the AVC name.
+**Naming is not settled.** Tavi is a provisional candidate only; the repository, crate, CLI and metadata directory remain AVC.
 
-## Current development checks
+## Existing prototype checks
 
-    cargo test
-    cargo fmt --check
-    cargo clippy --all-targets --all-features -- -D warnings
+~~~sh
+cargo test
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+~~~
 
-These checks are not substitutes for native crash-injection, state-model and interoperability verification.
+These checks apply to the old prototype, not to the future native correctness contracts.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).

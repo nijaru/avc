@@ -2,32 +2,36 @@
 
 **Experimental native version control for people and coding agents.**
 
-AVC targets ordinary offline source development as well as remote workspaces, CI, containers, microVMs, VPSs and large agent fleets. The intended advantage is a safe end-to-end workflow: recover unfinished edits, make independent work cheap, inspect exact source without cloning/checkout when unnecessary, preserve conflicts, and integrate deliberately.
+AVC is designed for everyday source editing on a laptop or VPS, independent agent workspaces, remote cloud development, short-lived containers/microVMs, and large CI/source-query workloads.
 
-**AVC is not Git-based. Git compatibility, Git object formats, and Git protocol are not architectural requirements.** Existing systems inform the research but do not determine the design.
+## Selected architecture (October 2026)
 
-## Design direction
+The v0 design uses **immutable content-addressed source States**, a separate immutable **Revision DAG**, and **stable logical ChangeIds** for editable history. The canonical source namespace uses deterministic persistent Merkle radix directory maps and includes ordinary files, executable mode, symlinks, empty directories, and typed unresolved conflicts.
 
-The leading reference is **immutable source states backed by persistent Merkle trees**, with immutable revision ancestry, stable logical change identities, independently versioned workspaces, typed conflicts and separate bounded private recovery.
+The other core decisions fit this source authority:
 
-A revision directly identifies the exact source that tools inspect, build, test and share. Temporary edits can be captured cheaply without becoming permanent authored history or public events. A native library/source API can work locally offline or through an optional hosted service, using sparse object reads or bulk transfer as appropriate.
+- Private, bounded recovery captures are separate from permanent authored history and shared publication.
+- Distinct workspaces own distinct writable directories, source selection, recovery heads and materialization outcomes. Shared targets use conditional updates.
+- Safe source reads, diffs, merges and conditional edits work by immutable IDs **without a checkout**; full repositories work offline, with optional native sparse and hosted clients.
+- Conservative three-way merging preserves typed conflicts and separate origin provenance. Rebase creates new immutable revisions; undo and content revert are distinct.
+- SQLite owns short local root transactions; immutable large objects have a protected staging and garbage-collection protocol.
+- Shared publication validates an exact candidate under an explicit policy.
+- Git compatibility, Git object formats, Git protocol, agent runtimes and hosted services are **not native requirements**. Any adapter is a separate later decision.
 
-**This is a concrete proposed architecture, not a proven optimum.** Parent-relative canonical changesets and causal patch graphs remain competitors where their extra semantics or cheap admission justify the costs. A canonical source-tree encoding and physical store must pass the [documented experiments](docs/roadmap.md) before format stability.
+**This is a selected architecture, not an experimentally demonstrated global optimum.** Earlier changeset-first and causal graph proposals have been evaluated and rejected as the default; their design arguments remain in the research record. Engineering qualification may tune representation parameters or expose a concrete correctness defect, but the project is not waiting for another broad architecture selection.
 
-## Status and documents
+## Current status
 
-**No native AVC engine has been implemented.** Rust 0.0.1 is still an old Git-command wrapper with a separate JSON log. It does not establish the proposed durability, recovery or concurrency guarantees; keep independent backups.
+**The native engine has not been implemented.** The Rust 0.0.1 code is a legacy Git-command wrapper with a separate JSON operation log. It does not provide the native durability, recovery, conflict, workspace, or sync guarantees described above. Do not entrust it with the sole copy of important work.
 
-- [Architecture](docs/design.md) — source state and revision contracts; merge, recovery, workspace, API, storage and sync semantics.
-- [Research](docs/research.md) — primary sources, alternative histories and reasons for the current decision.
-- [Roadmap](docs/roadmap.md) — executable model, canonical-history comparisons and native implementation gates.
-- [Contract probes](docs/experiments/vcs_contract_probes.py) and [results](docs/experiments/vcs_contract_results.json) — narrow reproducible counterexamples, not native performance measurements.
-- [Source-model oracle](docs/experiments/source_models_oracle.py) — 14 deterministic in-memory tests comparing the semantics of snapshot-root and validated delta histories; not a performance benchmark.
-- [Executable source-model oracle](docs/experiments/source_models_oracle.py) — independent source-value tests and a minimal snapshot-versus-delta reconstruction check; not a performance or durability benchmark.
+- [Architecture](docs/design.md): selected data model, canonical tree structure, source/merge semantics, recovery, storage, APIs, and publication.
+- [Research](docs/research.md): comparative evidence and reasons for rejecting other canonical models.
+- [Qualification roadmap](docs/roadmap.md): correctness, durability, portability, user-workflow and performance gates.
+- [Source-model oracle](docs/experiments/source_models_oracle.py) and [contract probes](docs/experiments/vcs_contract_probes.py): narrow research artifacts, **not** native benchmarks.
 
-The project remains named AVC. Tavi/Delos are unapproved naming suggestions, not implementation decisions.
+The project remains named AVC. Tavi and Delos were exploratory names only.
 
-## Existing prototype checks
+## Legacy prototype checks
 
     cargo test
     cargo fmt --check

@@ -176,21 +176,66 @@ No incumbent's metrics demonstrate that AVC is already better. If full workflow 
 
 The existing [contract probes](experiments/vcs_contract_probes.py) and [recorded results](experiments/vcs_contract_results.json) demonstrate narrow counterexamples (identical deletion/revert, disjoint-file semantic breakage, external-writer restore race, prepared-object GC race, global-head contention). They are **not** a native VCS implementation or performance benchmark.
 
-## 7. Decision register
+## 7. Rubberduck findings: workspace truth and source identity
+
+**Design inspection, 2026-10-14.** These are deductive counterexamples and source-backed operational constraints, not completed native AVC tests.
+
+### Selected revision is not live disk state
+
+[Jujutsu's current working-copy documentation](https://docs.jj-vcs.dev/latest/working-copy/) explicitly distinguishes snapshotting the working copy, recording a repository operation, and updating filesystem files. When the third step is interrupted or a different workspace rewrites the selected commit, JJ recognizes a **stale** working copy instead of pretending its files were updated. This is strong evidence that repository-root authority and working-directory materialization must be distinct.
+
+AVC goes further in the *contract*, not in proven implementation: separate **selection generation**, **acknowledged capture-head generation**, and **materialization/last observation**. A persisted clean bit cannot be live truth if an external writer can mutate bytes without coordinating with the VCS. A high-frequency recovery writer should not invalidate an unrelated selection CAS. The latter is a resource-ownership inference, not a claim that JJ necessarily uses one global CAS.
+
+[Linux rename(2)](https://man7.org/linux/man-pages/man2/renameat2.2.html) documents that open file descriptors survive path renaming. Even an atomic name exchange cannot prevent a process retaining access to a directory it previously opened. No portable check-before-replacement provides an absolute no-clobber guarantee in an uncontrolled editor directory; default safe restoration therefore writes into a fresh location. An in-place option needs an honestly defined weaker guarantee or an actual OS-enforced writer boundary.
+
+### Recovery acknowledgement is not an atomic scan
+
+Ordinary file reads can occur during writers' mutations. A multi-file observation assembled over time may describe a collection of individually observed bytes which never coexisted. The system may durably preserve those bytes without claiming a point-in-time workspace snapshot. Optional watchers/editor hooks increase capture opportunities, not certainty about unsaved buffers or events lost while the watcher was absent.
+
+[SQLite durability documentation](https://www.sqlite.org/pragma.html#pragma_synchronous) explains the difference between WAL synchronous=FULL and NORMAL. In a simple one-database reference backend, acknowledging capture requires durable object closure and its pin/root in that transaction; a separate object store adds flush/staging/GC obligations. Process kill tests cannot qualify power-loss durability.
+
+### Conflict source expressions should not inherit their author IDs
+
+[Current Jujutsu conflict model](https://docs.jj-vcs.dev/latest/technical/conflicts/) shows that a committed conflict may be represented as a symbolic expression of source terms, not as marker bytes. Its multiple-side algebra also demonstrates why a naïve two-choice "conflict blob" is insufficient for general criss-cross/n-way merging.
+
+**AVC-specific issue:** a StateId was defined as source-only, while the earlier proposed conflict object included source-revision provenance. If revision IDs are included in a conflicted tree's hash, identical semantic unresolved expressions with different authors can receive different StateIds. Either those origins must be declared *semantic source* or separated. **The source-only contract chooses the separation**: canonical ConflictValue has base and alternative *source values*, while separately immutable ConflictOrigin records retain revision/path/algorithm attribution.
+
+The remaining hard problem is canonical normalization of nested and multiway unresolved terms (especially directory alternatives, deletion and conflicts of previously conflicted states). It is not solved just by removing author fields; it is a **format blocker** with independent oracle cases.
+
+### Sparse editing and ephemeral worker lifetimes
+
+A sparse client with only modified files cannot invent a fully authenticated StateId for the entire repository. It either uses Merkle path/absence witnesses to construct a new root, or asks a service that holds the canonical base to verify affected inputs and construct the result. Without either, it can retain a *pending edit bundle* with its base but cannot promise a complete new authenticated source state.
+
+Durability after an ephemeral worker exits needs **more than uploading changed blobs**: the receiving authority must acknowledge the complete canonical closure **and a protected draft root with known retention**. Otherwise uploaded objects can be garbage-collected as unreferenced. [Cloudflare's experimental agent Workspace](https://github.com/cloudflare/agents/blob/main/design/workspace.md) independently illustrates demand for durable virtual source storage and its SQLite/large-blob split, though it does not prove AVC's source semantics or pin protocol.
+
+### Rebase and authored metadata
+
+A conservative single-parent rebase is a three-way source transformation: merge the old parent's state, new parent's state and old revision's state, then create an immutable new revision with the old logical ChangeId. This can conflict; it is not patch commutation. Multi-parent rebase and automatic descendant selection need separate specification.
+
+[Jujutsu's metaedit behavior](https://manpages.debian.org/unstable/jujutsu/jj-metaedit.1.en.html) documents that modifying revision metadata can rewrite descendants. This is a real cost of making author/description part of immutable RevisionId, but moving those fields into separately versioned annotations creates offline divergence, selection, attribution and signature problems. The AVC reference retains immutable metadata for now and makes annotation separation an evidence-driven choice before format freeze.
+
+### Why this does not favor a different canonical history by itself
+
+Every history model must deal with uncontrolled filesystem writers, retention, source validity, and acknowledged remote custody. These findings therefore **strengthen the safety contracts** without establishing a canonical snapshot/changeset/causal winner. The snapshot-first hypothesis remains conditional on the complete-workload experiment.
+
+## 8. Decision register
 
 | Decision | Current status |
 | --- | --- |
 | Native general-purpose VCS; Git exchange optional, not a requirement | User requirement |
 | Exact immutable tracked source with direct StateId | **Provisional canonical model** |
 | Revision DAG with stable logical change identities | Strong working design |
-| Separate bounded private recovery and authored history | Strong working design |
-| Per-workspace/target roots, conditional shared landing | Strong working design |
-| Conservative typed conflict source, operation undo vs content revert | Strong working design |
+| Separate bounded private recovery and authored history | Strong working design; explicit coverage, consistency, acknowledgement and retention |
+| Separate workspace selection/capture generations, materialization and target CAS | Strong working design; external-disk writes remain uncontrolled |
+| ConflictValue source expression separated from immutable origin/provenance | **Design correction; multiway normalization remains format-blocking** |
 | Canonical bounded directory-node encoding | **Open pending focused tree test** |
 | Source-root vs canonical delta history | **Snapshot-first reference; benchmark remains a gate** |
 | Local DB, remote object physical layout, large-file chunking | **Open optimizations, SQLite reference** |
+| Sparse authoring via verified path witnesses or service | Strong protocol direction; proof/materialization implementation untested |
+| Durable ephemeral handoff root/receipt and retention | Strong working contract; requires fault tests |
+| Metadata in revision identity versus separate annotations | Open trade-off before format stability |
 | Causal patch graph for independent selective undo | Distinct conditional alternative |
 | Git import/export, pack encoding, named branch equivalence | Not required / future option |
 | Agent scheduler, VM snapshot or CI orchestration in core | Out of scope |
 
-The next step is a small independent source-state interpreter and benchmark that compares A/B on identical inputs; the format should not be frozen until the comparison and crash invariants are recorded.
+The next step is an independent source-and-workspace state-machine interpreter addressing the concrete conflict/capture/submit interleavings, followed by the shared A/B history-format benchmark. Neither the source model nor conflict canonical encoding should be frozen before their invariant tests are recorded.

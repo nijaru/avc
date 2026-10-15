@@ -12,6 +12,8 @@ The new reference is an **immutable snapshot-root State DAG**. This supersedes t
 
 Before stabilizing object IDs or writing a new persistent store, implement a small pure **reference interpreter** over logical directory maps, separate from Rust production objects:
 
+Add a separate small **workspace/capture/materialization state-machine oracle** before building the CLI. A recorded selected revision is not the bytes in an uncontrolled directory. Keep workspace selection generation, capture-head generation and materialization progress independent; persist observed capture coverage, not a forever-clean bit. Treat conflict *value* identity and conflict *origin* as independently modeled types.
+
     State = exact typed tree
     build(base, expected-path edits) -> State
     root(State) -> canonical digest under chosen format
@@ -35,6 +37,25 @@ Build a narrow snapshot-root prototype and a first-parent changed-file-history p
 - Concurrent distinct workspace root updates, repeated CAS to one target, stale in-place filesystem restore attempt.
 
 Keep an **independent** oracle for source bytes and roots. Property-based and state-machine testing should assert against the independently specified contract, not compare two implementations of one shared bug.
+
+### P0 adversarial lifecycle traces
+
+These are **format and safety blockers**, not cosmetic tests:
+
+1. Editor modifies an ordinary directory after AVC verified it: status must not preserve a perpetual clean guarantee; switching cannot overwrite those unobserved bytes under a no-clobber claim.
+2. Watcher observes A but not B, drops events, or dies mid-capture: coverage and acknowledgement disclose exactly what was preserved. An interrupted capture does not replace the last durable pin.
+3. Editor modifies two files while they are scanned: a per-file observation can preserve its bytes, but cannot claim the pair existed simultaneously unless writer exclusion/snapshot was demonstrated.
+4. Frequent capture-head updates race an independent workspace selection CAS: selection must not spuriously fail on capture generation changes.
+5. Selected Revision changes during a scan: preserve an acknowledged recovery observation against its original base; never silently retarget the observed bytes onto the new selected Revision.
+6. Conflict value has identical base/alternatives but different author/revision/driver origins: both source States have equal IDs; their immutable ConflictOrigin records remain distinct. Different unresolved semantic base terms must remain distinguishable.
+7. Delete/edit directory collision, merge of already conflicted states, three-way and criss-cross/n-way ancestry: preserve distinct alternatives and prohibit silently flattening nested conflict provenance.
+8. Rebase single-parent change P->C onto Q: produce exact new source (or typed conflict), keep old C, record evolution; reject unsupported merge-commit rebases. Test revert-after-duplicate-change and intentional reapply.
+9. A sparse client lacks a complete base: service verifies path *including absence* before constructing StateId. Offline client with missing witnesses retains a pending edit bundle, not an invented authenticated complete source root.
+10. Agent uploads new blobs and terminates without a pinned draft root: no durable-handoff guarantee. After an acknowledged root and full object closure, destroying the VM leaves the revision reconstructible through a second client.
+11. Crash after root CAS but before directory materialization: repository source remains durable, checkout explicitly incomplete, and prior directory remains intact. Lost RPC response is resolved by request identity.
+12. No path traversal or symlink construction escapes a fresh materialization destination. Case-colliding paths cannot be silently renamed or dropped.
+
+Use model-generated short interleavings and small independent fixtures, then real filesystem tests for claims involving uncontrolled writers; a simulated clean flag is not filesystem evidence.
 
 ### Representative work, not isolated microbenchmarks
 
@@ -63,14 +84,14 @@ Replace the old Git-dependent code only when a native path is operational. Imple
 1. Typed content objects, deterministic canonical encoding/hash vectors, path validation and immutable source trees.
 2. Revision creation, ancestry and stable logical change identity, without committing a change-diff as an independent source authority.
 3. SQLite reference store for source objects and resource-root/operation transactions with explicit durability assumptions.
-4. Working directory status + tracked/admitted file capture (no implicit secret/build-output inclusion).
-5. Checkout-free source read/list/diff/history, and safe restoration into a **new** directory.
-6. Independent workspace heads with generations; a root transaction records previous values, pins, idempotent request outcomes and the new head.
+4. Working directory status reporting selected Revision, last verified observation, latest durable CaptureId, completeness/consistency class, and pending materialization **as separate facts**; tracked/admitted file capture (no implicit secret/build-output inclusion).
+5. Checkout-free source read/list/diff/history with typed unresolved-conflict responses (never ordinary marker bytes), and safe restoration into a **new** directory.
+6. Independent workspace selection and capture-head generations plus durable materialization intents; one short transaction records the affected resource roots, previous values, pins, idempotent request outcomes and new head.
 7. Native self-contained source/history export with verification and backup/restore.
 
 Use provisional intuitive commands: init, status, capture, change finish, log, diff, show, new workspace, restore --into, verify/export. Command spelling must not determine history semantics.
 
-**Acceptance:** no Git executable/server required; exact source reconstruction after reopen; deterministic root IDs for equal source; durable root/object closure; clean handling of partial/corrupt input and disk full; explicit recovery coverage; no destructive filesystem restore without writer exclusion.
+**Acceptance:** no Git executable/server required; exact source reconstruction after reopen; deterministic source root equality even when conflict provenance differs; durable root/object/capture closure; no false perpetual clean status; old workspace and last capture preserved across failed scans; clean handling of partial/corrupt input and disk full; no destructive filesystem restore without writer exclusion.
 
 Detect existing legacy .avc metadata and preserve/offer explicit migration or export. Never reinterpret the Git-wrapper format as native or delete user data because the old prototype is v0.
 
@@ -78,11 +99,11 @@ Detect existing legacy .avc metadata and preserve/offer explicit migration or ex
 
 Implement meaningful source history operations (amend, new, rebase, merge, undo, revert, split/fold as semantics justify), with typed first-class conflicts. Preserve original revisions under explicit retention and expose divergence instead of picking a timestamp winner. Automatic/explicit recovery captures have bounded separate retention, named pins and honest durable coverage.
 
-Write the conservative three-way/multi-base merger and explicit structural conflict cases. Benchmarks must separately report unnecessary conflicts and incorrect automatic merges. Syntax/token drivers and AI-proposed resolutions are optional and never canonical authorities.
+Write the conservative three-way/multi-base merger and explicit structural conflict cases. Canonical ConflictValue must exclude author/history provenance; bind origin records to exact revision and path occurrence, and fail format stabilization until multiway normalization and conflict-of-conflicts are specified and tested. Benchmarks must separately report unnecessary conflicts and incorrect automatic merges. Syntax/token drivers and AI-proposed resolutions are optional and never canonical authorities.
 
 Keep filesystem source state and the working-copy materialization journal separate. Test watcher overflow, external editor races, stale process file descriptors, incomplete restore and unsafe symlink paths. In uncontrolled directories, **guaranteed non-clobber recovery is into a new location**.
 
-**Acceptance:** the same source/merge operations are callable without checkout; private captures neither create public events nor keep every old capture alive through an immortal history graph. An exact source revision is always recoverable after an operation fails between metadata and filesystem updates.
+**Acceptance:** the same source/merge operations are callable without checkout; typed file/directory conflicts survive state reconstruction; private captures neither create public events nor keep every old capture alive through an immortal history graph. An exact source revision is always recoverable after an operation fails between metadata and filesystem updates.
 
 ## Phase 3 — native transport and ephemeral-workspace end-to-end scenario
 
@@ -98,11 +119,11 @@ Define a versioned native protocol independently of Git:
 1. A developer chooses an immutable revision on a laptop or VPS.
 2. A short-lived microVM/container obtains a sparse or full source view through shared cache or bulk transfer.
 3. An agent uses ordinary files and records a native immutable revision.
-4. Its required object closure and submission receipt become durable **before** its runtime is deleted.
+4. Its required object closure **and a private, owner-scoped draft root/pin with explicit retention** become durable before a DraftReceipt is acknowledged and its runtime is deleted.
 5. Another machine reconstructs exactly that source with no dependency on the original VM disk.
 6. Multiple useful revisions are combined into an exact candidate; conflicts are retained or deliberately resolved; target advancement is conditional on current policy.
 
-Test disconnection/offline edit, duplicate/reordered upload, partial missing objects, stale target, unauthorized read, network timeouts after commit, and cold/busy caches. Do not claim remote operations are atomic with an external CI/deployment system.
+Test disconnection/offline edit, duplicate/reordered upload, partial missing objects and absent-path witnesses, stale target, unauthorized read, network timeouts after commit, upload-without-root-pinning, root expiry, and cold/busy caches. Do not claim remote operations are atomic with an external CI/deployment system.
 
 ## Phase 4 — choose physical optimization based on measurements
 

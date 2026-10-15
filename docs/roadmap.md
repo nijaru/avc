@@ -23,7 +23,9 @@ Add a separate small **workspace/capture/materialization state-machine oracle** 
     merge(base, a, b, driver) -> State with typed conflicts
     amend/rebase -> new immutable revision + predecessor relation
 
-Build a narrow snapshot-root prototype and a first-parent changed-file-history prototype over the **same** logical state, blobs, tree codec, merge algorithm, and test fixtures. Do not write two complete CLIs or network services. A causal patch graph gets a faithful semantics-specific experiment only if concrete workflows justify its extra authority model.
+The [Python source-model oracle](experiments/source_models_oracle.py) is the first *semantic* step: 14 deterministic tests (including a separately implemented flat-path check) pass, and a validation test shows that acknowledging a coherent source revision from a delta log requires checking the base transformation. It does **not** benchmark the physical representations or provide crash guarantees.
+
+Build a narrow **persistent indexed** snapshot-root prototype and a first-parent changed-file-history prototype over the **same** logical state, blobs, tree codec, merge algorithm, and test fixtures. Both must enforce the same *valid acknowledged revision* contract: an unchecked appended delta is a pending draft, not a completed source revision. Do not write two complete CLIs or network services. A causal patch graph gets a faithful semantics-specific experiment only if concrete workflows justify its extra authority model.
 
 ### Correctness matrix
 

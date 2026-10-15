@@ -239,7 +239,18 @@ class DeltaHistory:
         self.replayed_revisions = 0
 
     def record(self, edits: tuple[Edit, ...]) -> int:
+        """Admit a VALID source revision, not merely persist an unchecked draft.
+
+        Without reconstructing/verifying its parent, a minimal delta log can
+        acknowledge edits whose preconditions or namespace effects are invalid.
+        A source VCS must not call such a draft a complete revision. This toy
+        uses the derived parent view to validate the exact resulting source;
+        consequently it does tree work at admission even with delta truth.
+        Production designs may use other verified witnesses/transformations.
+        """
+        next_state = apply(self.read(len(self.changes)), edits)
         self.changes.append(edits)
+        self.view_cache[len(self.changes)] = next_state
         return len(self.changes)
 
     def read(self, index: int) -> Directory:
@@ -418,6 +429,25 @@ class SourceValueTests(unittest.TestCase):
         flat.move((b"a",), (b"moved",))
         rendered = IndependentFlatOracle()
         self.assertEqual(rendered.flatten(root), flat.nodes)
+
+    def test_delta_revision_must_validate_before_acknowledgement(self) -> None:
+        snap, delta = SnapshotHistory(), DeltaHistory()
+        create = (Put((b"f",), File(b"original"), None),)
+        self.assertEqual(snap.record(create), delta.record(create))
+        # An unchecked append could store this bogus operation and report a
+        # revision that fails source reconstruction only after cache eviction.
+        stale = (Put((b"f",), File(b"replacement"), None),)
+        with self.assertRaises(ValueError):
+            delta.record(stale)
+        with self.assertRaises(ValueError):
+            snap.record(stale)
+        self.assertEqual(len(delta.changes), 1)
+        self.assertEqual(len(snap.revisions), 2)
+        delta.evict_derived_views()
+        valid = (Put((b"f",), File(b"replacement"), File(b"original")),)
+        self.assertEqual(snap.record(valid), delta.record(valid))
+        self.assertEqual(delta.replayed_revisions, 1)
+        self.assertEqual(digest(delta.read(2)), digest(snap.read(2)))
 
     def test_unmaterialized_draft_is_not_absent_source(self) -> None:
         delta = DeltaHistory()

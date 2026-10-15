@@ -52,7 +52,7 @@ Scion and Mononoke/Bonsai make changed-file lists authoritative and derive sourc
 
 **Strengths:** reduced immutable revision-admission work for rarely consumed drafts; server write path decoupled from expensive path/blame/source-tree indexes; freedom to replace derived tree encodings.
 
-**Costs:** historical source reads must find/build a view. If every accepted revision is immediately tested, index construction still occurs, now off-path or before tests. Index evictions introduce cold tail latency and rebuild/availability obligations. A flat changed-path encoding must handle large directory operations somehow; its first-parent merge records must represent the exact resulting source. Validating a new change against an old parent's namespace may still require reading the parent's derived state.
+**Costs:** an acknowledged **valid source revision** must have its source transformation validated against the true base, whether or not a derived tree is permanently stored. Merely appending an unchecked path delta creates a *pending draft*, not a proven coherent revision; it can hide invalid path/type/precondition changes until a later read. A client holding authenticated Merkle witnesses or a validating service can reduce this work, but the cost must appear somewhere. Historical source reads must find/build a view. If every accepted revision is immediately tested, index construction still occurs, now off-path or before tests. Index evictions introduce cold tail latency and rebuild/availability obligations. A flat changed-path encoding must handle large directory operations somehow; its first-parent merge records must represent the exact resulting source. Validating a new change against an old parent's namespace may still require reading the parent's derived state.
 
 **Key insight:** deriveable blame and path history are **also possible under A**. Making changesets canonical is not necessary to have versioned derived indexes, server-side queries, sparse working copies or cheap immutable object admission.
 
@@ -163,6 +163,12 @@ These systems make the case for immutable data, narrow coordinated roots, and qu
 **Sync:** a StateId permits direct hierarchical sparse requests. For full/cold replication, batch and compress object closures, with optional derived reachability/transfer indexes. The protocol should not require a RTT for every tree node, nor ship entire history for every CI job. Both patterns are possible independent of B-versus-A.
 
 **History/merge:** changed-path metadata, ancestry, blame and syntax are *separately derived*, versioned and replaceable. Exact source StateId and accepted provenance are immutable. A semantic validation policy is evidence about an exact candidate, not a promise of automatic correctness.
+
+### Concrete reference-model check (2026-10-14)
+
+The [independent Python semantic model](experiments/source_models_oracle.py) implements one immutable typed-source interpreter and two history authorities: a stored source-root reference and a parent-relative edit log with evictable source views. **14 deterministic tests pass** (including 250 seeded edits against a separate flat-path oracle). The models reconstruct identical source bytes, retain empty directories and subtree moves, and distinguish conflict value from its origin metadata. A new test shows that the delta-history path cannot acknowledge a stale/invalid edit as a valid revision: it must consult a validated parent state or an equivalent authenticated witness. Evicting delta views makes later valid admission replay earlier changes in this simple implementation.
+
+**Limits:** this model is in-memory and single-parent for history, with simplified conflicts and no durable encoding, filesystem observation, SQLite, multiparent merge DAG or production-grade optimizations. Its pass rate says **nothing** about comparative wall-clock speed or the likelihood of AVC's proposed architecture outperforming existing VCSs. The useful finding is about the *valid-source admission contract*, not performance.
 
 ## 6. Falsification and adoption criteria
 

@@ -1,122 +1,138 @@
-# AVC implementation and verification roadmap
+# AVC roadmap: validate source authority, then build the native VCS
 
-**Updated 2026-10-14.** [Design](design.md) is the coherent native reference; [research](research.md) explains the alternatives and evidentiary limits. Implementation remains Rust 0.0.1's old Git wrapper.
+**Updated:** 2026-10-14  
+**Architecture:** [design](design.md) · **evidence:** [research](research.md)  
+**Current code:** legacy Rust 0.0.1 Git-command wrapper with separately written JSON operation log; no native guarantees.
 
-The immediate goal is **a trustworthy, usable local VCS vertical slice**, not a distributed service and not three full competing products. Build the leading **parent-relative changeset** reference, then compare its costly decisions with a snapshot-root alternative using the *same* storage, merging and workload fixtures. A large-scale client/server deployment is not a prerequisite for the first working tool.
+The new reference is an **immutable snapshot-root State DAG**. This supersedes the old decision to require canonical first-parent changed-file records. Both are real alternatives, but source-root states now lead for a general-purpose offline/local-to-cloud VCS. This is a testable selection, not an asserted benchmark result. Do not implement obsolete WorkVersion/Application scaffolding, a "Bonsai clone", or Enroute-style global dense IDs.
 
-## 0. Establish the invariant and format oracle
+**Git compatibility, Git object/pack formats and Git migration are not requirements or initial release gates.** Evaluate adapters later if users need them.
 
-Write a small independent source-state model and precise canonical encodings for a root changeset, first-parent Set/Delete, multiple parents, file types, conflict objects, stable logical ChangeIds, resource generations and request outcomes.
+## Phase 0 — executable source-state semantics and architecture comparison
 
-Hard cases for the reference interpreter:
+Before stabilizing object IDs or writing a new persistent store, implement a small pure **reference interpreter** over logical directory maps, separate from Rust production objects:
 
-- A root revision plus empty/absent parent, Set/Delete repeat and path type collisions.
-- A two-parent merge whose stored first-parent delta fully reconstructs the desired result; other parents do not silently change source bytes.
-- Same file bytes reached by different histories; equal derived source trees with different changeset identities.
-- Mixed file modes, symlinks, opaque blobs and invalid/portable paths.
-- Unresolved conflicts and resolutions with exact provenance.
-- Concurrent amendments/rebases retaining stable ChangeId while immutable revision IDs change.
-- Workspace A advances while B advances independently; shared target CAS rejects a stale actor.
-- Lost reply after committed transaction; repeated request produces original outcome.
-- Derived source-tree cache deleted: rederivation reconstructs identical logical bytes.
-- Root transaction aborted: partially created objects remain invisible.
+    State = exact typed tree
+    build(base, expected-path edits) -> State
+    root(State) -> canonical digest under chosen format
+    Revision = {StateId, parent revision IDs, LogicalChangeId, metadata}
+    merge(base, a, b, driver) -> State with typed conflicts
+    amend/rebase -> new immutable revision + predecessor relation
 
-Publish format hash vectors and reference-model fixtures before declaring a stable storage format. Internal structure can evolve without a compatibility shim while unreleased.
+Build a narrow snapshot-root prototype and a first-parent changed-file-history prototype over the **same** logical state, blobs, tree codec, merge algorithm, and test fixtures. Do not write two complete CLIs or network services. A causal patch graph gets a faithful semantics-specific experiment only if concrete workflows justify its extra authority model.
 
-## 1. Working native local loop
+### Correctness matrix
 
-Replace the old Git auto-commit/reset command paths as functionality becomes real; do not preserve a permanent second backend or attribute native atomicity to Git+JSON dual writes.
+- Empty files/directories, symlinks, modes, NUL/non-UTF8 content, invalid path components and portable name collisions.
+- Different authors and ancestry producing equal source: equal StateId in one canonical format, different RevisionIds.
+- Change amend/rebase divergence; split/fold lineage; legitimate revert and later reapplication.
+- Directory subtree copy/move; rename followed by edit; delete-versus-modify; file/directory type conflict; copy from an independently retained subtree root.
+- Merge with multiple bases, n-way unresolved conflicts, exact base/left/right recorded provenance; no hidden random ordering.
+- Source reconstruction with every derived index deleted; no missing referenced objects; corrupted hash rejected.
+- Source operation and revision object consistency across differing ingestion/update orders.
+- Untrusted giant input, path traversal, unsupported metadata, malicious symlinks and invalid file kinds.
+- Crash-before-root, crash-after-root, retry after lost reply, GC while objects are staged, reader during compaction.
+- Concurrent distinct workspace root updates, repeated CAS to one target, stale in-place filesystem restore attempt.
 
-Implement one small Rust crate/library with cohesive boundaries: source/change objects; derived tree/index; repository transaction authority; ordinary working-copy observer/materializer; CLI.
+Keep an **independent** oracle for source bytes and roots. Property-based and state-machine testing should assert against the independently specified contract, not compare two implementations of one shared bug.
 
-Suggested user-level capabilities, spelling not fixed:
+### Representative work, not isolated microbenchmarks
 
-    init
-    status
-    checkpoint             // explicit protected source capture
-    change new / finish    // create one authored native changeset
-    log / diff / show
-    restore <id> --into <new-directory>
-
-The reference store uses SQLite for small canonical objects and resource roots in one explicit durability domain. Store file bytes exactly; treat unsupported oversized content explicitly until a tested external-blob staging protocol exists. Source-object IDs do not depend on SQLite page layout.
-
-Source queries must work directly against revisions **without a checkout**. Derive a small sorted hierarchical source-tree view immediately as needed, cache by changeset/derivation version, and demonstrate rebuilding it after deleting every derived cache. Queries must not serve partial state when derivation lags.
-
-Acceptance: actual repository reopen, byte-identical files/modes, correct first-parent merge interpretation, deterministic derivation, no missing objects after an acknowledged transaction, separate restore destination, clear unsupported-state errors. Run normal Rust tests, formatting/clippy and focused reference-model probes.
-
-## 2. Focused A versus C comparison before format freeze
-
-Build the **smallest real snapshot-root alternative** over the same Rust object store, persistent directory map, fixture corpus and mutation interface. Do not build two independent CLIs, network stacks or working-copy engines.
-
-Measure:
-
-| Workload | Measurements that decide |
+| Workload | Comparison required |
 | --- | --- |
-| Repeated one-file edits | Canonical write bytes, foreground p50/p95/p99, fsync time, derived tree creation |
-| Many small files | Local revisions, status/diff and storage versus tuned Git/Jujutsu |
-| Frequently consumed revisions | First-read latency, cumulative write+read CPU/IO and source-tree retention |
-| Mostly discarded drafts | Admission cost including later GC and unused derived work |
-| 100k revisions, missing derived cache | Cold ancestor reconstruction, index rebuild, peak RAM and time |
-| Large directory rename/copy | Number of canonical path edits versus subtree reuse; source conversion cost |
-| 1, 8, 32 independent workspaces | Unnecessary logical conflicts, write serialization and aggregate work |
-| Binary and missing-object cases | Whole-blob cost, cold transfer, corruption detection, explicit errors |
+| Solo edit-test-repeat | Write + first source read + diff + next edit + restore |
+| High-frequency recovery captures | Durable admitted bytes + bounded storage + complete reclaim |
+| Many durable but discarded draft revisions | Admission, cold first read if later requested, retention cleanup |
+| Many durable revisions immediately built | Admission + source-tree retrieval + build materialization |
+| 100k+ history with caches removed | Cold arbitrary source, path history, index rebuild, tail latency |
+| Many-file moves and 1M-entry wide directories | Node allocation, source read, subtree reuse, diff, remote transfer |
+| 8/32 isolated workers | Aggregate writes, resource-root conflicts, shared cache, tested integration |
+| Large binaries and source distribution | Whole-blob, bounded delta/chunk and sparse/bulk network bytes |
+| Unsafe process/fs/storage interruptions | Reachability, data-loss outcomes, restoration, consistent backup |
 
-For both models, use the **same** durability level, changed-file discovery, source blobs, tree encoding, merge implementation and hardware/filesystem. Compare complete creation + first read + merge + collection, not just append. Set actual budgets only from measured baselines.
+Compare against appropriately configured modern Git and Jujutsu for *complete user tasks*. Scion/Mononoke/Enroute published fleet results are not comparable AVC numbers. Record hardware, filesystem, durability level, real or seeded source histories, warm/cold cache, p50/p95/p99, CPU, disk/network bytes and errors.
 
-**Selection rule:** keep C if deferring/indexing source trees yields a meaningful end-to-end gain without unacceptable cold-read, repair, move or ordinary-user regressions. Select A if its immediate tree access and simpler invariant consistently win. The output is one agreed canonical source format and a recorded falsifiable decision, not perpetual research.
+**Canonical history gate:** snapshot-first remains selected unless a parent-relative authoritative log demonstrates materially better end-to-end results without unacceptable arbitrary-version read/recovery costs. For causal patch graphs, show useful selective-undo/conflict gains on ordinary external file-writer histories, not just synthetic commutative examples.
 
-A causal patch graph is a separate comparison **only** if causal selective undo/reordering yields demonstrated user value that A/C cannot provide. Reference Pijul/Darcs semantics faithfully; a simplified file-diff algebra is not an adequate substitute.
+**Canonical tree layout gate:** test sorted small directories against deterministic bounded radix/sharded and paged/POS directory nodes before freezing StateId encoding. Index format migration affects canonical hashes; document old decoder and explicit object remapping.
 
-## 3. Local correctness and user-facing history
+## Phase 1 — safe native local vertical slice
 
-Implement:
+Replace the old Git-dependent code only when a native path is operational. Implement compact, cohesive Rust components:
 
-- Independent workspace roots and generations; safe allocation/reuse of directories.
-- A separate append/recover history of resource operations, with meaningful undo versus content revert and explicit reapplication.
-- Private bounded automatic capture of tracked/admitted paths, named pins and honest last-durable coverage. No public push per capture.
-- Typed merge conflicts; deterministic three-way and proven multi-base handling; explicit path/mode/delete cases.
-- Indexes for source ancestry and path-history queries, derived and rebuildable.
-- Machine API using exact IDs, expected generations, limits, idempotency epochs, and structured stale/conflict outcomes.
-- Safe materialization: fresh-directory restore by default; controlled in-place switches report limited guarantees rather than promising atomic file replacement under arbitrary editors.
+1. Typed content objects, deterministic canonical encoding/hash vectors, path validation and immutable source trees.
+2. Revision creation, ancestry and stable logical change identity, without committing a change-diff as an independent source authority.
+3. SQLite reference store for source objects and resource-root/operation transactions with explicit durability assumptions.
+4. Working directory status + tracked/admitted file capture (no implicit secret/build-output inclusion).
+5. Checkout-free source read/list/diff/history, and safe restoration into a **new** directory.
+6. Independent workspace heads with generations; a root transaction records previous values, pins, idempotent request outcomes and the new head.
+7. Native self-contained source/history export with verification and backup/restore.
 
-Run fault injection around object commit, root selection, journal recovery, retention, in-flight staging versus GC, long readers, interrupted checkout and duplicates. Match supported OS/filesystem semantics; process termination tests alone do not establish power-loss durability. Keep independent backups.
+Use provisional intuitive commands: init, status, capture, change finish, log, diff, show, new workspace, restore --into, verify/export. Command spelling must not determine history semantics.
 
-Keep [contract probes](experiments/vcs_contract_probes.py) and [recorded results](experiments/vcs_contract_results.json) as narrow regression reference cases. They are **not** production VCS benchmarks or user-trust certification.
+**Acceptance:** no Git executable/server required; exact source reconstruction after reopen; deterministic root IDs for equal source; durable root/object closure; clean handling of partial/corrupt input and disk full; explicit recovery coverage; no destructive filesystem restore without writer exclusion.
 
-## 4. Git import/export and independent collaboration
+Detect existing legacy .avc metadata and preserve/offer explicit migration or export. Never reinterpret the Git-wrapper format as native or delete user data because the old prototype is v0.
 
-Make a real user migration path before spending time on a native distributed forge:
+## Phase 2 — recoverable history and composition
 
-- Import Git file and commit history into native changesets, preserving original Git IDs/objects where truly unchanged and mapping rewritten identity.
-- Export selected **resolved** native changesets and accepted target history into a valid Git repository for current hosting/review.
-- Explicitly qualify names, modes, symlinks, attributes/EOL/filters, signed commits/tags, LFS, submodules, shallow/partial histories and binary files. Unsupported cases reject before damage.
-- Do not let native and Git tools simultaneously write one mutable worktree/index or treat Git remote target policy as local authority.
-- Compare an ordinary solo workflow and concurrent agent tasks with maintained Git, current Jujutsu and (where relevant) Sapling. Include failed attempts, remote CI/event counts and operator cost.
+Implement meaningful source history operations (amend, new, rebase, merge, undo, revert, split/fold as semantics justify), with typed first-class conflicts. Preserve original revisions under explicit retention and expose divergence instead of picking a timestamp winner. Automatic/explicit recovery captures have bounded separate retention, named pins and honest durable coverage.
 
-If AVC offers only marginal improvements over existing systems on complete tasks, rethink the product scope or the canonical model. Novelty is not a release justification.
+Write the conservative three-way/multi-base merger and explicit structural conflict cases. Benchmarks must separately report unnecessary conflicts and incorrect automatic merges. Syntax/token drivers and AI-proposed resolutions are optional and never canonical authorities.
 
-## 5. Optional hosted service, not a required architecture
+Keep filesystem source state and the working-copy materialization journal separate. Test watcher overflow, external editor races, stale process file descriptors, incomplete restore and unsafe symlink paths. In uncontrolled directories, **guaranteed non-clobber recovery is into a new location**.
 
-Only after a safe local system works:
+**Acceptance:** the same source/merge operations are callable without checkout; private captures neither create public events nor keep every old capture alive through an immortal history graph. An exact source revision is always recoverable after an operation fails between metadata and filesystem updates.
 
-- Immutable root/object transfer with batched, resumable sparse requests; locally cached or service-computed diffs, ancestry and merges.
-- Restricted draft roots for opt-in backup without creating public review/CI noise.
-- Managed target CAS under actual authorization/policy, with receipt and event outbox, exact candidate validation, queryable retries, and separate accepted/verified policies when explicitly chosen.
-- Cache tiers with authorization and isolation; failures or misses must not silently return incomplete source.
-- Full durability, GC staging, quotas, retention, redaction and backup/restore across service components.
+## Phase 3 — native transport and ephemeral-workspace end-to-end scenario
 
-For a single target, validated integration has an inherent ordering/compute bottleneck; use honest queues/batching and precise cache reuse rather than claiming that unlimited agent writers imply unlimited safe merges.
+Define a versioned native protocol independently of Git:
 
-## 6. Performance and trust gates for every phase
+- Batch/resume immutable object and subtree retrieval, including expected hashes, ranges, promised-object errors and backpressure.
+- Transfer a complete selected source and optionally selected history; make offline copies useful after complete acquisition.
+- Headless read/diff/merge/author operations on exact IDs without a full working copy.
+- Per-target conditional updates, separate private/draft roots and explicit authenticated permission scope.
 
-Track full lifecycle: create, first materialization, status, diff/history/blame, merge, recovery, sync, index rebuild, GC, Git exchange, and integration. Include small projects, wide trees, substantial histories, binary edits, sparse clients, 100k changesets, up to 1m bounded private captures and 1/8/32 workers. Record source/tool versions, reproducible datasets, warm/cold caches, filesystem, hardware, p50/p95/p99 and raw results.
+**Mandatory system scenario:**
 
-Absolute requirements: no acknowledged missing content, no silent overwriting of external filesystem edits, no unauthorized disclosure/target updates, no lost unexpired recovery pins, no wrong-source validation receipts, and explicit interoperability failures. Measure both **unnecessary merge conflicts** and **incorrect automatic merges**.
+1. A developer chooses an immutable revision on a laptop or VPS.
+2. A short-lived microVM/container obtains a sparse or full source view through shared cache or bulk transfer.
+3. An agent uses ordinary files and records a native immutable revision.
+4. Its required object closure and submission receipt become durable **before** its runtime is deleted.
+5. Another machine reconstructs exactly that source with no dependency on the original VM disk.
+6. Multiple useful revisions are combined into an exact candidate; conflicts are retained or deliberately resolved; target advancement is conditional on current policy.
 
-The current crate's test commands remain:
+Test disconnection/offline edit, duplicate/reordered upload, partial missing objects, stale target, unauthorized read, network timeouts after commit, and cold/busy caches. Do not claim remote operations are atomic with an external CI/deployment system.
+
+## Phase 4 — choose physical optimization based on measurements
+
+Start with a single local SQLite authority and whole blobs. Introduce only measured optimizations:
+
+- Immutable segment files with crash-safe staging pins, object/GC coordination and consistent backups.
+- Paged/bounded canonical directory nodes selected in Phase 0; independent derived lookup/index formats.
+- Ancestry, changed-path, blame and optional search indexes keyed by immutable revisions + index version.
+- Native sparse-object queries **and** compressed bulk bundles; select by data/latency needs.
+- Physical delta chains/content-defined chunking for large changing blobs under maximum reconstruction bounds.
+- Shared service caches and source/merge compute isolation if hosted demand justifies them.
+
+Do not require Enroute's stable globally numbered objects, Raft, pack format or commit segments. They solve particular hosted Git-serving workloads, not universal source-history semantics. Do not require Scion's always-online clients or its specific changeset protocol.
+
+## Phase 5 — publication and trustworthy release
+
+A candidate refers to an exact result StateId, selected revisions, merge algorithm/recipe, target generation and validation policy. Evidence binds to that candidate and toolchain. A protected target moves only after validation under current policy and authorization; alternative accepted/verified staging is an explicit weaker policy.
+
+Finish real fault-injection tests on supported APFS/Linux/NTFS configurations and actual durable-flush assumptions, backups, garbage collection with active readers/staging, format robustness and malicious content. Audit encryption/authentication for service use, not just content hashes. Make no claim of production data integrity from passing unit tests alone.
+
+The native export/backup/recovery experience must be usable and verified before asking people to put irreplaceable source in AVC.
+
+## Optional future adapters and naming
+
+Evaluate Git import/export, other VCS interoperability or Git physical codec **after** native correctness/performance goals justify the extra surface. No compatibility requirement dictates native formats or delays the first release. Project naming is independent; keep AVC until selected.
+
+Existing prototype checks remain:
 
     cargo test
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
 
-Do not bump the version, rename AVC, or claim native code has been implemented in this design/documentation change.
+The [existing narrow Python probes](experiments/vcs_contract_probes.py) and [results](experiments/vcs_contract_results.json) remain evidence of specific hazards, not a native benchmark. No Rust implementation change, measurement or release is implied by this architecture documentation update.

@@ -1,41 +1,35 @@
 # AVC
 
-AVC is an experimental **native, local-first version control system** intended for ordinary software development and increasingly concurrent human/agent workflows. Git interoperability is an adapter, not its storage or history foundation.
+**Experimental native version control for people and coding agents.**
 
-## Architectural direction
+AVC targets ordinary offline source development as well as remote workspaces, CI, containers, microVMs, VPSs and large agent fleets. The intended advantage is a safe end-to-end workflow: recover unfinished edits, make independent work cheap, inspect exact source without cloning/checkout when unnecessary, preserve conflicts, and integrate deliberately.
 
-The leading reference design is **minimal immutable changesets with content-addressed file data**, plus independently maintained source-tree and history indexes. Ordinary editing and history work offline; large hosted deployments may run the same source operations remotely and fetch only needed objects.
+**AVC is not Git-based. Git compatibility, Git object formats, and Git protocol are not architectural requirements.** Existing systems inform the research but do not determine the design.
 
-The distinctions matter:
+## Design direction
 
-- A **changeset** records paths changed relative to its first parent, rather than making construction of a complete tree index part of every commit.
-- A **source view** is a persistent Merkle-indexed representation of the files at that changeset; it is derived from canonical history and can be rebuilt.
-- **Workspaces** are independent mutable directories over shared immutable content. A **target** is an intentionally updated shared pointer; unrelated local work must not contend on one global head.
-- **Private recovery captures**, authored history, review proposals and accepted target updates have different lifetimes and side effects.
-- Source queries and most operations can execute **without creating a checkout**.
+The leading reference is **immutable source states backed by persistent Merkle trees**, with immutable revision ancestry, stable logical change identities, independently versioned workspaces, typed conflicts and separate bounded private recovery.
 
-**This is a coherent implementable reference architecture, not a demonstrated optimum.** A canonical snapshot-first design remains the principal challenger, especially when most revisions are immediately materialized or read. Causal patch graphs are a further alternative for stronger undo/commutation semantics. The source format will not be frozen until focused comparisons settle those questions.
+A revision directly identifies the exact source that tools inspect, build, test and share. Temporary edits can be captured cheaply without becoming permanent authored history or public events. A native library/source API can work locally offline or through an optional hosted service, using sparse object reads or bulk transfer as appropriate.
 
-## Current implementation
+**This is a concrete proposed architecture, not a proven optimum.** Parent-relative canonical changesets and causal patch graphs remain competitors where their extra semantics or cheap admission justify the costs. A canonical source-tree encoding and physical store must pass the [documented experiments](docs/roadmap.md) before format stability.
 
-**None of the native architecture above is implemented.** The Rust 0.0.1 code is an earlier Git-command prototype with a separate JSON operation log. It does not provide the native durability, recovery, concurrency, or publication guarantees. Keep independent backups; do not use it as the sole copy of important work.
+## Status and documents
 
-- [Design](docs/design.md): exact proposed object, query, merge, workspace and transaction contracts.
-- [Research](docs/research.md): primary-source evidence, competing models, trade-offs and reversal criteria.
-- [Roadmap](docs/roadmap.md): first working slice and tests that must succeed before commitment or release.
-- [Contract probes](docs/experiments/vcs_contract_probes.py) and [results](docs/experiments/vcs_contract_results.json): small reproduced counterexamples, not native benchmarks.
+**No native AVC engine has been implemented.** Rust 0.0.1 is still an old Git-command wrapper with a separate JSON log. It does not establish the proposed durability, recovery or concurrency guarantees; keep independent backups.
 
-The project still uses the AVC name. Tavi is a provisional naming idea, not an approved rename.
+- [Architecture](docs/design.md) — source state and revision contracts; merge, recovery, workspace, API, storage and sync semantics.
+- [Research](docs/research.md) — primary sources, alternative histories and reasons for the current decision.
+- [Roadmap](docs/roadmap.md) — executable model, canonical-history comparisons and native implementation gates.
+- [Contract probes](docs/experiments/vcs_contract_probes.py) and [results](docs/experiments/vcs_contract_results.json) — narrow reproducible counterexamples, not native performance measurements.
+
+The project remains named AVC. Tavi/Delos are unapproved naming suggestions, not implementation decisions.
 
 ## Existing prototype checks
 
     cargo test
     cargo fmt --check
     cargo clippy --all-targets --all-features -- -D warnings
-
-The separate research probes can be run with Python 3.11+ and Git:
-
-    python docs/experiments/vcs_contract_probes.py --output /tmp/avc-probes.json
 
 ## License
 

@@ -18,15 +18,15 @@ The other core decisions fit this source authority:
 - Shared publication validates an exact candidate under an explicit policy.
 - Git compatibility, Git object formats, Git protocol, agent runtimes and hosted services are **not native requirements**. Any adapter is a separate later decision.
 
-**This is a selected architecture, not an experimentally demonstrated global optimum.** Earlier changeset-first and causal graph proposals have been evaluated and rejected as the default; their design arguments remain in the research record. Engineering qualification may tune representation parameters or expose a concrete correctness defect, but the project is not waiting for another broad architecture selection.
+**The v0 architecture and proposed byte format are now concretely specified**, not proven globally optimal or released as stable. The [authoritative specification](docs/design.md) includes BLAKE3 typed-object framing, deterministic path-compressed nibble radix maps with 4096-byte canonical leaves, checked source operations, coupled-region conflicts, provenance, resource generations, staging/GC ordering and native source/target APIs. The next work is independent format vectors and adversarial fault/merge verification, **not** another general VCS-model search. Earlier changeset-first and causal graph candidates remain documented as rejected defaults.
 
 ## Current status
 
 **The native engine has not been implemented.** The Rust 0.0.1 code is a legacy Git-command wrapper with a separate JSON operation log. It does not provide the native durability, recovery, conflict, workspace, or sync guarantees described above. Do not entrust it with the sole copy of important work.
 
-- [Architecture](docs/design.md): selected data model, canonical tree structure, source/merge semantics, recovery, storage, APIs, and publication.
-- [Research](docs/research.md): comparative evidence and reasons for rejecting other canonical models.
-- [Qualification roadmap](docs/roadmap.md): correctness, durability, portability, user-workflow and performance gates.
+- [Architecture](docs/design.md): **single authoritative v0 specification** for canonical objects, directory representation, conflicts, recovery, durability, APIs and publication.
+- [Research](docs/research.md): evidence, rejected models, and adversarial design audit with counterexamples.
+- [Qualification roadmap](docs/roadmap.md): independent golden-vector, merge, durability, portability and full-workflow verification gates.
 - [Source-model oracle](docs/experiments/source_models_oracle.py) and [contract probes](docs/experiments/vcs_contract_probes.py): narrow research artifacts, **not** native benchmarks.
 
 The project remains named AVC. Tavi and Delos were exploratory names only.

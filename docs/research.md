@@ -102,3 +102,42 @@ The existing [contract probes](experiments/vcs_contract_probes.py) record wrong 
 **Reconsider a fundamental choice only if:** it violates a specified correctness invariant, makes critical general-purpose workflows unusable, or robust complete-task measurements establish a material advantage for an alternative. Do not re-open design simply because a new article features a different data structure.
 
 Prior incompatible architectural proposals remain accessible through Git history. The present [design](design.md) supersedes them; no parallel "maybe canonical deltas" roadmap remains.
+
+
+## 6. Adversarial architecture review — October 15, 2026
+
+This is a **static adversarial review of the proposed contracts**, not a claim of proof or benchmark superiority. It forced concrete changes to the authoritative [design](design.md).
+
+| Attack on the original idea | Counterexample | Final v0 response |
+| --- | --- | --- |
+| "One conflict per path is enough" | Both sides rename one source to different destinations, coupling several paths | Represent conflicting subtree alternatives at their least common ancestor, including the whole-root case |
+| "Source conflicts include their origin" | Two histories yield identical unresolved byte alternatives | Hash value-only conflict terms in State; store driver and input RevisionIds in separately owned immutable provenance |
+| "Flatten all nested conflicts" | Criss-cross and repeated rebases can cancel meaningfully distinct alternatives | Simplify only proven equal/base cases; preserve nested terms; bounded opaque ConflictGroup DAG if normalization cannot prove safety |
+| "An enormous conflict is a single blob" | 10,000 alternatives or chained merges consume unbounded memory | Kind-8 canonical chunked conflict groups with bounded child fanout and complexity errors, no silently lost input |
+| "Root can only be a directory" | Root is least common ancestor of two coupled rename conflicts | State root allows a typed unresolved *directory-valued* conflict |
+| "Conflict at root hides all source" | Most files are unaffected by a single rename collision | Read paths across all alternatives; return resolved value if every alternative agrees, typed uncertainty otherwise |
+| "Merger picks any common ancestor" | Criss-cross history has more than one best merge base | Compute maximal common-ancestor frontier; deterministic memoized virtual-base with conflict preservation and recorded recipe |
+| "Same bytes means same causal effect" | Independent identical deletion then revert | State dedup means value equality, not causal selective undo. Preserve origin and allow explicit reapply |
+| "Large moves require file-level deltas" | Rename directory with 100,000 files | Immutable child-directory map binding reuse; copy by content SubtreeId instead of pinning dead revision ancestry |
+| "Radix choice is enough" | Threshold-crossing map yields different hashes by insertion order | Fixed deterministic maximal-prefix nibble radix split; leaf/branch constraints and byte grammar are part of canonical identity |
+| "Every checkout creates a new directory" | Ordinary developers switch revisions frequently in one editor | Restore/new workspace uses strong fresh-directory guarantee; ordinary in-place switch allowed with protected before-images, refused known dirt, and honest external-writer race limitations |
+| "The DB transaction protects live files" | Editor writes after scan or keeps a descriptor across rename | Selected immutable root is independent of external observed filesystem; status is time-scoped, in-place exclusion is explicitly limited |
+| "Uploaded bytes means agent work is saved" | Worker VM dies after sending unpinned object files | Required protected draft root and whole source dependency closure must be acknowledged before VM deletion |
+| "Unchanged diff paths imply valid program" | Agent edits API while another edits caller, with no text conflict | Validate exact integrated State under a declared toolchain/policy, CAS accepted target against observed generation |
+| "CAS is one global operation head" | Capture watcher races independent workspace selection | Separate selection, capture and materialization generations; only same named shared target competes logically |
+| "Content hash means trusted source" | Attacker guesses a blob ID across tenants or sends malicious paths | Per-tenant auth closure checks, exact path witnesses, symlink-safe materialization and no implicit hooks |
+| "Staged object GC is harmless" | New object is collected between prepare and root publication | Stage pin, durable object placement, root transaction and reader/GC fences |
+| "Offline and cloud demand different canonical stores" | Same source created locally then queried remotely | One native content ID model; full, partial and service clients differ in transport and retained closure, not source semantics |
+
+### Research that sharpened this review
+
+- [Dolt, September 8, 2026: Can Radix Trees Replace Prolly Trees?](https://www.dolthub.com/blog/2026-09-08-can-radix-trees-replace-prolly-trees/) distinguishes radix prefix-partition advantages from prolly's balanced pages and comparator flexibility. AVC keys are **raw byte names**, making radix ordering natural, but this does not prove best latency for every workload. v0 chooses one deterministic radix implementation so source identity is implementable; physical paging remains independent.
+- [Jujutsu's technical conflict model](https://github.com/jj-vcs/jj/blob/main/docs/technical/conflicts.md) explains nested merge terms and the deliberate **lossiness** of its same-change rule in some repeated rebase scenarios. AVC explicitly keeps source-value equality separate from authorship/causal undo, and refuses arbitrary cancellation of nested unresolved conflicts.
+- [Git merge-tree](https://git-scm.com/docs/git-merge-tree) demonstrates checkout-free recursive merge bases and warns that many-to-many rename/directory conflicts cannot be reduced to one conflicted-file marker. AVC models coupled source regions rather than using markers as authoritative files.
+- [Microsoft Research YoloFS, April 2026](https://www.microsoft.com/en-us/research/publication/dont-let-ai-agents-yolo-your-files-shifting-information-and-control-to-filesystems-for-agent-safety-and-autonomy/) studies agent destructive filesystem effects. AVC is not an agent filesystem, but its optional protected draft/staging and explicit writer control boundaries let a VM/filesystem security layer integrate without making process state canonical source.
+
+### Findings and limit
+
+The review reinforces the **single source State authority**, stable Revision/ChangeId split, independently retained recoveries, and target-scoped publication. It also exposes an ergonomics tradeoff that the previous spec buried: requiring a fresh directory for *every* human branch switch is not acceptable in a general-purpose VCS, while claiming no data loss under arbitrary concurrent external writes is physically impossible. The [design](design.md) now offers both an ordinary guarded in-place switch and a separately stronger fresh-directory restore, with different stated guarantees.
+
+**Still requiring proof** rather than architectural re-voting: canonical byte vectors and history-independent radix normalization, structured conflict algebra under deep repeated merges and criss-cross, safe in-place-switch recovery following partial OS writes, durable SQLite/external-object publication under real fault injection, and actual platform/network performance. These are specific correctness/qualification obligations in [roadmap](roadmap.md). None justifies an automatic wholesale migration to a different VCS architecture.

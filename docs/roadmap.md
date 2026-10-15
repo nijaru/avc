@@ -4,20 +4,20 @@
 
 **This is no longer a roadmap to decide which VCS AVC should be.** It is the plan to validate and realize one specified design. Architecture changes require explicit correctness findings or substantial full-workflow evidence, not a comparison of fashionable upstream projects. No implementation code was changed by the design decision.
 
-## Milestone 0 — complete the binary and failure contracts
+## Milestone 0 — independently verify the selected contracts
 
-Before permanently writing native user data, specify and review:
+The [authoritative design](design.md) now selects the source authority, typed object families, BLAKE3 domain-separated framing, directory map algorithm, conflict grouping, workspace/recovery contracts and commit/GC ordering. **Do not invent a new architecture in implementation.** Before permanently writing native user data, verify the specified rules with **independent** decoders/models and golden vectors:
 
-1. **Canonical typed object encoding:** BLAKE3-256 domain separation, lengths, versioning, bounded raw path components, file kinds, small/large radix map nodes, sorted leaf entries, prefix compression, deterministic normalization, empty directories, revision and ChangeId hashing. Publish golden vectors from an independent reference decoder. This is *parameter/codec qualification*, not a new history-model vote.
+1. **Canonical typed object encoding:** reproduce the exact domain-separated BLAKE3 framing, type tags, 4096-byte leaf threshold, nibble prefix compression, fixed-width little-endian lengths, path bounds, and sorted leaf/branch normalization. Publish golden vectors for empty map, files, symlinks, prefix-name pairs, directory moves, coupled root conflicts, revisions and hash-mismatched reads using two independent implementations. Format changes require explicit version changes before durable use.
 2. **Pure source model:** reference operations for Put/Remove/CopySubtree/MoveSubtree with exact expected old value and verifiable absence. Same logical tree from different edit order yields identical StateId; tree copy/move does not rewrite descendants. Test adversarial keys and huge directories.
-3. **Conflict source algebra:** exact three-way value rules, typed absence, file-vs-directory, symlink/binary, multiple merge-base recursion, already-conflicted operands, preservation of nested alternatives, bounded expression DAG, canonical normalization and separate ConflictOrigin. Define marker-view round-trip without turning unchanged markers into source bytes.
+3. **Conflict source algebra:** exercise equality/base rules, bounded UTF-8 text diff, deletion/type/rename coupled-region conflicts, criss-cross base-frontier recursion, already-conflicted inputs, deterministic canonical value normalization, kind-8 overflow ConflictGroup closure and separate ConflictOrigin. Check query of unaffected sibling paths underneath high-level coupled conflicts. Marker presentation must not accidentally become tracked text.
 4. **Revision evolution:** divergent amendments, single-parent rebase, split/fold explicit lineage, logical undo/revert/reapply as different operations, title edits and descendant identity costs. Reject undefined multi-parent rebase rather than silently reinterpreting it.
-5. **Workspace and capture state machine:** separate selection/capture/materialization generations; acknowledgement and retention pins; per-file observation versus quiesced snapshot labels; stale watcher/capture/selection races. Fresh-directory restore safety, materialization-progress journal and actual filesystem writer limitations.
+5. **Workspace and capture state machine:** separate selection/capture/materialization generations, acknowledgement and retention pins, per-file observation versus quiesced snapshot labels, stale watcher/capture/selection races. Qualify **both** fresh-directory no-clobber restore and guarded, recovery-first in-place switching. The latter never claims absolute protection against uncontrolled concurrent writers.
 6. **Object durability and GC:** SQLite root/outcome authority, BLAKE3 closure, staged external blob writes before root CAS, directory fsync assumptions, in-flight and reader pins, GC and backup consistency, lost reply/replay/epoch idempotency.
 7. **Native exchange security:** full/partial promises, authenticated sparse tree/path reads and bounded bundles; secure object-closure authorization; durable root acknowledgment before an ephemeral VM exits.
 8. **Shared acceptance:** exact candidate identity, versioned validation policy and evidence, target-specific CAS, cancellation/retry/outbox, optional accepted-versus-verified policy.
 
-**Exit gate:** specification is internally non-contradictory and covers the significant failure/format cases. No build or storage optimization should override it. Use independent review/model-checking where correctness of the composition semantics is subtle.
+**Exit gate:** independent reviewers/fixtures find no unresolved contradiction in canonical roots, conflict-value equality, root/provenance graph acyclicity, namespace normalization or crash/recovery sequencing. Tests may require a documented correction to a chosen v0 byte constant **before the first native store is shipped**, not another open-ended model competition. Track any remaining failures explicitly as release blockers. Use model checking for important concurrent interleavings.
 
 Existing [in-memory source-model oracle](experiments/source_models_oracle.py) has 14 semantic tests; [contract probes](experiments/vcs_contract_probes.py) demonstrate narrow earlier counterexamples. Both remain **research fixtures**, not native engine benchmarks, format proofs, or storage durability evidence.
 
@@ -25,7 +25,7 @@ Existing [in-memory source-model oracle](experiments/source_models_oracle.py) ha
 
 Replace the legacy Git wrapper through one cohesive native library/CLI; retain old repositories without silent reinterpretation. Build the typed content objects and deterministic radix source tree, StateId, RevisionId, logical ChangeId/evolution, local SQLite metadata authority and small-object store.
 
-A complete local user should be able to initialize, inspect status, record a revision, list/history/diff/show exact source by ID, move/copy a subtree, reopen the repository, create a separate workspace, and restore safely to a newly allocated directory **without Git, network or daemon**.
+A complete local user should be able to initialize, inspect status, record a revision, list/history/diff/show exact source by ID, move/copy a subtree, reopen the repository, create a separate workspace, **switch in-place with protected before-images and honest limitations**, and restore safely to a newly allocated directory **without Git, network or daemon**.
 
 **Hard gates:** every acknowledged root has complete durable object closure; wrong hashes reject; no path escape or silent name collisions; equal source content produces equal canonical StateId; incomplete filesystem observations are labeled honestly; recover after injected process crashes and disk-full conditions. Native verified export/backup supports independent source custody. Run actual Rust tests/lint/toolchain checks once Rust code changes.
 
@@ -35,7 +35,7 @@ Implement distinct capture/head/selection generations and bounded retention. Wor
 
 Cases: competing agents (choose one), compositional independent agents (combine selected changes), same-path edits, directory move/edit, delete-vs-modify, binary conflicts, already conflicted source, criss-cross multiple bases, concurrent workspace status/capture, crash between root selection and directory creation.
 
-**Hard gates:** no loss of conflict alternatives; no permanent clean claim about uncontrolled files; no acknowledged capture missing its bytes/pin within retention; no in-place overwrite of unseen edits under a "safe" guarantee; conflicting proposals remain recoverable; no spurious shared logical head contention. Tests run against **immutable built source**, not mutable worker files.
+**Hard gates:** no loss of conflict alternatives or overflow input refs; no permanent clean claim about uncontrolled files; no acknowledged capture missing its bytes/pin within retention; no strongest no-clobber claim for in-place switching without managed writer exclusion; known dirty edits are refused unless the user explicitly chooses a preservation policy; conflicting proposals remain recoverable; no spurious shared logical head contention. Tests run against **immutable built source**, not mutable worker files.
 
 ## Milestone 3 — native source protocol and ephemeral handoff
 
@@ -71,6 +71,6 @@ Use comparable durability, source content and wall-clock total workflow against 
 
 ## Deferred independent questions
 
-Only engineering parameters and discretionary integrations remain: precise leaf thresholds, blob/chunk compression choices, portable source metadata expansion, future hosted physical cache layout, and any optional Git/import/export bridge. These do **not** prevent explaining or implementing the selected architecture. Keep the project named AVC; do not add a required Git-compatible mode, hosted forge, process sandbox, or custom consensus layer.
+Only engineering qualification and discretionary integrations remain: golden vectors and stable codec parser limits, physical blob/chunk compression choices, portable source metadata expansion, future hosted physical cache layout, and any optional Git/import/export bridge. The **4096-byte canonical map leaf rule and nibble partition** are already selected v0 codec rules, not unspecified knobs. These do **not** prevent explaining or implementing the selected architecture. Keep the project named AVC; do not add a required Git-compatible mode, hosted forge, process sandbox, or custom consensus layer.
 
 **Release rule:** trust source integrity, explicit undo/merge behavior, capture/restore honesty and independent export/backup before encouraging users to entrust irreplaceable code. No native implementation or verified production speedup is implied by this design package.

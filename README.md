@@ -22,6 +22,7 @@ A revision directly identifies the exact source that tools inspect, build, test 
 - [Research](docs/research.md) — primary sources, alternative histories and reasons for the current decision.
 - [Roadmap](docs/roadmap.md) — executable model, canonical-history comparisons and native implementation gates.
 - [Contract probes](docs/experiments/vcs_contract_probes.py) and [results](docs/experiments/vcs_contract_results.json) — narrow reproducible counterexamples, not native performance measurements.
+- [Executable source-model oracle](docs/experiments/source_models_oracle.py) — independent source-value tests and a minimal snapshot-versus-delta reconstruction check; not a performance or durability benchmark.
 
 The project remains named AVC. Tavi/Delos are unapproved naming suggestions, not implementation decisions.
 

@@ -8,6 +8,8 @@ The new reference is an **immutable snapshot-root State DAG**. This supersedes t
 
 **Git compatibility, Git object/pack formats and Git migration are not requirements or initial release gates.** Evaluate adapters later if users need them.
 
+**Phase 0 partial evidence (2026-10-14):** [source-model oracle](experiments/source_models_oracle.py) runs 13 passing semantic tests including a 250-edit independent flat-map cross-check and snapshot-versus-delta source reconstruction after derived-cache eviction. It is a Python in-memory correctness model, **not** an optimized Merkle store or evidence of relative runtime/storage performance. The format-blocking conflict algebra, independent source-byte oracle, full A/B physical comparison, crash durability and portable filesystem hazards below remain undone.
+
 ## Phase 0 — executable source-state semantics and architecture comparison
 
 Before stabilizing object IDs or writing a new persistent store, implement a small pure **reference interpreter** over logical directory maps, separate from Rust production objects:

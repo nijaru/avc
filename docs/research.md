@@ -166,6 +166,15 @@ These systems make the case for immutable data, narrow coordinated roots, and qu
 
 ## 6. Falsification and adoption criteria
 
+### Executable source-model check (2026-10-14)
+
+The [independent reference oracle](experiments/source_models_oracle.py) was executed on Python 3.13.5: **13 tests passed**, including 250 deterministic single-file edits independently checked against a flat path-map model, exact typed source equality, subtree moves/grafts, delete-versus-modify conflicts, separate workspace-selection/capture generations and retained captures after a capture-head CAS loses. A minimal snapshot history and parent-relative changeset history produce identical source values for a sequence of file edits, move and edit-after-move.
+
+After deliberately deleting every derived changeset view, reconstructing the fifth revision replays five recorded transformations. The snapshot reference still holds its direct immutable source value. This **demonstrates a correctness/latency obligation, not a measured speed advantage**: the oracle uses Python in-memory trees, no physical Merkle pages, no disk durability, no adaptive tree checkpoints and no batch delta compaction. A changeset system can checkpoint/materialize selectively and need not always replay every predecessor. Neither prototype has been compared for disk bytes, write amplification, p95 cold reads, GC or user task throughput.
+
+The oracle also separates *logical source values* from author/origin metadata, but it does **not** specify the final canonical byte/hash encoding, multiway conflict-normalization algebra, concurrent filesystem capture, path-witness authentication, remote provenance, full CRDT behavior or crash consistency. These remain part of Phase 0. The independent flat-path model tests representable ordinary source paths, not all storage, merge or namespace edge cases.
+
+
 Switch to canonical changesets **only** if controlled comparisons show a meaningful whole-workload advantage after including first read, index maintenance, replay tail latency, backup/rebuild and cleanup. Especially test when most durable agent drafts are never inspected, and when most revisions are immediately built.
 
 Switch to causal change graphs **only** if realistic selective-undo/rename/concurrent-history traces show a sufficiently large correctness/ergonomics win with competitive arbitrary-source/materialization and retention costs.

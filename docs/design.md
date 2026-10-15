@@ -168,7 +168,8 @@ Conservative tree merge:
     identical sides  -> common source entry
     left == base     -> right
     right == base    -> left
-    both directories -> recursively merge children
+    both directories AND base directory/absent -> recursively merge children
+    both directories BUT base another kind -> typed conflict if different
     otherwise        -> supported, pinned-version driver
                         or a typed unresolved source expression
 

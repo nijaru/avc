@@ -5,7 +5,9 @@
 
 ## 1. Reopen the previous decision rather than inherit it
 
-The earlier AVC research treated Scion and Mononoke's canonical parent-relative changed-file format as evidence that **AVC should also be changeset-first**. That argument skipped the critical difference in workloads.
+The earlier AVC research treated Scion and Mononoke's canonical changed-file formats as evidence that **AVC should also be changeset-first**. That argument skipped differences in workloads **and double-counted related architectural ideas as though they had been independently discovered**.
+
+**Source-lineage correction (October 14, 2026):** [Rain's first-person account](https://sunshowers.io/posts/anthropic-mononoke/), from an engineer who helped build Mononoke, argues that Scion closely follows Mononoke's canonical changeset/derived-data model and terminology. Anthropic's [Scion article](https://www.anthropic.com/engineering/redesigning-source-control) *does* cite Meta's Sapling, of which Mononoke is the server component, but not Mononoke specifically. Mononoke's [Bonsai changeset definition](https://github.com/facebook/sapling/blob/main/eden/mononoke/mononoke_types/src/bonsai_changeset.rs) and [derived-data implementation documentation](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/2.3-derived-data.md) substantiate that architectural overlap. **There is no public source-code provenance proof that Scion copied Mononoke code**; distinguish the author's attribution concern from confirmed design similarity. The systems represent distinct operational deployments but **not two independent architectural inventions**. The related [Hacker News discussion](https://news.ycombinator.com/item?id=50094694) offers engineering perspectives, not comparative performance measurements.
 
 Anthropic explicitly says a self-contained Git-like offline model is right for most repositories, while Scion's centralized enormous monorepo is unusual. Its reported costs include tens of millions of checkouts/day, 100-GB-scale history and highly online agents. Its first-parent encoding is described as stylistic and adapted to trunk-oriented history. Neither Scion's metrics nor Meta's success isolate a speed advantage of storing deltas *instead of* canonical source roots. [Scion, Oct 13 2026](https://www.anthropic.com/engineering/redesigning-source-control).
 
@@ -105,13 +107,19 @@ GitHub's [Oct 6 2026 infrastructure writeup](https://github.blog/engineering/arc
 
 [Anthropic Oct 13 2026](https://www.anthropic.com/engineering/redesigning-source-control) emphasizes always-online asymmetric clients, first-parent deltas, derived indexes, narrow ref CAS, tree/blob object request protocol and >99%-hit cache tiers. It reports around 25M CI checkouts/day and 30k accepted changes/day, with major total infrastructure savings against its previous mirrors. Those numbers **do not compare B versus A under identical execution/cache/durability**. Its own conclusion: not a general-purpose replacement for Git.
 
-The relevant lessons are to separate immutable queries from working copies, skip unnecessary materialization, share caches, and keep shared reference coordination narrow. All can be designed above A.
+The relevant lessons are to separate immutable queries from working copies, skip unnecessary materialization, share caches, and keep shared reference coordination narrow. All can be designed above A. The evidence is **one major design lineage operating in at least two materially different environments**, not two independent controlled experiments. Anthropic explicitly characterizes first-parent-relative change recording as a *stylistic choice* for its trunk-oriented use, not a universal theorem about the best canonical history model.
 
 ### Mononoke/Bonsai (verified implementation)
 
 [Bonsai data model](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/2.1-bonsai-data-model.md), [derived data](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/2.3-derived-data.md), [SubtreeChange Rust code](https://github.com/facebook/sapling/blob/main/eden/mononoke/mononoke_types/src/subtree_change.rs). Canonical changed-path history and asynchronously maintained manifests, path indexes and Git/Hg representations scale Meta's service. Note especially the *distinction* between subtree copy operations that alter manifested source and history-only subtree operations; do not infer every subtree metadata type implements efficient arbitrary directory moves.
 
 Its Sharded Map V2 uses path-compressed trie nodes, inline small terminals and bounded node sizes. This is good evidence for the **source-directory index shape**, regardless of A or B.
+
+### Cursor Continuity: an independently different scaling design
+
+[Git at any scale (Vicent Martí, August 18, 2026)](https://cursor.com/blog/git-at-any-scale) describes **Git-logical source history with S3-backed write-ahead-log authority**, CAS publication, and local Git replicas treated as caches. It batches writes, selectively reconstructs repositories, and scales read-serving replicas without making a new history representation canonical. Published performance figures are author-reported and tied to Cursor's workload and storage class; they do not benchmark native AVC.
+
+**Design consequence:** the failure/serving/transaction boundary is independent of whether a revision commits a tree or a changed-file list. This is a counterexample to claiming that agent-scale hosting logically entails canonical deltas. It also illustrates the tradeoff between reusing mature source operations and accepting Git format constraints. AVC remains independent of those constraints.
 
 ### Enroute
 
@@ -132,6 +140,17 @@ These are evidence of real causal change semantics, **not** an implicit requirem
 [Persistent ordered-map merge, Dolt 2025](https://www.dolthub.com/blog/2025-07-16-announcing-fast-merge/) shows both the benefits and boundary-shift pitfalls of prolly trees. Choose bounded directory pages based on actual path and cold-query workloads, not a fashionable structure.
 
 [SQLite WAL/synchronous docs](https://www.sqlite.org/pragma.html#pragma_synchronous) describe local full transaction durability assumptions. One local DB is a strong *reference implementation*, not a measured winner over append-only logs.
+
+### Do not conflate design reuse with a winning comparison
+
+| System | Canonical source/history | Main observed deployment/optimization | What it establishes |
+| --- | --- | --- | --- |
+| Mononoke/Bonsai | Immutable changed-file history + derived manifests | Large Meta source-control backend | A production-proven minimal canonical core and versioned derived data |
+| Scion | Closely related changeset/derived-data model | Always-online clients, sparse source APIs, tiered caches, high-rate agent fleet | A second *operational setting* for the related architecture, not an independent origin for its ideas |
+| Cursor Continuity | Git source graph; object-store WAL authority | Consistent Git hosting and dynamically served warm replicas | A different serving design can scale without changing canonical history |
+| Enroute | Git source graph; indexed immutable physical layers | High-rate independent pushes and ordered streaming | Physical layout and coordination can change independently of history semantics |
+
+These systems make the case for immutable data, narrow coordinated roots, and query/transfer-aware indexing. They **do not determine AVC's canonical history, directory-node layout, or storage engine**. Compare *complete tasks* with the same correctness and durability guarantees.
 
 ## 5. Consequences for DSA and execution layout
 

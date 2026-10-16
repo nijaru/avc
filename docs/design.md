@@ -79,11 +79,12 @@ Primitive grammar:
 - **Blob (kind 1):** payload is exactly raw file/symlink byte content (u64le length lives in the common envelope); a huge blob is streamed and never needs to fit memory. Content chunking/compression are *physical* only.
 - **MapLeaf (kind 2), MapBranch (kind 3):** specified in section 4; both are MapId family, with their actual typed kind encoded in references.
 - **State (kind 4):** one RootEntry descriptor, no author, history, timestamp or path-index cache.
-- **Revision (kind 5):** 32-byte StateId reference; u32le parent count and ordered 32-byte RevisionIds; 16-byte ChangeId; author as byte-string; description as byte-string; i64le authored Unix nanoseconds; optional ProvenanceId. UTF-8 may be required by a UI but canonical bytes are retained. Signatures and mutable review notes are separate immutable attestations referencing RevisionId.
+- **Revision (kind 5):** typed ref(State); u32le parent count and ordered typed ref(Revision) parents; 16-byte ChangeId; author as byte-string; description as byte-string; i64le authored Unix nanoseconds; optional typed ref(Provenance). UTF-8 may be required by a UI but canonical bytes are retained. Signatures and mutable review notes are separate immutable attestations referencing RevisionId.
 - **ConflictValue (kind 6):** specified in section 6; it identifies source alternatives, not authorship/merge engine.
 - **Provenance (kind 7):** canonical list of input revision IDs and source/conflict occurrence records; recipe/driver type and exact version. No output RevisionId.
-- **ConflictGroup (kind 8):** deterministic fixed-fanout, sorted immutable references preserving all overflow/conflicted input roles without importing authorship into source identity. Exact normalization and role encoding are specified by the same v0 canonical format.
-- **Other immutable protocol/backup objects:** receive distinct kind tags, never reuse historical tags.
+- **ConflictGroup (kind 8):** deterministic fixed-fanout, sorted immutable **source alternative values** for over-wide conflicts; causal/side roles live only in Provenance. Exact normalization is in section 12.
+- **PublicationCandidate (kind 9):** immutable exact target-generation/source/recipe/policy commitment; evidence attests to this ID without entering it. Its field order is in section 12.
+- **Other immutable protocol, evidence and backup records:** distinct future kind tags and versioned schemas; never reuse historical tags.
 
 The object envelope is the *hash input*, not a claim that physical storage writes one file per payload. A MapId reference carries the **actual** MapLeaf or MapBranch kind tag; either is valid only in a map-reference slot. A State root carries an Entry descriptor constrained to Directory or a Conflict whose alternatives are directories. A decoder must reject pathological allocations before allocating by an untrusted length. Different object-kind registries and future codec revisions require **new IDs**; old decoders and explicit ID mappings remain supported for histories that have been published. Hash IDs verify integrity, **not authenticity, authorization, secret protection or object availability**.
 
@@ -150,10 +151,10 @@ Directory recursion with B absent treats each child as absent; equal additions c
 ### Conflicts are typed source values, not marker files
 
     ConflictValue {
-      base: optional EntryValue,             // absence is a real term
-      alternatives: sorted distinct EntryValues (2..64),
-      kind: PathValue | CoupledSubtree,
-      opaque_nested_terms: optional immutable references
+      base: EntryValue,                      // MaybeEntry, absence is real
+      alternatives: Inline(2..64 sorted distinct EntryValues)
+                  | Group(>64 sorted distinct values),
+      kind: PathValue | CoupledSubtree
     }
 
 The canonical ConflictValue contains **only unresolved source semantics**; source EntryValue can be absent, File, Symlink, Directory or an earlier ConflictValue reference. The outer StateId includes the conflict value; equal unresolved semantic values have equal source hashes. Source conflicts can be file, path, directory, binary, delete/edit, and **coupled across multiple paths** (e.g. divergent renames).
@@ -333,6 +334,19 @@ For more than 64 alternatives, use **ConflictGroup (kind 8)** instead of the inl
 
 Canonical group construction: sort/deduplicate all alternative semantic EntryValues, form consecutive blocks of **64** as leaves (including the final shorter block), then group consecutive up-to-64 child refs by their covered key ranges until one root. Leaf values and child ranges cannot overlap. A branch with one child collapses. A ConflictValue MUST use Inline for 2–64 distinct values and Group for >64. A single nested ConflictValue is one opaque **semantic value term** for sorting, not an invitation to flatten/cancel it. Kind 8 groups encode **width only**: nesting beyond 64 or insufficient computation budgets reject construction of a new State; its inputs remain protected as separate durable roots/pending recipe. At the State root, `region_kind=CoupledSubtree`, and **both base (when present) and every alternative** must be present directories or recursively directory-valued conflicts.
 
+**PublicationCandidatePayload (kind 9)** is an immutable transaction proposal, outside the source/revision dependency graph:
+
+    str(target_authority_namespace), str(target_name),
+    u64le(expected_generation),
+    u8(observed_revision_present=0|1), optional ref(Revision),
+    u32le(selected_count: 1..64), selected ref(Revision) in recipe order,
+    str(recipe_driver_id), u32le(recipe_driver_version),
+    str(recipe_bytes),
+    ref(State)(result), ref(Revision)(result),
+    byte[32](policy_digest), u64le(policy_epoch)
+
+The result Revision must name the result State and satisfy the candidate's policy-checked history/recipe relationship; reject duplicate selected revisions and noncanonical target identifiers. The selected array is **ordered**, not lexicographically sorted. A target not yet created uses `expected_generation=0` with absent observed revision; an existing target uses a strictly increasing nonzero generation and present observed revision. Namespaces and target names are opaque canonical byte strings with configured length and authorization limits (not source filesystem paths). The policy digest is authenticated by the target service over its canonical policy bytes; it is not interpreted as an ObjectID. Evidence/attestation payloads carry `ref(PublicationCandidate)` plus exact validator identity, signed input/toolchain/environment/result manifests and freshness; they are **independent immutable protocol records**, never a field of the Candidate or Revision. Authentication algorithms and on-wire evidence framing must be fixed before native publication is implemented; target acceptance cannot assume unsigned or generic hashes are trusted validation.
+
 **ProvenancePayload** is a canonical versioned *history explanation*, deliberately separate from source values:
 
     u32le(input_revision_count)
@@ -348,4 +362,4 @@ An encoded_path is u32le component count followed by each component as str (zero
 
 **Canonical size limits:** component/path bounds from section 4; author ≤4096 bytes; description ≤1 MiB; merge recipe ≤1 MiB; a provenance occurrence list ≤1 million entries, streamed and resource-limited; parent revisions ≤64; source conflict nesting depth ≤64 (count ConflictValue-to-ConflictValue edges, including via groups/entry references). If a complete source cannot satisfy the bound, **fail admission** with typed `MergeTooComplex` and optionally retain a pinned pending proposal; do not store an invalid deeper object by calling it opaque. All resource and overflow checks precede allocations, and all source objects are validated with cycle/closure checks before acknowledging a root.
 
-**Golden-vector requirement:** independent codecs must agree byte-for-byte and hash-for-hash on empty source, one file, binary content, executable flag, symlink, two prefix-sharing names, leaf/branch boundary at 4096, directory reuse under new name, equal State with different authors, path conflict with absent alternative, coupled root-level rename conflict, grouped overflow conflict and invalid/corrupt encoding. No permanent format claim is made until these are published and tested.
+**Golden-vector requirement:** independent codecs must agree byte-for-byte and hash-for-hash on empty source, one file, binary content, executable flag, symlink, two prefix-sharing names, leaf/branch boundary at 4096, directory reuse under new name, equal State with different authors, path conflict with absent alternative, coupled root-level rename conflict, grouped overflow conflict, canonical publication candidate binding and invalid/corrupt encoding. No permanent format claim is made until these are published and tested.

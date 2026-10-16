@@ -18,7 +18,7 @@ The other core decisions fit this source authority:
 - Shared publication validates an exact candidate under an explicit policy.
 - Git compatibility, Git object formats, Git protocol, agent runtimes and hosted services are **not native requirements**. Any adapter is a separate later decision.
 
-**The v0 architecture and proposed byte format are now concretely specified**, not proven globally optimal or released as stable. The [authoritative specification](docs/design.md) includes BLAKE3 typed-object framing, deterministic path-compressed nibble radix maps with 4096-byte canonical leaves, checked source operations, coupled-region conflicts, provenance, resource generations, staging/GC ordering and native source/target APIs. The next work is independent format vectors and adversarial fault/merge verification, **not** another general VCS-model search. Earlier changeset-first and causal graph candidates remain documented as rejected defaults.
+**The selected architecture and proposed v0 byte format are specified and undergoing independent qualification**, not proven globally optimal or released as stable. The [authoritative specification](docs/design.md) includes typed BLAKE3 IDs, a canonical nibble-radix Merkle source map, conservative bounded merge/conflict semantics, exact revision evolution, guarded workspace recovery, GC-safe staged admission/backup, private sparse security boundaries and typed publication candidates with target-generation CAS. The next work is independent format vectors and adversarial fault/merge verification, **not** another general VCS-model search. Earlier changeset-first and causal graph candidates remain documented as rejected defaults.
 
 ## Current status
 

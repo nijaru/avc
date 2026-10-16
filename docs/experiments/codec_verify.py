@@ -108,10 +108,11 @@ class Verifier:
 
     def exit(self,ref:Ref):self.active.remove(ref)
 
-    def entry(self,c:Cursor,depth:int=0, pathlen:int=0,conf_depth:int=0)->bytes:
+    def entry(self,c:Cursor,depth:int=0, pathlen:int=0,conf_depth:int=0,require_dir:bool=False)->bytes:
         if depth>256 or pathlen>4096:raise Invalid('path constraints')
         start=c.pos
         tag=c.number(1)
+        if require_dir and tag not in (3,4):raise Invalid('directory-valued conflict requires directory')
         if tag in (1,2):
             r=c.ref({K_BLOB});self.generic(r)
             if tag==1:c.flag()
@@ -119,13 +120,14 @@ class Verifier:
             r=c.ref({K_LEAF,K_BRANCH})
             self.map(r,(),depth,pathlen)
         elif tag==4:
-            self.conflict(c.ref({K_CONFLICT}),depth,pathlen,conf_depth+1)
+            self.conflict(c.ref({K_CONFLICT}),depth,pathlen,conf_depth+1,require_dir=require_dir)
         else:raise Invalid('unsupported entry type')
         return c.data[start:c.pos]
 
-    def maybe(self,c:Cursor,depth:int=0,pathlen:int=0,conf_depth:int=0)->bytes:
+    def maybe(self,c:Cursor,depth:int=0,pathlen:int=0,conf_depth:int=0,require_dir:bool=False,allow_absent:bool=True)->bytes:
         p=c.pos
-        if c.flag():self.entry(c,depth,pathlen,conf_depth)
+        if c.flag():self.entry(c,depth,pathlen,conf_depth,require_dir)
+        elif require_dir and not allow_absent:raise Invalid('absent directory alternative')
         return c.data[p:c.pos]
 
     def map(self,ref:Ref,prefix:tuple[int,...],depth:int,pathlen:int)->dict[bytes,bytes]:
@@ -168,59 +170,46 @@ class Verifier:
         # builder of the *root* to avoid losing their prefix parity context.
         return got
 
-    def group(self,ref:Ref,depth:int=0,pathlen:int=0,conf_depth:int=0)->list[bytes]:
+    def group(self,ref:Ref,depth:int=0,pathlen:int=0,conf_depth:int=0,require_dir:bool=False,allow_absent:bool=True)->list[bytes]:
         if ref.kind!=K_GROUP:raise Invalid('not group')
         c=Cursor(self.enter(ref))
         tag=c.number(1);count=c.number(4)
         if tag==0:
             if not 1<=count<=64:raise Invalid('leaf width')
-            terms=[self.maybe(c,depth,pathlen,conf_depth) for _ in range(count)]
+            terms=[self.maybe(c,depth,pathlen,conf_depth,require_dir,allow_absent) for _ in range(count)]
         elif tag==1:
             if not 2<=count<=64:raise Invalid('branch width')
             terms=[]
-            for _ in range(count):terms+=self.group(c.ref({K_GROUP}),depth,pathlen,conf_depth)
+            for _ in range(count):terms+=self.group(c.ref({K_GROUP}),depth,pathlen,conf_depth,require_dir,allow_absent)
         else:raise Invalid('group variant')
         c.done();self.exit(ref)
         if terms!=sorted(set(terms)):raise Invalid('group order or duplicate')
         return terms
 
-    def conflict(self,ref:Ref,depth:int=0,pathlen:int=0,conf_depth:int=1,root:bool=False)->None:
+    def conflict(self,ref:Ref,depth:int=0,pathlen:int=0,conf_depth:int=1,root:bool=False,require_dir:bool=False)->None:
         if conf_depth>64:raise Invalid('conflict nesting >64')
         c=Cursor(self.enter(ref))
         region=c.number(1)
-        if region not in (0,1) or (root and region!=1):raise Invalid('conflict region/root kind')
-        base=self.maybe(c,depth,pathlen,conf_depth)
+        if region not in (0,1) or ((root or require_dir) and region!=1):raise Invalid('conflict region/root kind')
+        base=self.maybe(c,depth,pathlen,conf_depth,region==1,True)
         mode=c.number(1)
         if mode==0:
             n=c.number(4)
             if not 2<=n<=64:raise Invalid('conflict inline width')
-            terms=[self.maybe(c,depth,pathlen,conf_depth) for _ in range(n)]
+            terms=[self.maybe(c,depth,pathlen,conf_depth,region==1,not(root or require_dir)) for _ in range(n)]
         elif mode==1:
             group_ref=c.ref({K_GROUP})
-            terms=self.group(group_ref,depth,pathlen,conf_depth)
+            terms=self.group(group_ref,depth,pathlen,conf_depth,region==1,not(root or require_dir))
             if self._canonical_group(terms)!=group_ref:raise Invalid('noncanonical group blocks')
             if len(terms)<=64:raise Invalid('noncanonical conflict grouping')
         else:raise Invalid('conflict storage variant')
         c.done();self.exit(ref)
         if terms!=sorted(set(terms)):raise Invalid('noncanonical alternatives')
-        if region==1:
-            # Absence is a valid *non-root* coupled-subtree alternative.
-            # A root conflict cannot contain absent alternatives.
-            for t in terms:
-                if t==b'\0' and not root:continue
-                if not self._directory_term(t):
-                    raise Invalid('coupled alternative not directory-valued')
-            if base!=b'\0' and not self._directory_term(base):
-                raise Invalid('coupled base not a directory')
+        # Parsing every present coupled alternative as a strictly directory-valued
+        # Entry, including nested conflict alternatives, is stronger than checking
+        # only the nested conflict's region byte. This prevents root states whose
+        # apparent directory alternatives secretly include a nested deletion.
         return region
-
-    def _directory_term(self,t:bytes)->bool:
-        if len(t)<2 or t[0]!=1:return False
-        if t[1]==3:return True
-        if t[1]==4 and len(t)==35:
-            ref=Ref(K_CONFLICT,t[3:35])
-            return self.fetch(ref)[:1]==b'\x01'
-        return False
 
     @staticmethod
     def _canonical_group(terms:list[bytes])->Ref:

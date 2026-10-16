@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import hashlib
 import random
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from codec_reference import (Builder,Ref,object_id,nibs,packed_nibbles,u16,u32,
@@ -162,18 +164,95 @@ class CanonicalQualification(unittest.TestCase):
         self.assertEqual(ref.kind,K_BRANCH)
         self.assertEqual(len(Verifier(self.builder.store).map(ref,(),0,0)),102)
 
+    @unittest.skipUnless(shutil.which('node'), 'Node.js cross-language fixture unavailable')
+    def test_independent_javascript_radix_randomized(self):
+        rng=random.Random(20261016)
+        groups=[]
+        for count in (0,1,2,15,63,64,94,95,96,97,102,103,128,255,260,400):
+            pool={}
+            while len(pool)<count:
+                # Include prefixes, byte-non-UTF8 names, varied lengths and
+                # dense same-prefix keys near 4096-byte leaf split.
+                prefix=rng.choice([b'a',b'abc',b'k',b'\xff',b'xyz',b'q'*40])
+                suffix=bytes(rng.choice(list(range(1,47))+list(range(48,255)))
+                             for _ in range(rng.randrange(0,6)))
+                key=prefix+suffix
+                if len(key)<=255 and key not in (b'.',b'..') and b'\x00' not in key and b'/' not in key:
+                    pool[key]=None
+            group=list(pool)
+            groups.append(group)
+            rng.shuffle(group)
+            groups.append(group)
+        b=Builder()
+        value=b.file(b.blob(b'fixture'))
+        expected=[b.map({name:value for name in group}).display() for group in groups]
+        result=subprocess.run(['node',str(HERE/'codec_crosscheck.mjs'),'--maps-stdin'],
+                              input=json.dumps([[name.hex() for name in group] for group in groups]),
+                              text=True,capture_output=True,check=True,timeout=35)
+        self.assertEqual(json.loads(result.stdout),expected)
+
     def test_coupled_deletion_and_root_constraint(self):
         b=Builder()
         empty=b.directory(b.map({}))
         sub=b.conflict(1,empty,[None,empty])
         Verifier(b.store).conflict(sub)
         bad_root=b.state(b.conflict_entry(sub))
-        with self.assertRaisesRegex(Invalid,'coupled alternative'):
+        with self.assertRaisesRegex(Invalid,'absent directory alternative'):
             Verifier(b.store).state(bad_root)
         path=b.conflict(0,None,[None,empty])
         bad_path_root=b.state(b.conflict_entry(path))
         with self.assertRaisesRegex(Invalid,'root kind'):
             Verifier(b.store).state(bad_path_root)
+
+    def test_nested_coupled_conflict_cannot_hide_deletion_or_file(self):
+        b=Builder()
+        directory=b.directory(b.map({}))
+        other=b.directory(b.map({b'visible':b.file(b.blob(b'a'))}))
+        hidden_deletion=b.conflict(1,directory,[None,directory])
+        outer=b.conflict(1,directory,[b.conflict_entry(hidden_deletion),other])
+        with self.assertRaisesRegex(Invalid,'absent directory alternative'):
+            Verifier(b.store).state(b.state(b.conflict_entry(outer)))
+        with self.assertRaisesRegex(Invalid,'absent directory alternative'):
+            Verifier(b.store).conflict(outer)
+        hidden_file=b.conflict(0,None,[b.file(b.blob(b'bad')),directory])
+        outer_file=b.conflict(1,directory,[b.conflict_entry(hidden_file),other])
+        with self.assertRaisesRegex(Invalid,'conflict region/root kind'):
+            Verifier(b.store).state(b.state(b.conflict_entry(outer_file)))
+        nested_base=b.conflict(1,b.conflict_entry(hidden_deletion),[directory,other])
+        with self.assertRaisesRegex(Invalid,'absent directory alternative'):
+            Verifier(b.store).state(b.state(b.conflict_entry(nested_base)))
+        # A non-root coupled conflict may itself represent deletion.
+        Verifier(b.store).conflict(hidden_deletion)
+
+    def test_grouped_root_coupled_alternatives_must_all_be_directories(self):
+        b=Builder()
+        base=b.directory(b.map({}))
+        file=b.file(b.blob(b'one'))
+        dirs=[b.directory(b.map({f'file{i:03}'.encode():file})) for i in range(65)]
+        invalid=b.conflict(1,base,[None,*dirs])
+        with self.assertRaisesRegex(Invalid,'absent directory alternative'):
+            Verifier(b.store).state(b.state(b.conflict_entry(invalid)))
+        # Non-root deletion is an explicit valid semantic term even when grouped.
+        Verifier(b.store).conflict(invalid)
+
+    def test_mutated_hash_valid_input_never_crashes_decoder(self):
+        rng=random.Random(643024)
+        eligible=[(ref,payload) for ref,payload in self.builder.store.items()
+                  if ref.kind not in (1,) and payload]
+        for i in range(200):
+            ref,payload=rng.choice(eligible)
+            candidate=bytearray(payload)
+            pos=rng.randrange(len(candidate))
+            candidate[pos]^=1<<rng.randrange(8)
+            candidate=bytes(candidate)
+            corrupted=object_id(ref.kind,candidate)
+            store={**self.builder.store,corrupted:candidate}
+            try:
+                Verifier(store).generic(corrupted)
+            except Invalid:
+                pass
+            except Exception as e:
+                self.fail(f'mutant {i} kind {ref.kind} caused {type(e).__name__}: {e}')
 
     def test_conflict_depth_limit(self):
         b=Builder()

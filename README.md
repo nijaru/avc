@@ -28,7 +28,7 @@ The other core decisions fit this source authority:
 - [Research](docs/research.md): evidence, rejected models, and adversarial design audit with counterexamples.
 - [Qualification roadmap](docs/roadmap.md): independent golden-vector, merge, durability, portability and full-workflow verification gates.
 - [Python reference fixtures](docs/experiments/test_codec.py), [independent JavaScript verifier](docs/experiments/codec_crosscheck.mjs) and [pinned object vectors](docs/experiments/codec_vectors.json): executable partial Milestone-0 qualification, **not** a frozen/production codec.
-- [Source-model oracle](docs/experiments/source_models_oracle.py) and [contract probes](docs/experiments/vcs_contract_probes.py): narrow research artifacts, **not** native benchmarks.
+- [Source-model oracle](docs/experiments/source_models_oracle.py), [authority interleaving model](docs/experiments/authority_model.py) and [contract probes](docs/experiments/vcs_contract_probes.py): bounded research/verification artifacts, **not** native storage or performance evidence.
 
 The project remains named AVC. Tavi and Delos were exploratory names only.
 

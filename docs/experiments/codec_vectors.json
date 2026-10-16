@@ -1,0 +1,168 @@
+{
+  "alternate_author_revision": {
+    "id": "avc1-b3-k05-wvs7bedp53cecegsyoqeesi6jfr6m67jfay3cjjstzgcei3j7cla",
+    "kind": 5,
+    "payload_hex": "0419ef57218097915feb110ee8c824f90f8dfa482590f0075af7826800bc6cd3ce000000005858585858585858585858585858585809000000646966666572656e74060000006368616e676515cd5b070000000000",
+    "payload_len": 85
+  },
+  "branch_4097": {
+    "id": "avc1-b3-k03-cr27qpzbawqgirp2igim5rfcmwg54l7e7y5zpkedgzxkwe3pxb3a",
+    "kind": 3,
+    "payload_hex": "01006000001802660692a270130a802cf594741c1a9ce31fa6afad7fca985798083cfbc3399af40222e6ab9d992a69f31129f66755bed9f9297b154146b4326b97db607c6b5f1bdd",
+    "payload_len": 72
+  },
+  "empty_map": {
+    "id": "avc1-b3-k02-3jc2jl6s7rrrbhdwslqnijidn7z73ly43l7yzcpk37rilrouqvoa",
+    "kind": 2,
+    "payload_hex": "00000000",
+    "payload_len": 4
+  },
+  "empty_state": {
+    "id": "avc1-b3-k04-vmnwhh4bsvdgr3igkr7ku35zbdkwkuwugwansvrb6vo3wniyjhmq",
+    "kind": 4,
+    "payload_hex": "0302da45a4afd2fc63109c7692e0d425036ff3fdaf1cdaff8c89eadfe285c5d4855c",
+    "payload_len": 34
+  },
+  "leaf_4095": {
+    "id": "avc1-b3-k02-ztwhy3ars5perww5beagez3emu6jaimtelmlhagvkklszs7sondq",
+    "kind": 2,
+    "payload_len": 4095,
+    "payload_prefix_hex": "6600000006006b30300101370721f4a04ad14821eee4f44b",
+    "payload_sha256": "24403b7577d513c88e1549f2bada63db67e208ed036b573b2d0957ff057ca14d"
+  },
+  "leaf_4096": {
+    "id": "avc1-b3-k02-7iqtg4v5qs7iqjcfje5b4bushkorqoljrhxoy6zkw2r6lim5ngua",
+    "kind": 2,
+    "payload_len": 4096,
+    "payload_prefix_hex": "6600000006006b30300101370721f4a04ad14821eee4f44b",
+    "payload_sha256": "41c071e8295048edf058f98a0d67ff63cdeb2aba15d604732c605f711ba516fa"
+  },
+  "merge_revision": {
+    "id": "avc1-b3-k05-76yacocxehfgkqnrqwcy6fq4iyewqewalgg2xhvt4qzt6pyqh3ca",
+    "kind": 5,
+    "payload_hex": "045beec2e4222316aa8a0fb4cb3d5a9268022b78a8db2509f92e48943daf80b69f020000000543f402e8657707dc58ccd4d4d94d984589bdff574706ecd97cda14c1d461ed0505b565f0906feec44110d2c3a042491e4963e67be92831b125329e4c222369f8965959595959595959595959595959595906000000617574686f72050000006d65726765d2029649000000000107495ba75f80ada860be533486f9c13251201a61b0ab50210b11b25d42d35ff0c5",
+    "payload_len": 180
+  },
+  "mixed_types": {
+    "id": "avc1-b3-k04-dhxvoimas6iv72yrb3umqjhzb6g7usbfsdyaowxxqjuabpdm2pha",
+    "kind": 4,
+    "payload_hex": "030299e483642804c34e57239cc5b9e25492c9123d6cbd46c1ac808cb8bca94109a7",
+    "payload_len": 34
+  },
+  "moved_after": {
+    "id": "avc1-b3-k04-maxvu3linlw4lzo3d4gdemtbe6xpph2pmtcuuexqjhhfqmnmnbba",
+    "kind": 4,
+    "payload_hex": "030270ed7daa43b9855d8d14f0cd5cfe215d1de28108700d88d0cb961ad70cd5926f",
+    "payload_len": 34
+  },
+  "moved_before": {
+    "id": "avc1-b3-k04-jbewoioz4bl3dfcsgqkfxey7bm7cfznxvrq42s7hn7x5nkwsvr7q",
+    "kind": 4,
+    "payload_hex": "0302584ada7680b8a1e5abee10ab384607f5f00a2ea162c8c1d9370e665c9d5d3e2a",
+    "payload_len": 34
+  },
+  "odd_nibble_branch": {
+    "id": "avc1-b3-k03-cbwclowgewtvlzamyq42mavvvf47pl5ffsdykmq34coidkyzr46a",
+    "kind": 3,
+    "payload_len": 304,
+    "payload_prefix_hex": "0300613000ff010260ac5bf1d537feb4aa5aec4748534986",
+    "payload_sha256": "a54c9059a7d862345a6e9460b63949037032792a23c70cdc618d85288371c37c"
+  },
+  "odd_nibble_state": {
+    "id": "avc1-b3-k04-oj32ldg7ckevdqpmezrczwzvt7ivapybqplionyihd4lud4rdvda",
+    "kind": 4,
+    "payload_hex": "0303106c25bac625a755e40cc439a602b5a979f7afa52c8785321be09c81ab198f3c",
+    "payload_len": 34
+  },
+  "overflow_group_branch": {
+    "id": "avc1-b3-k08-zfwnewb7o3benhvytvs5kpd4vrdgdtzlelqtdyndogvfjg7fkylq",
+    "kind": 8,
+    "payload_hex": "01020000000867ea500771823a4af1b889757e016ab411633b3a9dd2ef2537d658d1d2f49017083f13575a9e2fbe2333added837a7d3e743ae94ef981883a665f093e50e2816f2",
+    "payload_len": 71
+  },
+  "overflow_group_conflict": {
+    "id": "avc1-b3-k06-2f2lu4defenb3xnm7zkbnnyer6u3vc4tejldr5lj2zu2hyvoij5q",
+    "kind": 6,
+    "payload_hex": "00000108c96cd2583f76c2469eb89d65d53c7cac4661cf2b22e131e1a371aa549be55617",
+    "payload_len": 36
+  },
+  "overflow_group_leaf0": {
+    "id": "avc1-b3-k08-m7vfab3rqi5ev4nyrf2x4alkwqiwgoz2txjo6jjx2zmnduxusalq",
+    "kind": 8,
+    "payload_len": 2309,
+    "payload_prefix_hex": "004000000001010102549c04edb0042c1bae1665dc8429c6",
+    "payload_sha256": "962e99923dbe876ef79e8cc5541a62aa0ca4fe6f5eb6d653f3b39b60d2f7892a"
+  },
+  "overflow_group_leaf1": {
+    "id": "avc1-b3-k08-h4jvowu6f67cgm5n33mdpj6t45b25fhptamihjtf6cj6kdric3za",
+    "kind": 8,
+    "payload_hex": "0001000000010101ff3e8fbdbf8bb777dc2aee350c0c25ab4503bd200698901ce969686683226e2000",
+    "payload_len": 41
+  },
+  "overflow_group_state": {
+    "id": "avc1-b3-k04-rlgt6xfourrl4h7eibvc73f4flwqk4psaukisvtf5fqhacgdg2aq",
+    "kind": 4,
+    "payload_hex": "0302a341f42337a1b9c5129eb398cd1fde051c52bfcbd4b33f0ad638e7a65e4a9d0a",
+    "payload_len": 34
+  },
+  "path_conflict": {
+    "id": "avc1-b3-k06-6yuldmq6nj2qhgqssoutjhnrk7sq3lumujfueyex23xsqaurn5kq",
+    "kind": 6,
+    "payload_hex": "00010101370721f4a04ad14821eee4f44bc9394a40dcd2447f222212389c85723762417000000200000000010101865e6308ea715c19de4b356c3b1f45036bf31875448f6d9d02c328ba664b74f700",
+    "payload_len": 79
+  },
+  "path_conflict_state": {
+    "id": "avc1-b3-k04-lpxmfzbcemlkvcqpwtft2wusnabcw6fi3msqt6jojckd3l4aw2pq",
+    "kind": 4,
+    "payload_hex": "030277479556fd2f2ade0de2b4c1a6d3a30d49b4f8a5f332c0ffebf0d7f54b1a4e51",
+    "payload_len": 34
+  },
+  "provenance": {
+    "id": "avc1-b3-k07-jfn2ox4avwugbpstgsdptqjskeqbuynqvnicccyrwjoufu276dcq",
+    "kind": 7,
+    "payload_hex": "020000000543f402e8657707dc58ccd4d4d94d984589bdff574706ecd97cda14c1d461ed0505b565f0906feec44110d2c3a042491e4963e67be92831b125329e4c222369f89601000000010000000600000062726f6b656e06f628b1b21e6a75039a1293a9349db157e50dae8ca24b426097d6ef2802916f550200000000000000010000000e0000006176632e746578742e6c696e6573010000000700000066697874757265",
+    "payload_len": 166
+  },
+  "publication_candidate": {
+    "id": "avc1-b3-k09-k3jvbimhl4haefu5qb73kdpplhq5i4ilrnachkptvnnest3we23q",
+    "kind": 9,
+    "payload_hex": "050000006c6f63616c040000006d61696e0000000000000000000100000005ffb001385721ca6541b185858f161c46096812c0598dab9eb3e4333f3f103ec4080000006d657267652d7630010000000700000066697874757265045beec2e4222316aa8a0fb4cb3d5a9268022b78a8db2509f92e48943daf80b69f05ffb001385721ca6541b185858f161c46096812c0598dab9eb3e4333f3f103ec450505050505050505050505050505050505050505050505050505050505050500700000000000000",
+    "payload_len": 196
+  },
+  "revision": {
+    "id": "avc1-b3-k05-ip2af2dfo4d5ywgm2tknstmyiwe3372xi4dozwl43ikmdvdb5ucq",
+    "kind": 5,
+    "payload_hex": "0419ef57218097915feb110ee8c824f90f8dfa482590f0075af7826800bc6cd3ce000000005858585858585858585858585858585806000000617574686f72060000006368616e676515cd5b070000000000",
+    "payload_len": 82
+  },
+  "root_conflict_state": {
+    "id": "avc1-b3-k04-n2427t5yws5i7wdj63tkmamo63ufczw4bnqmv2byixhcywocvgiq",
+    "kind": 4,
+    "payload_hex": "04069ea0447aa3d5a68deaf37f04ee9a11dc4300d922cca95464cde68e0cd4080094",
+    "payload_len": 34
+  },
+  "root_coupled_conflict": {
+    "id": "avc1-b3-k06-t2qei6vd2wti32xtp4co5gqr3rbqbwjczsuvizgn42hazvaiacka",
+    "kind": 6,
+    "payload_hex": "01010302da45a4afd2fc63109c7692e0d425036ff3fdaf1cdaff8c89eadfe285c5d4855c0002000000010302df77421b1942d10309de22372028eb0a49ce75778d4f457a88d9b468afef31e3010302ee45d68c7d3dde153ac2e00f6c182ed9f7398da2328df943e9abc5d3bedcdbf4",
+    "payload_len": 111
+  },
+  "single_file": {
+    "id": "avc1-b3-k04-p25jsv7akxjnvpmi5ran3kzivajed6equcvhjhu33tri5pcgyzbq",
+    "kind": 4,
+    "payload_hex": "03020d9f9d28a4e7d87e3d92db0273af43714bc5143709a19b23110fa982d97765da",
+    "payload_len": 34
+  },
+  "terminal_branch": {
+    "id": "avc1-b3-k03-n5znylc4prmt5ovti4bc4mucqlqolev32lm5zxh2tv2fq4pbblpq",
+    "kind": 3,
+    "payload_hex": "020061010101370721f4a04ad14821eee4f44bc9394a40dcd2447f222212389c857237624170000800033bd4c58f548780e98d462eab9f29d512632bf75f201d42020b7f25c60c865805",
+    "payload_len": 74
+  },
+  "terminal_state": {
+    "id": "avc1-b3-k04-mp62cb76wjpelqyh2bged27iqcx5tovakfwoswsevn5ug6xicmnq",
+    "kind": 4,
+    "payload_hex": "03036f72dc2c5c7c593ebab347022e328282e0e592bbd2d9dcdcfa9d745871e10adf",
+    "payload_len": 34
+  }
+}

@@ -275,6 +275,82 @@ class CanonicalQualification(unittest.TestCase):
         with self.assertRaisesRegex(Invalid,'group blocks'):
             Verifier(b.store).conflict(badconf)
 
+    def check_admission(self, builder, cases):
+        """The wire corpus lets the other runtime judge the same exact objects."""
+        expected=[]
+        for ref, accepted in cases:
+            if accepted:
+                Verifier(builder.store).generic(ref)
+            else:
+                with self.assertRaises(Invalid):
+                    Verifier(builder.store).generic(ref)
+            expected.append(accepted)
+        if shutil.which('node'):
+            corpus={
+                'objects':[{'kind':ref.kind,'payload_hex':payload.hex()}
+                           for ref,payload in builder.store.items()],
+                'roots':[ref.encode().hex() for ref,_ in cases],
+            }
+            result=subprocess.run(['node',str(HERE/'codec_crosscheck.mjs'),'--objects-stdin'],
+                                  input=json.dumps(corpus),text=True,capture_output=True,
+                                  check=True,timeout=35)
+            self.assertEqual(json.loads(result.stdout),expected)
+
+    def test_conflict_depth_survives_directory_boundaries(self):
+        b=Builder()
+        empty=b.directory(b.map({}))
+        value=empty
+        cases=[]
+        for depth in range(1,71):
+            other=b.directory(b.map({b'x':value}))
+            value=b.conflict_entry(b.conflict(1,None,[empty,other]))
+            if depth in (64,65,70):
+                cases.append((b.state(value),depth<=64))
+        self.check_admission(b,cases)
+
+    def test_group_height_boundary_collapses_singleton_branches(self):
+        b=Builder()
+        values=[b.file(b.blob(i.to_bytes(4,'little'))) for i in range(4097)]
+        cases=[(b.conflict(0,None,values[:n]),True) for n in (4096,4097)]
+        self.check_admission(b,cases)
+        for ref,payload in b.store.items():
+            if ref.kind==K_GROUP and payload[0]==1:
+                self.assertGreaterEqual(int.from_bytes(payload[1:5],'little'),2)
+
+    def test_provenance_order_uses_raw_path_components(self):
+        b=Builder()
+        empty=b.state(b.directory(b.map({})))
+        rev=b.revision(empty,[],bytes(16),b'a',b'd',0)
+        conflict=b.conflict(0,None,[b.file(b.blob(b'a')),b.file(b.blob(b'b'))])
+        # Include a path prefix and non-UTF8 bytes, not length-prefixed order.
+        paths=[(),(b'aa',),(b'aa',b'x'),(b'z',),(b'\xff',)]
+        def provenance(paths):
+            return b.provenance([rev],[(p,conflict,[0]) for p in paths],b'test',1,b'')
+        self.check_admission(b,[(provenance(paths),True),
+                                (provenance(list(reversed(paths))),False),
+                                (provenance([(b'z',),(b'aa',)]),False)])
+
+    def test_recipe_payload_size_limit(self):
+        b=Builder()
+        state=b.state(b.directory(b.map({})))
+        rev=b.revision(state,[],bytes(16),b'a',b'd',0)
+        oversized=b'x'*(1048576+1)
+        provenance=b.provenance([rev],[],b'test',1,oversized)
+        candidate=b.candidate(b'local',b'main',0,None,[rev],b'test',1,oversized,
+                              state,rev,b'p'*32,0)
+        self.check_admission(b,[(provenance,False),(candidate,False)])
+
+    def test_deep_history_has_an_explicit_reference_resource_refusal(self):
+        b=Builder()
+        state=b.state(b.directory(b.map({})))
+        parent=[]
+        for _ in range(1200):
+            rev=b.revision(state,parent,bytes(16),b'a',b'd',0)
+            parent=[rev]
+        with self.assertRaisesRegex(Invalid,'traversal depth budget'):
+            Verifier(b.store).generic(rev)
+        self.check_admission(b,[(rev,False)])
+
     def test_directory_subtree_reuse(self):
         # Copies/moves reuse identical nested object IDs but produce different State.
         self.assertNotEqual(self.roots['moved_before'],self.roots['moved_after'])

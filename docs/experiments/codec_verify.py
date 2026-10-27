@@ -12,7 +12,9 @@ from codec_reference import (Ref, object_id, u16, u32, nibs, packed_nibbles,
                              name_valid, K_BLOB,K_LEAF,K_BRANCH,K_STATE,K_REV,
                              K_CONFLICT,K_PROV,K_GROUP,K_CANDIDATE)
 
+# Reference-parser budgets, not canonical graph/path limits.
 MAX_EDGES=30000
+MAX_ACTIVE=256
 
 class Invalid(ValueError):pass
 
@@ -26,7 +28,10 @@ class Cursor:
         i=self.number(1)
         if i not in (0,1):raise Invalid('nonbinary flag')
         return bool(i)
-    def str(self)->bytes:return self.take(self.number(4))
+    def str(self,limit:int|None=None)->bytes:
+        size=self.number(4)
+        if limit is not None and size>limit:raise Invalid('byte-string size limit')
+        return self.take(size)
     def ref(self,allowed:set[int])->Ref:
         k=self.number(1)
         if k not in allowed:raise Invalid(f'wrong kind {k}')
@@ -103,6 +108,7 @@ class Verifier:
         self.edges+=1
         if self.edges>MAX_EDGES:raise Invalid('expansion budget exceeded')
         if ref in self.active:raise Invalid('cycle')
+        if len(self.active)>=MAX_ACTIVE:raise Invalid('reference traversal depth budget exceeded')
         self.active.add(ref)
         return self.fetch(ref)
 
@@ -118,7 +124,7 @@ class Verifier:
             if tag==1:c.flag()
         elif tag==3:
             r=c.ref({K_LEAF,K_BRANCH})
-            self.map(r,(),depth,pathlen)
+            self.map(r,(),depth,pathlen,conf_depth)
         elif tag==4:
             self.conflict(c.ref({K_CONFLICT}),depth,pathlen,conf_depth+1,require_dir=require_dir)
         else:raise Invalid('unsupported entry type')
@@ -130,7 +136,7 @@ class Verifier:
         elif require_dir and not allow_absent:raise Invalid('absent directory alternative')
         return c.data[p:c.pos]
 
-    def map(self,ref:Ref,prefix:tuple[int,...],depth:int,pathlen:int)->dict[bytes,bytes]:
+    def map(self,ref:Ref,prefix:tuple[int,...],depth:int,pathlen:int,conf_depth:int=0)->dict[bytes,bytes]:
         if depth>256 or pathlen>4096:raise Invalid('path constraints')
         data=self.enter(ref)
         c=Cursor(data)
@@ -143,13 +149,13 @@ class Verifier:
                 tail=c.nibbles(c.number(2))
                 name=byte_name(prefix+tail)
                 if name in got:raise Invalid('duplicate name')
-                v=self.entry(c,depth+1,pathlen+(1 if depth else 0)+len(name))
+                v=self.entry(c,depth+1,pathlen+(1 if depth else 0)+len(name),conf_depth)
                 got[name]=v
         elif ref.kind==K_BRANCH:
             common=c.nibbles(c.number(2));full=prefix+common
             if c.flag():
                 name=byte_name(full)
-                v=self.entry(c,depth+1,pathlen+(1 if depth else 0)+len(name))
+                v=self.entry(c,depth+1,pathlen+(1 if depth else 0)+len(name),conf_depth)
                 got[name]=v
             bitmap=c.number(2)
             if bitmap==0:raise Invalid('branch without children')
@@ -157,7 +163,7 @@ class Verifier:
             for slot in range(16):
                 if (bitmap>>slot)&1:
                     child=c.ref({K_LEAF,K_BRANCH})
-                    partial=self.map(child,full+(slot,),depth,pathlen)
+                    partial=self.map(child,full+(slot,),depth,pathlen,conf_depth)
                     if set(got).intersection(partial):raise Invalid('overlapping names')
                     got.update(partial)
         else:raise Invalid('nonmap reference')
@@ -217,7 +223,8 @@ class Verifier:
         level=[object_id(K_GROUP,b'\0'+u32(len(terms[j:j+64]))+b''.join(terms[j:j+64]))
                for j in range(0,len(terms),64)]
         while len(level)>1:
-            level=[object_id(K_GROUP,b'\1'+u32(len(level[j:j+64]))+
+            level=[level[j] if len(level[j:j+64])==1 else
+                   object_id(K_GROUP,b'\1'+u32(len(level[j:j+64]))+
                              b''.join(ref.encode() for ref in level[j:j+64]))
                    for j in range(0,len(level),64)]
         return level[0]
@@ -256,7 +263,7 @@ class Verifier:
             parents=[c.ref({K_REV}) for _ in range(n)]
             if len(set(parents))!=n:raise Invalid('duplicate parents')
             c.take(16)
-            if len(c.str())>4096 or len(c.str())>1048576:raise Invalid('revision metadata bound')
+            c.str(4096);c.str(1048576)
             c.take(8)
             if c.flag():self.generic(c.ref({K_PROV}))
             for p in parents:self.generic(p)
@@ -281,7 +288,7 @@ class Verifier:
                 roles=c.number(4)
                 for _ in range(roles):
                     if c.number(4)>=len(inputs):raise Invalid('bad role')
-            c.str();c.number(4);c.str()
+            c.str();c.number(4);c.str(1048576)
             for inp in inputs:self.generic(inp)
         elif ref.kind==K_CANDIDATE:
             c.str();c.str();gen=c.number(8)
@@ -292,7 +299,7 @@ class Verifier:
             if not 1<=n<=64:raise Invalid('candidate selection width')
             selected=[c.ref({K_REV}) for _ in range(n)]
             if len(set(selected))!=n:raise Invalid('duplicate selected')
-            c.str();c.number(4);c.str()
+            c.str();c.number(4);c.str(1048576)
             state=c.ref({K_STATE});rev=c.ref({K_REV})
             c.take(32);c.number(8)
             self.state(state);self.generic(rev)

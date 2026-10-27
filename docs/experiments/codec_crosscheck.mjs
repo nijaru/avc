@@ -120,6 +120,13 @@ function validName(b) {
     && !b.includes(0) && !b.includes(47);
 }
 const compare = (a, b) => Buffer.compare(a, b);
+function comparePaths(a, b) {
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    const order = compare(a[i], b[i]);
+    if (order) return order;
+  }
+  return a.length - b.length;
+}
 class Builder {
   constructor() { this.store = new Map(); }
   put(k, data) {
@@ -182,7 +189,8 @@ class Builder {
       while (level.length > 1) {
         const next = [];
         for (let i = 0; i < level.length; i += 64)
-          next.push(this.put(8, bytes(b8(1), b32(Math.min(64, level.length - i)), ...level.slice(i, i + 64).map(wire))));
+          next.push(level.length - i === 1 ? level[i] :
+            this.put(8, bytes(b8(1), b32(Math.min(64, level.length - i)), ...level.slice(i, i + 64).map(wire))));
         level = next;
       }
       suffix = bytes(b8(1), wire(level[0]));
@@ -277,7 +285,11 @@ class Reader {
   u32() { return this.take(4).readUInt32LE(); }
   u64() { return this.take(8).readBigUInt64LE(); }
   flag() { const n = this.u8(); if (n > 1) throw new Error('invalid bool'); return n === 1; }
-  str() { return this.take(this.u32()); }
+  str(limit = Infinity) {
+    const size = this.u32();
+    if (size > limit) throw new Error('byte-string size limit');
+    return this.take(size);
+  }
   ref(kinds) {
     const kind = this.u8(), digest = this.take(32);
     if (!kinds.includes(kind)) throw new Error('invalid reference kind');
@@ -301,6 +313,8 @@ class Inspector {
   open(ref) {
     if (++this.edges > 30000) throw new Error('expansion limit');
     if (this.active.has(ref.key)) throw new Error('source/provenance cycle');
+    // Reference traversal budget, not a canonical history-depth restriction.
+    if (this.active.size >= 256) throw new Error('reference traversal depth budget exceeded');
     this.active.add(ref.key);
     return new Reader(this.fetch(ref));
   }
@@ -312,7 +326,7 @@ class Inspector {
       this.generic(c.ref([1]));
       if (tag === 1) c.flag();
     } else if (tag === 3) {
-      this.map(c.ref([2, 3]), [], depth, pathSize);
+      this.map(c.ref([2, 3]), [], depth, pathSize, cfDepth);
     } else if (tag === 4) {
       this.conflict(c.ref([6]), depth, pathSize, cfDepth + 1, strictDirectory);
     } else throw new Error('invalid Entry tag');
@@ -324,7 +338,7 @@ class Inspector {
     else if (strictDirectory && !allowAbsent) throw new Error('absent directory alternative');
     return c.data.subarray(start, c.pos);
   }
-  map(ref, prefix = [], depth = 0, pathSize = 0) {
+  map(ref, prefix = [], depth = 0, pathSize = 0, cfDepth = 0) {
     if (depth > 256 || pathSize > 4096) throw new Error('path bound');
     const c = this.open(ref), full = new Map();
     const add = (ns) => {
@@ -335,7 +349,7 @@ class Inspector {
       if (full.has(key)) throw new Error('duplicate map name');
       const nextSize = pathSize + (depth ? 1 : 0) + name.length;
       if (depth + 1 > 256 || nextSize > 4096) throw new Error('path bound');
-      full.set(key, [name, this.entry(c, depth + 1, nextSize)]);
+      full.set(key, [name, this.entry(c, depth + 1, nextSize, cfDepth)]);
     };
     if (ref.kind === 2) {
       if (c.data.length > 4096) throw new Error('large leaf');
@@ -350,7 +364,7 @@ class Inspector {
       if (n.length === 0 || n.length + +(full.size > 0) < 2) throw new Error('uncompressed branch');
       for (const slot of n) {
         const child = c.ref([2, 3]);
-        for (const [key, pair] of this.map(child, [...pre, slot], depth, pathSize)) {
+        for (const [key, pair] of this.map(child, [...pre, slot], depth, pathSize, cfDepth)) {
           if (full.has(key)) throw new Error('overlapping branch');
           full.set(key, pair);
         }
@@ -397,7 +411,8 @@ class Inspector {
       while (level.length > 1) {
         const next = [];
         for (let j = 0; j < level.length; j += 64)
-          next.push(identify(8, bytes(b8(1), b32(Math.min(64, level.length - j)), ...level.slice(j, j + 64).map(wire))));
+          next.push(level.length - j === 1 ? level[j] :
+            identify(8, bytes(b8(1), b32(Math.min(64, level.length - j)), ...level.slice(j, j + 64).map(wire))));
         level = next;
       }
       if (level[0].key !== groupRef.key) throw new Error('noncanonical group blocks');
@@ -432,7 +447,7 @@ class Inspector {
       const uniq = new Set(parents.map(x => x.key));
       if (uniq.size !== n) throw new Error('duplicate parents');
       c.take(16);
-      if (c.str().length > 4096 || c.str().length > 1048576) throw new Error('revision metadata');
+      c.str(4096); c.str(1048576);
       c.take(8);
       if (c.flag()) this.generic(c.ref([7]));
       for (const p of parents) this.generic(p);
@@ -449,14 +464,16 @@ class Inspector {
         const path = Array.from({ length: num }, () => c.str());
         if (path.some(n => !validName(n)) || path.reduce((x, n) => x + n.length, Math.max(0, num - 1)) > 4096) throw new Error('path name');
         const conflict = c.ref([6]);
-        const sort = bytes(...path.map(string), wire(conflict));
-        if (previous && compare(previous, sort) >= 0) throw new Error('provenance order');
-        previous = sort;
+        if (previous) {
+          const order = comparePaths(previous.path, path) || compare(wire(previous.conflict), wire(conflict));
+          if (order >= 0) throw new Error('provenance order');
+        }
+        previous = { path, conflict };
         this.conflict(conflict);
         const roles = c.u32();
         for (let j = 0; j < roles; j++) if (c.u32() >= n) throw new Error('invalid role');
       }
-      c.str(); c.u32(); c.str();
+      c.str(); c.u32(); c.str(1048576);
       for (const x of inputs) this.generic(x);
     } else if (ref.kind === 9) {
       c.str(); c.str();
@@ -467,7 +484,7 @@ class Inspector {
       if (count < 1 || count > 64) throw new Error('selected count');
       const selected = Array.from({ length: count }, () => c.ref([5]));
       if (new Set(selected.map(x => x.key)).size !== count) throw new Error('duplicated selected');
-      c.str(); c.u32(); c.str();
+      c.str(); c.u32(); c.str(1048576);
       const state = c.ref([4]), revision = c.ref([5]);
       c.take(32); c.u64();
       this.state(state); this.generic(revision);
@@ -571,6 +588,21 @@ if (process.argv[1] && new URL(`file://${process.argv[1]}`).href === import.meta
       return display(m);
     });
     console.log(JSON.stringify(ids));
+  } else if (process.argv.includes('--objects-stdin')) {
+    // Differential admission corpus: exact hash-valid payloads, not Python verdicts.
+    const corpus = JSON.parse(readFileSync(0, 'utf8')), b = new Builder();
+    for (const item of corpus.objects) b.put(item.kind, Buffer.from(item.payload_hex, 'hex'));
+    const results = corpus.roots.map(hex => {
+      const c = new Reader(Buffer.from(hex, 'hex')), ref = c.ref([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      c.finish();
+      try { new Inspector(b.store).generic(ref); return true; }
+      catch (err) {
+        // A runtime stack/allocation error is a decoder crash, not safe rejection.
+        if (err.constructor !== Error) throw err;
+        return false;
+      }
+    });
+    console.log(JSON.stringify(results));
   } else {
     const { refs, constructed } = golden();
     console.log(`Cross-language AVC v0 vectors: ${Object.keys(refs).length} PASS; objects ${constructed}; independent BLAKE3 PASS`);

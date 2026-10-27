@@ -191,7 +191,8 @@ class Builder:
             nodes=[self.store_obj(K_GROUP, b'\x00'+u32(len(vals[i:i+64]))+b''.join(vals[i:i+64]))
                    for i in range(0,len(vals),64)]
             while len(nodes)>1:
-                nodes=[self.store_obj(K_GROUP,b'\x01'+u32(len(nodes[i:i+64]))+
+                nodes=[nodes[i] if len(nodes[i:i+64])==1 else
+                       self.store_obj(K_GROUP,b'\x01'+u32(len(nodes[i:i+64]))+
                                       b''.join(node.encode() for node in nodes[i:i+64]))
                        for i in range(0,len(nodes),64)]
             payload+=b'\x01'+nodes[0].encode()

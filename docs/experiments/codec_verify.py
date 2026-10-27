@@ -10,7 +10,7 @@ from collections import defaultdict
 from struct import unpack
 from codec_reference import (Ref, object_id, u16, u32, nibs, packed_nibbles,
                              name_valid, K_BLOB,K_LEAF,K_BRANCH,K_STATE,K_REV,
-                             K_CONFLICT,K_PROV,K_GROUP,K_CANDIDATE)
+                             K_CONFLICT,K_PROV)
 
 # Reference-parser budgets, not canonical graph/path limits.
 MAX_EDGES=30000
@@ -97,6 +97,7 @@ class Verifier:
         self.active:set[Ref]=set()
         self.validated:set[Ref]=set()
         self.edges=0
+        self.provenance_variants={}
 
     def fetch(self,ref:Ref)->bytes:
         if ref not in self.objects:raise Invalid('missing required object')
@@ -176,39 +177,13 @@ class Verifier:
         # builder of the *root* to avoid losing their prefix parity context.
         return got
 
-    def group(self,ref:Ref,depth:int=0,pathlen:int=0,conf_depth:int=0,require_dir:bool=False,allow_absent:bool=True)->list[bytes]:
-        if ref.kind!=K_GROUP:raise Invalid('not group')
-        c=Cursor(self.enter(ref))
-        tag=c.number(1);count=c.number(4)
-        if tag==0:
-            if not 1<=count<=64:raise Invalid('leaf width')
-            terms=[self.maybe(c,depth,pathlen,conf_depth,require_dir,allow_absent) for _ in range(count)]
-        elif tag==1:
-            if not 2<=count<=64:raise Invalid('branch width')
-            terms=[]
-            for _ in range(count):terms+=self.group(c.ref({K_GROUP}),depth,pathlen,conf_depth,require_dir,allow_absent)
-        else:raise Invalid('group variant')
-        c.done();self.exit(ref)
-        if terms!=sorted(set(terms)):raise Invalid('group order or duplicate')
-        return terms
-
     def conflict(self,ref:Ref,depth:int=0,pathlen:int=0,conf_depth:int=1,root:bool=False,require_dir:bool=False)->None:
         if conf_depth>64:raise Invalid('conflict nesting >64')
         c=Cursor(self.enter(ref))
         region=c.number(1)
         if region not in (0,1) or ((root or require_dir) and region!=1):raise Invalid('conflict region/root kind')
         base=self.maybe(c,depth,pathlen,conf_depth,region==1,True)
-        mode=c.number(1)
-        if mode==0:
-            n=c.number(4)
-            if not 2<=n<=64:raise Invalid('conflict inline width')
-            terms=[self.maybe(c,depth,pathlen,conf_depth,region==1,not(root or require_dir)) for _ in range(n)]
-        elif mode==1:
-            group_ref=c.ref({K_GROUP})
-            terms=self.group(group_ref,depth,pathlen,conf_depth,region==1,not(root or require_dir))
-            if self._canonical_group(terms)!=group_ref:raise Invalid('noncanonical group blocks')
-            if len(terms)<=64:raise Invalid('noncanonical conflict grouping')
-        else:raise Invalid('conflict storage variant')
+        terms=[self.maybe(c,depth,pathlen,conf_depth,region==1,not(root or require_dir)) for _ in range(2)]
         c.done();self.exit(ref)
         if terms!=sorted(set(terms)):raise Invalid('noncanonical alternatives')
         # Parsing every present coupled alternative as a strictly directory-valued
@@ -216,18 +191,6 @@ class Verifier:
         # only the nested conflict's region byte. This prevents root states whose
         # apparent directory alternatives secretly include a nested deletion.
         return region
-
-    @staticmethod
-    def _canonical_group(terms:list[bytes])->Ref:
-        # Independent canonical wide-alternative packing from decoded terms.
-        level=[object_id(K_GROUP,b'\0'+u32(len(terms[j:j+64]))+b''.join(terms[j:j+64]))
-               for j in range(0,len(terms),64)]
-        while len(level)>1:
-            level=[level[j] if len(level[j:j+64])==1 else
-                   object_id(K_GROUP,b'\1'+u32(len(level[j:j+64]))+
-                             b''.join(ref.encode() for ref in level[j:j+64]))
-                   for j in range(0,len(level),64)]
-        return level[0]
 
     def state(self,ref:Ref)->None:
         if ref.kind!=K_STATE:raise Invalid('not State')
@@ -238,6 +201,97 @@ class Verifier:
         elif tag==4:self.conflict(c.ref({K_CONFLICT}),0,0,1,root=True)
         else:raise Invalid('not valid state root')
         c.done();self.exit(ref)
+
+    @staticmethod
+    def path(c:Cursor):
+        n=c.number(4)
+        if n>256:raise Invalid('long path')
+        parts=tuple(c.str(255) for _ in range(n))
+        if any(not name_valid(p) for p in parts):raise Invalid('path part')
+        if sum(map(len,parts))+max(0,len(parts)-1)>4096:raise Invalid('path length')
+        return parts
+
+    def paths(self,c:Cursor):
+        n=c.number(4)
+        if n>1000000:raise Invalid('path list budget')
+        paths=[]
+        for _ in range(n):
+            path=self.path(c)
+            if paths and path<=paths[-1]:raise Invalid('path list order')
+            paths.append(path)
+        return paths
+
+    def record(self,c:Cursor,inputs:list[Ref]):
+        tag=c.number(1)
+        if tag==1:  # Transform: the structural batch precedes ordered leaf edits.
+            self.state(c.ref({K_STATE}))
+            n=c.number(4)
+            if n>1000000:raise Invalid('structural count')
+            for _ in range(n):
+                op=c.number(1)
+                if op==1:
+                    if not self.path(c) or not self.path(c):raise Invalid('empty structural path')
+                    self.entry(c);self.maybe(c)
+                elif op==2:
+                    self.entry(c)
+                    if not self.path(c):raise Invalid('empty structural path')
+                    self.maybe(c)
+                else:raise Invalid('structural operation')
+            n=c.number(4)
+            if n>1000000:raise Invalid('leaf edit count')
+            for _ in range(n):
+                if not self.path(c):raise Invalid('empty leaf path')
+                self.maybe(c);self.maybe(c)
+        elif tag==2:  # Merge: reduction traces are derived, not another object graph.
+            mode=c.number(1)
+            if mode==0:
+                if c.number(4)>=len(inputs) or c.number(4)>=len(inputs):raise Invalid('merge input index')
+                c.flag()  # explicit permission for synthetic bases throughout reduction
+            elif mode==1:
+                for _ in range(3):self.state(c.ref({K_STATE}))
+            else:raise Invalid('merge mode')
+            for index in range(2):
+                algorithm,version=c.number(2),c.number(4)
+                if (algorithm==0 and (index==0 or version!=0)) or (algorithm!=0 and version==0):
+                    raise Invalid('algorithm version')
+            for _ in range(2):
+                if c.flag():
+                    evidence=c.ref({K_PROV});self.generic(evidence)
+                    if 1 not in self.provenance_variants[evidence]:raise Invalid('move evidence must be Transform')
+        elif tag==3:  # Observation is descriptive, never a replayable FS snapshot.
+            base=c.ref({K_STATE});self.state(base)
+            if c.flag():
+                base_rev=c.ref({K_REV});self.generic(base_rev)
+                if Cursor(self.fetch(base_rev)).ref({K_STATE})!=base:raise Invalid('observation base mismatch')
+            c.number(8)  # non-owning selection generation
+            if c.number(1)>2:raise Invalid('consistency label')
+            if c.flag():c.take(16)  # non-owning capture/receipt identity
+            partial=c.flag()
+            coverage_mode=c.number(1)
+            if coverage_mode not in (0,1):raise Invalid('coverage mode')
+            scope=self.paths(c)
+            if not scope:raise Invalid('empty observation scope')
+            if any(b[:len(a)]==a for a,b in zip(scope,scope[1:])):raise Invalid('redundant scope prefix')
+            scope_set=set(scope)
+            def within(path):return any(path[:i] in scope_set for i in range(len(path)+1))
+            coverage=[self.paths(c) for _ in range(3)]
+            if coverage_mode==1 and any(coverage):raise Invalid('noncanonical completed scope coverage')
+            if any(set(coverage[i]) & set(coverage[j]) for i in range(3) for j in range(i)):
+                raise Invalid('overlapping coverage labels')
+            if (coverage[1] or coverage[2]) and not partial:raise Invalid('unconfirmed partial observation')
+            for paths in coverage:
+                if any(not within(p) for p in paths):raise Invalid('coverage outside scope')
+            n=c.number(4)
+            if n>1000000:raise Invalid('resolution count')
+            previous=None
+            for _ in range(n):
+                path=self.path(c)
+                if previous is not None and path<=previous:raise Invalid('resolution order')
+                if not within(path):raise Invalid('resolution outside scope')
+                previous=path
+                self.conflict(c.ref({K_CONFLICT}));self.maybe(c)
+        else:raise Invalid('unknown provenance record')
+        return tag
 
     def generic(self,ref:Ref)->None:
         if ref.kind==K_BLOB:
@@ -252,12 +306,9 @@ class Verifier:
         if ref.kind==K_CONFLICT:
             self.conflict(ref)
             return
-        if ref.kind==K_GROUP:
-            self.group(ref)
-            return
         c=Cursor(self.enter(ref))
         if ref.kind==K_REV:
-            self.state(c.ref({K_STATE}))
+            state=c.ref({K_STATE});self.state(state)
             n=c.number(4)
             if n>64:raise Invalid('revision parent limit')
             parents=[c.ref({K_REV}) for _ in range(n)]
@@ -265,21 +316,22 @@ class Verifier:
             c.take(16)
             c.str(4096);c.str(1048576)
             c.take(8)
-            if c.flag():self.generic(c.ref({K_PROV}))
+            if c.flag():
+                prov=c.ref({K_PROV});self.generic(prov)
+                if Cursor(self.fetch(prov)).ref({K_STATE})!=state:raise Invalid('provenance result mismatch')
             for p in parents:self.generic(p)
         elif ref.kind==K_PROV:
+            if len(c.data)>1048576:raise Invalid('provenance payload size limit')
+            self.state(c.ref({K_STATE}))
             n=c.number(4)
             if n>64:raise Invalid('provenance input budget')
             inputs=[c.ref({K_REV}) for _ in range(n)]
+            if len(set(inputs))!=n:raise Invalid('duplicate provenance inputs')
             occurrences=c.number(4)
             if occurrences>1000000:raise Invalid('provenance count')
             previous=None
             for _ in range(occurrences):
-                components=c.number(4)
-                if components>256:raise Invalid('long path')
-                path=tuple(c.str() for _ in range(components))
-                if any(not name_valid(p) for p in path):raise Invalid('path part')
-                if sum(map(len,path))+max(0,len(path)-1)>4096:raise Invalid('path length')
+                path=self.path(c)
                 cf=c.ref({K_CONFLICT})
                 if previous is not None and (path,cf.encode())<=previous:
                     raise Invalid('noncanonical provenance occurrence ordering')
@@ -288,25 +340,11 @@ class Verifier:
                 roles=c.number(4)
                 for _ in range(roles):
                     if c.number(4)>=len(inputs):raise Invalid('bad role')
-            c.str();c.number(4);c.str(1048576)
+            count=c.number(1)
+            if count not in (1,2):raise Invalid('provenance record count')
+            tags=[self.record(c,inputs) for _ in range(count)]
+            if tags!=sorted(set(tags)) or (1 in tags and 2 in tags):raise Invalid('provenance record combination')
+            self.provenance_variants[ref]=set(tags)
             for inp in inputs:self.generic(inp)
-        elif ref.kind==K_CANDIDATE:
-            c.str();c.str();gen=c.number(8)
-            present=c.flag()
-            obs=c.ref({K_REV}) if present else None
-            if (gen==0)!= (obs is None):raise Invalid('generation/observed pair')
-            n=c.number(4)
-            if not 1<=n<=64:raise Invalid('candidate selection width')
-            selected=[c.ref({K_REV}) for _ in range(n)]
-            if len(set(selected))!=n:raise Invalid('duplicate selected')
-            c.str();c.number(4);c.str(1048576)
-            state=c.ref({K_STATE});rev=c.ref({K_REV})
-            c.take(32);c.number(8)
-            self.state(state);self.generic(rev)
-            if obs:self.generic(obs)
-            for x in selected:self.generic(x)
-            # Source-state reference equality is checked after revision decode.
-            rv=Cursor(self.fetch(rev))
-            if rv.ref({K_STATE})!=state:raise Invalid('candidate result state mismatch')
         else:raise Invalid('unknown kind')
         c.done();self.exit(ref)

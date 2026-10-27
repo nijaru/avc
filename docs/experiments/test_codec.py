@@ -12,7 +12,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from codec_reference import (Builder,Ref,object_id,nibs,packed_nibbles,u16,u32,
-                             K_LEAF,K_BRANCH,K_STATE,K_GROUP,K_CONFLICT)
+                             K_LEAF,K_BRANCH,K_STATE,K_CONFLICT)
 from codec_verify import Verifier, Invalid, alternate_map
 from blake3_reference import blake3, OFFICIAL_VECTORS
 
@@ -55,17 +55,16 @@ def build_samples():
     right=b.directory(b.map({b'right':run,b'same':f}))
     root_cf=b.conflict(1,b.directory(empty),[left,right])
     conflicted_root=b.state(b.conflict_entry(root_cf))
-    big_alts=[b.file(b.blob(f'file-{i:03}'.encode())) for i in range(65)]
-    group_cf=b.conflict(0,None,big_alts)
-    group_root=Ref(K_GROUP,b.store[group_cf][-32:])
-    group_payload=b.store[group_root]
-    group_leaf0=Ref(K_GROUP,group_payload[6:38])
-    group_leaf1=Ref(K_GROUP,group_payload[39:71])
-    group_state=b.state(b.directory(b.map({b'many':b.conflict_entry(group_cf)})))
-    prov=b.provenance([rev,rev_author],[((b'broken',),path_cf,[0,1])],b'avc.text.lines',1,b'fixture')
+    prov=b.provenance(path_cf_state,[rev,rev_author],[((b'broken',),path_cf,[0,1])],
+                      b.transform_record(empty_state,edits=[((b'broken',),None,b.conflict_entry(path_cf))]))
+    move_prov=b.provenance(src_new,[],[],b.transform_record(src_old,[
+        b.move_op((b'src',),(b'lib',),b.directory(child),None)]))
+    observation=b.provenance(mixed,[rev],[],b.observation_record(
+        mixed,rev,7,capture=b'C'*16,covered=[(p,) for p in (b'a',b'ab',b'foo',b'link',b'\xff')]))
+    history_merge=b.provenance(mixed,[rev,rev_author],[],
+                               b.merge_record(history=(0,1),allow_unrelated=True))
+    source_merge=b.provenance(mixed,[],[],b.merge_record(source=(empty_state,mixed,mixed)))
     merge_rev=b.revision(path_cf_state,[rev,rev_author],b'Y'*16,b'author',b'merge',1234567890,prov)
-    candidate=b.candidate(b'local',b'main',0,None,[merge_rev],b'merge-v0',1,b'fixture',
-                          path_cf_state,merge_rev,b'P'*32,7)
     roots={
         'empty_map':empty,'empty_state':empty_state,'single_file':single,
         'mixed_types':mixed,'odd_nibble_branch':odd,'odd_nibble_state':odd_state,
@@ -75,10 +74,9 @@ def build_samples():
         'revision':rev,'alternate_author_revision':rev_author,
         'path_conflict':path_cf,'path_conflict_state':path_cf_state,
         'root_coupled_conflict':root_cf,'root_conflict_state':conflicted_root,
-        'overflow_group_conflict':group_cf,'overflow_group_state':group_state,
-        'overflow_group_branch':group_root,'overflow_group_leaf0':group_leaf0,
-        'overflow_group_leaf1':group_leaf1,
-        'provenance':prov,'merge_revision':merge_rev,'publication_candidate':candidate
+        'provenance':prov,'merge_revision':merge_rev,'move_provenance':move_prov,
+        'observation_provenance':observation,'history_merge_provenance':history_merge,
+        'source_merge_provenance':source_merge
     }
     return b,roots
 
@@ -224,17 +222,6 @@ class CanonicalQualification(unittest.TestCase):
         # A non-root coupled conflict may itself represent deletion.
         Verifier(b.store).conflict(hidden_deletion)
 
-    def test_grouped_root_coupled_alternatives_must_all_be_directories(self):
-        b=Builder()
-        base=b.directory(b.map({}))
-        file=b.file(b.blob(b'one'))
-        dirs=[b.directory(b.map({f'file{i:03}'.encode():file})) for i in range(65)]
-        invalid=b.conflict(1,base,[None,*dirs])
-        with self.assertRaisesRegex(Invalid,'absent directory alternative'):
-            Verifier(b.store).state(b.state(b.conflict_entry(invalid)))
-        # Non-root deletion is an explicit valid semantic term even when grouped.
-        Verifier(b.store).conflict(invalid)
-
     def test_mutated_hash_valid_input_never_crashes_decoder(self):
         rng=random.Random(643024)
         eligible=[(ref,payload) for ref,payload in self.builder.store.items()
@@ -263,17 +250,6 @@ class CanonicalQualification(unittest.TestCase):
             if depth==64:Verifier(b.store).conflict(current)
         with self.assertRaisesRegex(Invalid,'nesting'):
             Verifier(b.store).conflict(current)
-
-    def test_group_block_normalization(self):
-        b=Builder()
-        entries=[b.file(b.blob(f'{i:03d}'.encode())) for i in range(65)]
-        terms=sorted(b.maybe(x) for x in entries)
-        bad0=b.store_obj(K_GROUP,b'\0'+u32(63)+b''.join(terms[:63]))
-        bad1=b.store_obj(K_GROUP,b'\0'+u32(2)+b''.join(terms[63:]))
-        badroot=b.store_obj(K_GROUP,b'\x01'+u32(2)+bad0.encode()+bad1.encode())
-        badconf=b.store_obj(K_CONFLICT,b'\0\0\x01'+badroot.encode())
-        with self.assertRaisesRegex(Invalid,'group blocks'):
-            Verifier(b.store).conflict(badconf)
 
     def check_admission(self, builder, cases):
         """The wire corpus lets the other runtime judge the same exact objects."""
@@ -308,14 +284,20 @@ class CanonicalQualification(unittest.TestCase):
                 cases.append((b.state(value),depth<=64))
         self.check_admission(b,cases)
 
-    def test_group_height_boundary_collapses_singleton_branches(self):
+    def test_binary_conflicts_and_retired_tags(self):
         b=Builder()
-        values=[b.file(b.blob(i.to_bytes(4,'little'))) for i in range(4097)]
-        cases=[(b.conflict(0,None,values[:n]),True) for n in (4096,4097)]
+        values=[b.file(b.blob(bytes([i]))) for i in range(3)]
+        for alternatives in ([],values[:1],values,[values[0],values[0]]):
+            with self.assertRaisesRegex(ValueError,'two distinct'):
+                b.conflict(0,None,alternatives)
+        ref=b.conflict(0,None,values[:2])
+        self.assertEqual(ref,b.conflict(0,None,list(reversed(values[:2]))))
+        # Truncation, a third term and retired experimental kinds are not extensions.
+        cases=[(ref,True),
+               (b.store_obj(K_CONFLICT,b.store[ref][:-1]),False),
+               (b.store_obj(K_CONFLICT,b.store[ref]+b.maybe(values[2])),False),
+               (b.store_obj(8,b'\x00'),False),(b.store_obj(9,b'\x00'),False)]
         self.check_admission(b,cases)
-        for ref,payload in b.store.items():
-            if ref.kind==K_GROUP and payload[0]==1:
-                self.assertGreaterEqual(int.from_bytes(payload[1:5],'little'),2)
 
     def test_provenance_order_uses_raw_path_components(self):
         b=Builder()
@@ -325,20 +307,52 @@ class CanonicalQualification(unittest.TestCase):
         # Include a path prefix and non-UTF8 bytes, not length-prefixed order.
         paths=[(),(b'aa',),(b'aa',b'x'),(b'z',),(b'\xff',)]
         def provenance(paths):
-            return b.provenance([rev],[(p,conflict,[0]) for p in paths],b'test',1,b'')
+            return b.provenance(empty,[rev],[(p,conflict,[0]) for p in paths],b.transform_record(empty))
         self.check_admission(b,[(provenance(paths),True),
                                 (provenance(list(reversed(paths))),False),
                                 (provenance([(b'z',),(b'aa',)]),False)])
 
-    def test_recipe_payload_size_limit(self):
+    def test_provenance_payload_size_limit(self):
         b=Builder()
         state=b.state(b.directory(b.map({})))
         rev=b.revision(state,[],bytes(16),b'a',b'd',0)
         oversized=b'x'*(1048576+1)
-        provenance=b.provenance([rev],[],b'test',1,oversized)
-        candidate=b.candidate(b'local',b'main',0,None,[rev],b'test',1,oversized,
-                              state,rev,b'p'*32,0)
-        self.check_admission(b,[(provenance,False),(candidate,False)])
+        provenance=b.provenance(state,[rev],[],b.transform_record(state)+oversized)
+        self.check_admission(b,[(provenance,False)])
+
+    def test_typed_provenance_admission_and_result_binding(self):
+        b=Builder()
+        state=b.state(b.directory(b.map({})))
+        value=b.file(b.blob(b'a'))
+        other=b.state(b.directory(b.map({b'a':value})))
+        rev=b.revision(state,[],bytes(16),b'a',b'd',0)
+        transform=b.provenance(other,[rev],[],b.transform_record(state,[
+            b.copy_op(value,(b'a',),None)],[]))
+        observe=b.provenance(state,[rev],[],b.observation_record(state,rev,covered=[()]))
+        def obs(**kwargs):return b.provenance(state,[rev],[],b.observation_record(state,**kwargs))
+        merge=b.provenance(other,[rev],[],b.merge_record(source=(state,state,other),moves=(transform,None)))
+        unknown_algorithm=b.provenance(state,[rev],[],b.merge_record(
+            history=(0,0),source_algorithm=(65535,99)))
+        combined=b.provenance(state,[rev],[],b.transform_record(state),b.observation_record(state,rev))
+        combined_merge=b.provenance(state,[rev],[],b.merge_record(history=(0,0)),b.observation_record(state,rev))
+        cases=[(transform,True),(observe,True),(merge,True),(combined,True),
+               (combined_merge,True),(unknown_algorithm,True),
+               (b.provenance(state,[],[],b.transform_record(state),b.merge_record(source=(state,state,state))),False),
+               (b.provenance(state,[],[],b.observation_record(state),b.observation_record(state)),False),
+               (b.provenance(state,[],[],b'\x04'),False),
+               (b.provenance(state,[rev],[],b.merge_record(history=(0,1))),False),
+               (b.provenance(state,[rev],[],b.merge_record(history=(0,0),moves=(observe,None))),False),
+               (b.provenance(state,[rev],[],b.merge_record(history=(0,0),text_algorithm=(0,1))),False),
+               (obs(failed=[(b'a',)]),False),(obs(failed=[(b'a',)],partial=True),True),
+               (obs(coverage_mode=1),True),(obs(coverage_mode=1,covered=[()]),False),
+               (obs(coverage_mode=1,failed=[(b'a',)],partial=True),False),
+               (obs(coverage_mode=2),False),
+               (obs(covered=[(b'a',)],failed=[(b'a',)],partial=True),False),
+               (obs(scope=[(b'a',)],covered=[(b'b',)]),False),
+               (obs(scope=[(),(b'a',)]),False),(obs(covered=[(b'z',),(b'aa',)]),False),
+               (b.provenance(state,[],[],b.observation_record(other,rev)),False),
+               (b.revision(state,[rev],b'B'*16,b'a',b'd',0,transform),False)]
+        self.check_admission(b,cases)
 
     def test_deep_history_has_an_explicit_reference_resource_refusal(self):
         b=Builder()
@@ -361,7 +375,6 @@ class CanonicalQualification(unittest.TestCase):
     def test_conflict_values_have_author_independent_ids(self):
         self.assertNotEqual(self.roots['revision'],self.roots['alternate_author_revision'])
         self.assertEqual(self.builder.store[self.roots['root_coupled_conflict']][0],1)
-        self.assertEqual(self.builder.store[self.roots['overflow_group_conflict']][-33],K_GROUP)
 
     def test_reject_noncanonical_and_corrupt(self):
         base=self.builder.file(self.builder.blob(b'K'))

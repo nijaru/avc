@@ -41,7 +41,7 @@ class Directory:
 @dataclass(frozen=True)
 class Conflict:
     base: Entry | None
-    alternatives: tuple[Entry | None, ...]
+    alternatives: tuple[Entry | None, Entry | None]
 
 
 Entry: TypeAlias = File | Symlink | Directory | Conflict
@@ -144,15 +144,17 @@ def digest(entry: Entry | None) -> bytes:
         value = b"directory" + b"".join(framed(n) + digest(e) for n, e in entry.entries)
     elif isinstance(entry, Conflict):
         terms = sorted({digest(a) for a in entry.alternatives})
-        value = b"conflict" + digest(entry.base) + len(terms).to_bytes(8, "big") + b"".join(terms)
+        if len(entry.alternatives) != 2 or len(terms) != 2:
+            raise ValueError("conflict requires two distinct alternatives")
+        value = b"conflict" + digest(entry.base) + b"".join(terms)
     else:
         raise TypeError(type(entry))
     return hashlib.sha256(framed(value)).digest()
 
 
-def normalize_conflict(base: Entry | None, *sides: Entry | None) -> Entry | None:
-    """Canonicalize a simple two-/n-way *value* conflict, excluding origins."""
-    alternatives = {digest(s): s for s in sides}
+def normalize_conflict(base: Entry | None, left: Entry | None, right: Entry | None) -> Entry | None:
+    """Canonicalize one binary node, never flatten or cancel nested terms."""
+    alternatives = {digest(s): s for s in (left, right)}
     if len(alternatives) == 1:
         return next(iter(alternatives.values()))
     return Conflict(base, tuple(alternatives[k] for k in sorted(alternatives)))
@@ -377,6 +379,19 @@ class SourceValueTests(unittest.TestCase):
         origin_b = ("author B", "revision B")
         self.assertNotEqual(origin_a, origin_b)
         self.assertEqual(digest(from_ab), digest(from_ba))
+
+    def test_nested_conflicts_preserve_shape_and_do_not_cancel(self) -> None:
+        base, a, b, c = (File(x) for x in (b"base",b"a",b"b",b"c"))
+        ab = normalize_conflict(base,a,b)
+        left_grouped = normalize_conflict(base,ab,c)
+        right_grouped = normalize_conflict(base,a,normalize_conflict(base,b,c))
+        self.assertNotEqual(digest(left_grouped),digest(right_grouped))
+        result = merge(base,left_grouped,c)
+        self.assertEqual(result,normalize_conflict(base,left_grouped,c))
+        self.assertIn(left_grouped,result.alternatives)
+        self.assertIn(c,result.alternatives)
+        # Only whole-value equality/base rules may resolve an existing node.
+        self.assertEqual(merge(left_grouped,left_grouped,c),c)
 
     def test_merge_preserves_delete_modify_conflict(self) -> None:
         base = update(EMPTY, (b"f",), File(b"before"), None)

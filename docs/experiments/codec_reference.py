@@ -13,7 +13,7 @@ from blake3_reference import blake3
 
 MAGIC = b'AVC-OBJECT\x00v1\x00'
 LEAF_LIMIT = 4096
-K_BLOB, K_LEAF, K_BRANCH, K_STATE, K_REV, K_CONFLICT, K_PROV, K_GROUP, K_CANDIDATE = range(1,10)
+K_BLOB, K_LEAF, K_BRANCH, K_STATE, K_REV, K_CONFLICT, K_PROV = range(1,8)
 
 
 def u8(v: int) -> bytes:
@@ -177,45 +177,74 @@ class Builder:
     def conflict(self, region_kind: int, base: bytes|None, alternatives: list[bytes|None]) -> Ref:
         if region_kind not in (0,1):raise ValueError('region kind')
         vals=sorted({self.maybe(v) for v in alternatives})
-        if len(vals)<2: raise ValueError('not a conflict')
+        if len(alternatives)!=2 or len(vals)!=2: raise ValueError('conflict requires two distinct alternatives')
         if region_kind==1:
             for entry in ([base] if base is not None else [])+ [v for v in alternatives if v is not None]:
                 if entry is None or entry[0] not in (3,4):
                     raise ValueError('non-directory coupled alternative')
             # A non-root coupled subtree may have a deletion alternative.
             # State-root admission separately requires all alternatives present.
-        payload=u8(region_kind)+self.maybe(base)
-        if len(vals) <= 64:
-            payload+=b'\x00'+u32(len(vals))+b''.join(vals)
-        else:
-            nodes=[self.store_obj(K_GROUP, b'\x00'+u32(len(vals[i:i+64]))+b''.join(vals[i:i+64]))
-                   for i in range(0,len(vals),64)]
-            while len(nodes)>1:
-                nodes=[nodes[i] if len(nodes[i:i+64])==1 else
-                       self.store_obj(K_GROUP,b'\x01'+u32(len(nodes[i:i+64]))+
-                                      b''.join(node.encode() for node in nodes[i:i+64]))
-                       for i in range(0,len(nodes),64)]
-            payload+=b'\x01'+nodes[0].encode()
+        payload=u8(region_kind)+self.maybe(base)+b''.join(vals)
         return self.store_obj(K_CONFLICT,payload)
 
-    def provenance(self, inputs: list[Ref], occurrences: list[tuple[tuple[bytes,...],Ref,list[int]]],
-                   driver: bytes, version: int, recipe: bytes) -> Ref:
-        payload = u32(len(inputs)) + b''.join(v.encode() for v in inputs)
+    @staticmethod
+    def path(parts: tuple[bytes,...]) -> bytes:
+        return u32(len(parts))+b''.join(string(p) for p in parts)
+
+    @classmethod
+    def move_op(cls, source, destination, expected_source, expected_destination):
+        return b'\x01'+cls.path(source)+cls.path(destination)+expected_source+cls.maybe(expected_destination)
+
+    @classmethod
+    def copy_op(cls, source_value, destination, expected_destination):
+        return b'\x02'+source_value+cls.path(destination)+cls.maybe(expected_destination)
+
+    @classmethod
+    def transform_record(cls, base, structural=(), edits=()):
+        return (b'\x01'+base.encode()+u32(len(structural))+b''.join(structural)+
+                u32(len(edits))+b''.join(cls.path(p)+cls.maybe(old)+cls.maybe(new)
+                                       for p,old,new in edits))
+
+    @classmethod
+    def observation_record(cls, base, base_revision=None, selection_generation=0,
+                           consistency=0, capture=None, partial=False, scope=((),),
+                           covered=(), failed=(), skipped=(), resolutions=(), coverage_mode=0):
+        payload=(b'\x03'+base.encode()+u8(base_revision is not None)+
+                 (base_revision.encode() if base_revision is not None else b'')+
+                 u64(selection_generation)+u8(consistency)+u8(capture is not None))
+        if capture is not None:
+            assert len(capture)==16
+            payload+=capture
+        payload+=u8(partial)+u8(coverage_mode)
+        for paths in (scope,covered,failed,skipped):
+            payload+=u32(len(paths))+b''.join(cls.path(p) for p in paths)
+        payload+=u32(len(resolutions))
+        for path,conflict,value in resolutions:
+            payload+=cls.path(path)+conflict.encode()+cls.maybe(value)
+        return payload
+
+    @staticmethod
+    def merge_record(*, history=None, source=None, allow_unrelated=False,
+                     source_algorithm=(1,1), text_algorithm=(1,1), moves=(None,None)):
+        assert (history is None)!=(source is None)
+        payload=b'\x02'+u8(history is None)
+        if history is not None:
+            payload+=u32(history[0])+u32(history[1])+u8(allow_unrelated)
+        else:
+            payload+=b''.join(r.encode() for r in source)
+        for tag,version in (source_algorithm,text_algorithm):
+            payload+=u16(tag)+u32(version)
+        for ref in moves:
+            payload+=u8(ref is not None)+(ref.encode() if ref is not None else b'')
+        return payload
+
+    def provenance(self, result: Ref, inputs: list[Ref],
+                   occurrences: list[tuple[tuple[bytes,...],Ref,list[int]]], record: bytes,
+                   observation: bytes|None=None) -> Ref:
+        payload = result.encode()+u32(len(inputs))+b''.join(v.encode() for v in inputs)
         payload += u32(len(occurrences))
         for path, conflict, roles in occurrences:
-            payload += u32(len(path)) + b''.join(string(p) for p in path) + conflict.encode()
-            payload += u32(len(roles)) + b''.join(u32(i) for i in roles)
-        payload += string(driver)+u32(version)+string(recipe)
-        return self.store_obj(K_PROV,payload)
-
-    def candidate(self, namespace: bytes, target: bytes, generation: int, observed: Ref|None,
-                  selected: list[Ref], driver: bytes, driver_version: int, recipe: bytes,
-                  state: Ref, revision: Ref, policy_hash: bytes, policy_epoch: int) -> Ref:
-        assert len(policy_hash)==32 and state.kind==K_STATE and revision.kind==K_REV
-        assert 1 <= len(selected) <= 64 and len(set(selected))==len(selected)
-        payload=string(namespace)+string(target)+u64(generation)+u8(observed is not None)
-        if observed is not None:payload+=observed.encode()
-        payload+=u32(len(selected))+b''.join(v.encode() for v in selected)
-        payload+=string(driver)+u32(driver_version)+string(recipe)+state.encode()+revision.encode()
-        payload+=policy_hash+u64(policy_epoch)
-        return self.store_obj(K_CANDIDATE,payload)
+            payload += self.path(path)+conflict.encode()
+            payload += u32(len(roles))+b''.join(u32(i) for i in roles)
+        records=[record] if observation is None else [record,observation]
+        return self.store_obj(K_PROV,payload+u8(len(records))+b''.join(records))

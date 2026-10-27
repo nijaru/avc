@@ -17,7 +17,7 @@ import unittest
 class Custody:
     # One previously written, verified immutable object and one participant of
     # each role. "gone" is an actual missing physical object, not a promise.
-    location: str = 'present'   # present | deleting | gone
+    location: str = 'present'   # present | gone
     roots: int = 0
     staging: int = 0
     readers: int = 0
@@ -25,8 +25,8 @@ class Custody:
     writer_pc: int = 0         # 0 acquire; 1 commit; 2 done; 3 refused
     reader_pc: int = 0         # 0 acquire; 1 release; 2 done
     backup_pc: int = 0         # 0 acquire; 1 release; 2 done
-    gc_pc: int = 0             # 0 scan; 1 tombstone; 2 unlink; 3 done
-    marked: bool = False       # scan is advisory; MUST re-check at tombstone
+    gc_pc: int = 0             # 0 scan; 1 atomic SQL delete; 3 done
+    marked: bool = False       # scan is advisory; MUST re-check at deletion
 
 
 def custody_steps(s: Custody, *, stale_mark_sweep: bool = False):
@@ -39,10 +39,8 @@ def custody_steps(s: Custody, *, stale_mark_sweep: bool = False):
             yield 'sweep-old-mark', replace(s, gc_pc=3, location='gone' if s.marked else s.location)
         else:
             can_delete = s.location == 'present' and not any((s.roots, s.staging, s.readers, s.backups))
-            yield 'tombstone-or-skip', replace(s, gc_pc=2 if can_delete else 3,
-                                               location='deleting' if can_delete else s.location)
-    if s.gc_pc == 2:
-        yield 'unlink', replace(s, gc_pc=3, location='gone')
+            yield 'delete-or-skip', replace(s, gc_pc=3,
+                                            location='gone' if can_delete else s.location)
     if s.writer_pc == 0:
         if s.location == 'present':
             yield 'writer-pin', replace(s, writer_pc=1, staging=s.staging+1)
@@ -60,7 +58,8 @@ def custody_steps(s: Custody, *, stale_mark_sweep: bool = False):
         yield 'reader-release', replace(s, reader_pc=2, readers=s.readers-1)
     if s.backup_pc == 0:
         # Lease acquisition and root-set observation are one atomic authority
-        # step; taking a DB snapshot without leasing the selected root is not.
+        # step for multi-transaction native exports. A complete SQLite backup
+        # instead carries its own consistent payload+metadata snapshot.
         if s.location == 'present' and s.roots > 0:
             yield 'backup-root-and-lease', replace(s, backup_pc=1, backups=s.backups+1)
         else:
@@ -132,36 +131,13 @@ class AuthorityQualification(unittest.TestCase):
                     if state.roots > 0 and state.location == 'gone']
         self.assertIn(('scan', 'writer-pin', 'writer-commit-root', 'sweep-old-mark'), accepted)
 
-    def test_transactional_gc_tombstone_excludes_new_pins_and_readers(self):
+    def test_transactional_gc_delete_excludes_new_pins_and_readers(self):
         for initially_rooted in (0, 1):
             states = list(reachable(Custody(roots=initially_rooted)))
             self.assertGreater(len(states), 10)
             for state, trace in states:
                 self.assertFalse(custody_violation(state), trace)
-                if state.location == 'deleting':
-                    self.assertEqual((state.roots, state.staging, state.readers, state.backups),
-                                     (0, 0, 0, 0), trace)
             self.assertTrue(any(s.gc_pc == 3 for s, _ in states))
-
-    def test_root_commit_requires_durable_external_object_name(self):
-        phases = ('reserved', 'temp-write', 'file-fsync', 'installed',
-                  'directory-fsync', 'sqlite-full-commit', 'receipt-returned')
-        def missing_at_crash(steps, cut):
-            # Power loss retains a root only after FULL commit and the object
-            # name only after directory fsync, assuming honest local storage.
-            root = steps.index('sqlite-full-commit') <= cut
-            object_file = steps.index('directory-fsync') <= cut
-            return root and not object_file
-        for crash_after in range(len(phases)):
-            self.assertFalse(missing_at_crash(phases, crash_after))
-            returned_receipt = crash_after >= phases.index('receipt-returned')
-            self.assertFalse(returned_receipt and
-                             crash_after < phases.index('sqlite-full-commit'))
-        # Concrete counterexample: committing the SQLite root before syncing
-        # the installed external directory entry makes crash recovery lossy.
-        premature = ('reserved', 'temp-write', 'file-fsync', 'installed',
-                     'sqlite-full-commit', 'directory-fsync', 'receipt-returned')
-        self.assertTrue(missing_at_crash(premature, 4))
 
     def test_target_cas_and_persisted_receipts_survive_races_and_retries(self):
         proposals = [('p1', 'H1', 'A', 1, 'B'), ('p2', 'H2', 'A', 1, 'C')]

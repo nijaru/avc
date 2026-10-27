@@ -93,7 +93,7 @@ const string = b => bytes(b32(b.length), b);
 const magic = Buffer.from('AVC-OBJECT\x00v1\x00', 'binary');
 const wire = r => bytes(b8(r.kind), r.digest);
 function identify(kind, data) {
-  assert(kind >= 1 && kind <= 9);
+  assert(Number.isInteger(kind) && kind >= 1 && kind <= 255);
   const digest = blake3(bytes(magic, b8(kind), b64(data.length), data));
   return { kind, digest, key: `${kind}:${digest.toString('hex')}` };
 }
@@ -179,33 +179,42 @@ class Builder {
   conflict(kind, base, alternatives) {
     const uniq = new Map(alternatives.map(x => [this.maybe(x).toString('hex'), this.maybe(x)]));
     const terms = [...uniq.values()].sort(compare);
-    assert(terms.length >= 2);
-    let suffix;
-    if (terms.length <= 64) suffix = bytes(b8(0), b32(terms.length), ...terms);
-    else {
-      let level = [];
-      for (let i = 0; i < terms.length; i += 64)
-        level.push(this.put(8, bytes(b8(0), b32(Math.min(64, terms.length - i)), ...terms.slice(i, i + 64))));
-      while (level.length > 1) {
-        const next = [];
-        for (let i = 0; i < level.length; i += 64)
-          next.push(level.length - i === 1 ? level[i] :
-            this.put(8, bytes(b8(1), b32(Math.min(64, level.length - i)), ...level.slice(i, i + 64).map(wire))));
-        level = next;
-      }
-      suffix = bytes(b8(1), wire(level[0]));
-    }
-    return this.put(6, bytes(b8(kind), this.maybe(base), suffix));
+    assert.equal(alternatives.length, 2);
+    assert.equal(terms.length, 2);
+    return this.put(6, bytes(b8(kind), this.maybe(base), ...terms));
   }
-  provenance(inputs, occurrences, driver, version, recipe) {
-    return this.put(7, bytes(b32(inputs.length), ...inputs.map(wire), b32(occurrences.length),
-      ...occurrences.map(([path, ref, roles]) => bytes(b32(path.length), ...path.map(string), wire(ref),
-        b32(roles.length), ...roles.map(b32))), string(driver), b32(version), string(recipe)));
+  path(parts) { return bytes(b32(parts.length), ...parts.map(string)); }
+  moveOp(src, dst, expected, destination) {
+    return bytes(b8(1), this.path(src), this.path(dst), expected, this.maybe(destination));
   }
-  candidate(ns, name, gen, observed, selected, driver, version, recipe, state, revision, policy, epoch) {
-    return this.put(9, bytes(string(ns), string(name), b64(gen), b8(+(observed !== null)),
-      ...(observed ? [wire(observed)] : []), b32(selected.length), ...selected.map(wire),
-      string(driver), b32(version), string(recipe), wire(state), wire(revision), policy, b64(epoch)));
+  copyOp(value, dst, destination) {
+    return bytes(b8(2), value, this.path(dst), this.maybe(destination));
+  }
+  transform(base, structural = [], edits = []) {
+    return bytes(b8(1), wire(base), b32(structural.length), ...structural, b32(edits.length),
+      ...edits.map(([p, old, value]) => bytes(this.path(p), this.maybe(old), this.maybe(value))));
+  }
+  observation(base, revision = null, generation = 0, consistency = 0, capture = null,
+    partial = false, scope = [[]], covered = [], failed = [], skipped = [], resolutions = [], coverageMode = 0) {
+    return bytes(b8(3), wire(base), b8(+(revision !== null)), ...(revision ? [wire(revision)] : []),
+      b64(generation), b8(consistency), b8(+(capture !== null)), ...(capture ? [capture] : []), b8(+partial), b8(coverageMode),
+      ...[scope, covered, failed, skipped].map(paths => bytes(b32(paths.length), ...paths.map(p => this.path(p)))),
+      b32(resolutions.length), ...resolutions.map(([p, conflict, value]) =>
+        bytes(this.path(p), wire(conflict), this.maybe(value))));
+  }
+  merge({ history = null, source = null, unrelated = false, sourceAlgorithm = [1, 1],
+    textAlgorithm = [1, 1], moves = [null, null] }) {
+    assert((history === null) !== (source === null));
+    return bytes(b8(2), b8(+(history === null)),
+      ...(history ? [b32(history[0]), b32(history[1]), b8(+unrelated)] : source.map(wire)),
+      ...[sourceAlgorithm, textAlgorithm].map(([tag, version]) => bytes(b16(tag), b32(version))),
+      ...moves.map(ref => bytes(b8(+(ref !== null)), ...(ref ? [wire(ref)] : []))));
+  }
+  provenance(result, inputs, occurrences, record, observation = null) {
+    return this.put(7, bytes(wire(result), b32(inputs.length), ...inputs.map(wire), b32(occurrences.length),
+      ...occurrences.map(([path, ref, roles]) => bytes(this.path(path), wire(ref),
+        b32(roles.length), ...roles.map(b32))), b8(observation ? 2 : 1), record,
+      ...(observation ? [observation] : [])));
   }
 }
 const B = (s) => Buffer.from(s, 'utf8');
@@ -243,30 +252,24 @@ function samples() {
   const right = b.directory(b.map([[B('right'), run], [B('same'), f]]));
   const rootCf = b.conflict(1, b.directory(empty), [left, right]);
   const rootState = b.state(b.conflictEntry(rootCf));
-  const big = [];
-  for (let i = 0; i < 65; i++) big.push(b.file(b.blob(B('file-' + String(i).padStart(3, '0')))));
-  const groupCf = b.conflict(0, null, big);
-  const groupRoot = { kind: 8, digest: b.store.get(groupCf.key).data.subarray(-32) };
-  groupRoot.key = `8:${groupRoot.digest.toString('hex')}`;
-  const groupPayload = b.store.get(groupRoot.key).data;
-  const groupLeaf0 = { kind: 8, digest: groupPayload.subarray(6, 38) };
-  groupLeaf0.key = `8:${groupLeaf0.digest.toString('hex')}`;
-  const groupLeaf1 = { kind: 8, digest: groupPayload.subarray(39, 71) };
-  groupLeaf1.key = `8:${groupLeaf1.digest.toString('hex')}`;
-  const groupState = b.state(b.directory(b.map([[B('many'), b.conflictEntry(groupCf)]])));
-  const prov = b.provenance([rev, revAuthor], [[[B('broken')], pathCf, [0, 1]]], B('avc.text.lines'), 1, B('fixture'));
+  const prov = b.provenance(pathCfState, [rev, revAuthor], [[[B('broken')], pathCf, [0, 1]]],
+    b.transform(emptyState, [], [[[B('broken')], null, b.conflictEntry(pathCf)]]));
+  const moveProv = b.provenance(now, [], [], b.transform(old, [
+    b.moveOp([B('src')], [B('lib')], b.directory(child), null)]));
+  const observation = b.provenance(mixed, [rev], [], b.observation(mixed, rev, 7, 0, B('C'.repeat(16)),
+    false, [[]], ['a', 'ab', 'foo', 'link'].map(x => [B(x)]).concat([[Buffer.from('ff', 'hex')]])));
+  const historyMerge = b.provenance(mixed, [rev, revAuthor], [], b.merge({ history: [0, 1], unrelated: true }));
+  const sourceMerge = b.provenance(mixed, [], [], b.merge({ source: [emptyState, mixed, mixed] }));
   const mergeRev = b.revision(pathCfState, [rev, revAuthor], B('Y'.repeat(16)), B('author'), B('merge'), 1234567890, prov);
-  const candidate = b.candidate(B('local'), B('main'), 0, null, [mergeRev], B('merge-v0'), 1, B('fixture'),
-    pathCfState, mergeRev, B('P'.repeat(32)), 7);
   return [b, {
     empty_map: empty, empty_state: emptyState, single_file: single, mixed_types: mixed,
     odd_nibble_branch: odd, odd_nibble_state: oddState, terminal_branch: terminal,
     terminal_state: terminalState, leaf_4095: near[8], leaf_4096: near[9], branch_4097: near[10],
     moved_before: old, moved_after: now, revision: rev, alternate_author_revision: revAuthor,
     path_conflict: pathCf, path_conflict_state: pathCfState, root_coupled_conflict: rootCf,
-    root_conflict_state: rootState, overflow_group_conflict: groupCf, overflow_group_state: groupState,
-    overflow_group_branch: groupRoot, overflow_group_leaf0: groupLeaf0, overflow_group_leaf1: groupLeaf1,
-    provenance: prov, merge_revision: mergeRev, publication_candidate: candidate,
+    root_conflict_state: rootState, provenance: prov, merge_revision: mergeRev,
+    move_provenance: moveProv, observation_provenance: observation,
+    history_merge_provenance: historyMerge, source_merge_provenance: sourceMerge,
   }];
 }
 
@@ -303,7 +306,7 @@ class Reader {
   finish() { if (this.pos !== this.data.length) throw new Error('trailing bytes'); }
 }
 class Inspector {
-  constructor(store) { this.store = store; this.active = new Set(); this.edges = 0; }
+  constructor(store) { this.store = store; this.active = new Set(); this.edges = 0; this.variants = new Map(); }
   fetch(ref) {
     const item = this.store.get(ref.key);
     if (!item) throw new Error('missing closure');
@@ -377,46 +380,13 @@ class Inspector {
     }
     return full;
   }
-  group(ref, depth, pathSize, cfDepth, strictDirectory = false, allowAbsent = true) {
-    const c = this.open(ref), tag = c.u8(), n = c.u32();
-    const terms = [];
-    if (tag === 0 && n >= 1 && n <= 64) {
-      for (let i = 0; i < n; i++) terms.push(this.maybe(c, depth, pathSize, cfDepth, strictDirectory, allowAbsent));
-    } else if (tag === 1 && n >= 2 && n <= 64) {
-      for (let i = 0; i < n; i++) terms.push(...this.group(c.ref([8]), depth, pathSize, cfDepth, strictDirectory, allowAbsent));
-    } else throw new Error('invalid group node');
-    this.close(ref, c);
-    return terms;
-  }
   conflict(ref, depth = 0, pathSize = 0, cfDepth = 1, strictDirectory = false) {
     if (cfDepth > 64) throw new Error('conflict nesting');
     const c = this.open(ref), region = c.u8();
     if (region !== 0 && region !== 1 || strictDirectory && region !== 1) throw new Error('invalid conflict region');
     const base = this.maybe(c, depth, pathSize, cfDepth, region === 1, true);
-    const mode = c.u8();
-    let terms;
-    if (mode === 0) {
-      const n = c.u32();
-      if (n < 2 || n > 64) throw new Error('invalid inline count');
-      terms = Array.from({ length: n }, () => this.maybe(c, depth, pathSize, cfDepth, region === 1, !strictDirectory));
-    } else if (mode === 1) {
-      const groupRef = c.ref([8]);
-      terms = this.group(groupRef, depth, pathSize, cfDepth, region === 1, !strictDirectory);
-      if (terms.length <= 64) throw new Error('group used inline');
-      // Reconstruct exact deterministic groups independently of stored pointers.
-      let group = terms.map(x => x);
-      let level = [];
-      for (let j = 0; j < group.length; j += 64)
-        level.push(identify(8, bytes(b8(0), b32(Math.min(64, group.length - j)), ...group.slice(j, j + 64))));
-      while (level.length > 1) {
-        const next = [];
-        for (let j = 0; j < level.length; j += 64)
-          next.push(level.length - j === 1 ? level[j] :
-            identify(8, bytes(b8(1), b32(Math.min(64, level.length - j)), ...level.slice(j, j + 64).map(wire))));
-        level = next;
-      }
-      if (level[0].key !== groupRef.key) throw new Error('noncanonical group blocks');
-    } else throw new Error('invalid conflict mode');
+    const terms = Array.from({ length: 2 }, () =>
+      this.maybe(c, depth, pathSize, cfDepth, region === 1, !strictDirectory));
     this.close(ref, c);
     for (let i = 1; i < terms.length; i++) if (compare(terms[i - 1], terms[i]) >= 0) throw new Error('noncanonical alternatives');
     if (region === 1) {
@@ -432,15 +402,111 @@ class Inspector {
     else throw new Error('invalid State root');
     this.close(ref, c);
   }
+  path(c) {
+    const n = c.u32();
+    if (n > 256) throw new Error('path depth');
+    const parts = Array.from({ length: n }, () => c.str(255));
+    if (parts.some(p => !validName(p)) ||
+      parts.reduce((sum, p) => sum + p.length, Math.max(0, n - 1)) > 4096) throw new Error('path bounds');
+    return parts;
+  }
+  paths(c) {
+    const n = c.u32(), out = [];
+    if (n > 1e6) throw new Error('path count');
+    for (let i = 0; i < n; i++) {
+      const p = this.path(c);
+      if (i && comparePaths(out[i - 1], p) >= 0) throw new Error('path order');
+      out.push(p);
+    }
+    return out;
+  }
+  record(c, inputs) {
+    const tag = c.u8();
+    if (tag === 1) {
+      this.state(c.ref([4]));
+      let n = c.u32();
+      if (n > 1e6) throw new Error('structural count');
+      for (let i = 0; i < n; i++) {
+        const op = c.u8();
+        if (op === 1) {
+          if (!this.path(c).length || !this.path(c).length) throw new Error('empty structural path');
+          this.entry(c); this.maybe(c);
+        } else if (op === 2) {
+          this.entry(c);
+          if (!this.path(c).length) throw new Error('empty structural path');
+          this.maybe(c);
+        } else throw new Error('structural operation');
+      }
+      n = c.u32();
+      if (n > 1e6) throw new Error('leaf count');
+      for (let i = 0; i < n; i++) {
+        if (!this.path(c).length) throw new Error('empty leaf path');
+        this.maybe(c); this.maybe(c);
+      }
+    } else if (tag === 2) {
+      const mode = c.u8();
+      if (mode === 0) {
+        if (c.u32() >= inputs.length || c.u32() >= inputs.length) throw new Error('merge input index');
+        c.flag();
+      } else if (mode === 1) {
+        for (let i = 0; i < 3; i++) this.state(c.ref([4]));
+      } else throw new Error('merge mode');
+      for (let i = 0; i < 2; i++) {
+        const algorithm = c.u16(), version = c.u32();
+        if (algorithm === 0 ? i === 0 || version !== 0 : version === 0) throw new Error('algorithm version');
+      }
+      for (let i = 0; i < 2; i++) if (c.flag()) {
+        const evidence = c.ref([7]); this.generic(evidence);
+        if (!this.variants.get(evidence.key).has(1)) throw new Error('move evidence must be Transform');
+      }
+    } else if (tag === 3) {
+      const base = c.ref([4]); this.state(base);
+      if (c.flag()) {
+        const revision = c.ref([5]); this.generic(revision);
+        if (new Reader(this.fetch(revision)).ref([4]).key !== base.key) throw new Error('observation base mismatch');
+      }
+      c.u64();
+      if (c.u8() > 2) throw new Error('consistency label');
+      if (c.flag()) c.take(16);
+      const partial = c.flag(), coverageMode = c.u8(), scope = this.paths(c);
+      if (coverageMode !== 0 && coverageMode !== 1) throw new Error('coverage mode');
+      if (!scope.length) throw new Error('empty observation scope');
+      const key = p => p.map(x => x.toString('hex')).join('/');
+      const scopes = new Set(scope.map(key));
+      for (let i = 1; i < scope.length; i++) {
+        const previous = scope[i - 1], current = scope[i];
+        if (previous.length <= current.length && previous.every((x, j) => x.equals(current[j])))
+          throw new Error('redundant scope prefix');
+      }
+      const within = p => Array.from({ length: p.length + 1 }, (_, i) => key(p.slice(0, i))).some(k => scopes.has(k));
+      const coverage = [this.paths(c), this.paths(c), this.paths(c)], seen = new Set();
+      if (coverageMode === 1 && coverage.some(paths => paths.length)) throw new Error('completed scope coverage');
+      for (const paths of coverage) for (const p of paths) {
+        if (seen.has(key(p))) throw new Error('overlapping coverage labels');
+        if (!within(p)) throw new Error('coverage outside scope');
+        seen.add(key(p));
+      }
+      if (!partial && (coverage[1].length || coverage[2].length)) throw new Error('unconfirmed partial observation');
+      const n = c.u32();
+      if (n > 1e6) throw new Error('resolution count');
+      let previous = null;
+      for (let i = 0; i < n; i++) {
+        const p = this.path(c);
+        if (previous && comparePaths(previous, p) >= 0) throw new Error('resolution order');
+        if (!within(p)) throw new Error('resolution outside scope');
+        previous = p; this.conflict(c.ref([6])); this.maybe(c);
+      }
+    } else throw new Error('unknown provenance record');
+    return tag;
+  }
   generic(ref) {
     if (ref.kind === 1) { this.fetch(ref); return; }
     if (ref.kind === 2 || ref.kind === 3) { this.map(ref); return; }
     if (ref.kind === 4) { this.state(ref); return; }
     if (ref.kind === 6) { this.conflict(ref); return; }
-    if (ref.kind === 8) { this.group(ref); return; }
     const c = this.open(ref);
     if (ref.kind === 5) {
-      this.state(c.ref([4]));
+      const state = c.ref([4]); this.state(state);
       const n = c.u32();
       if (n > 64) throw new Error('revision parents');
       const parents = Array.from({ length: n }, () => c.ref([5]));
@@ -449,20 +515,23 @@ class Inspector {
       c.take(16);
       c.str(4096); c.str(1048576);
       c.take(8);
-      if (c.flag()) this.generic(c.ref([7]));
+      if (c.flag()) {
+        const prov = c.ref([7]); this.generic(prov);
+        if (new Reader(this.fetch(prov)).ref([4]).key !== state.key) throw new Error('provenance result mismatch');
+      }
       for (const p of parents) this.generic(p);
     } else if (ref.kind === 7) {
+      if (c.data.length > 1048576) throw new Error('provenance payload size limit');
+      this.state(c.ref([4]));
       const n = c.u32();
       if (n > 64) throw new Error('provenance inputs');
       const inputs = Array.from({ length: n }, () => c.ref([5]));
+      if (new Set(inputs.map(r => r.key)).size !== n) throw new Error('duplicate provenance inputs');
       const count = c.u32();
       if (count > 1e6) throw new Error('provenance list');
       let previous = null;
       for (let i = 0; i < count; i++) {
-        const num = c.u32();
-        if (num > 256) throw new Error('path depth');
-        const path = Array.from({ length: num }, () => c.str());
-        if (path.some(n => !validName(n)) || path.reduce((x, n) => x + n.length, Math.max(0, num - 1)) > 4096) throw new Error('path name');
+        const path = this.path(c);
         const conflict = c.ref([6]);
         if (previous) {
           const order = comparePaths(previous.path, path) || compare(wire(previous.conflict), wire(conflict));
@@ -473,25 +542,13 @@ class Inspector {
         const roles = c.u32();
         for (let j = 0; j < roles; j++) if (c.u32() >= n) throw new Error('invalid role');
       }
-      c.str(); c.u32(); c.str(1048576);
+      const records = c.u8();
+      if (records !== 1 && records !== 2) throw new Error('provenance record count');
+      const tags = Array.from({ length: records }, () => this.record(c, inputs));
+      if (tags.some((tag, i) => i > 0 && tag <= tags[i - 1]) || tags.includes(1) && tags.includes(2))
+        throw new Error('provenance record combination');
+      this.variants.set(ref.key, new Set(tags));
       for (const x of inputs) this.generic(x);
-    } else if (ref.kind === 9) {
-      c.str(); c.str();
-      const gen = c.u64(), observed = c.flag();
-      const earlier = observed ? c.ref([5]) : null;
-      if ((gen === 0n) !== !observed) throw new Error('target generation');
-      const count = c.u32();
-      if (count < 1 || count > 64) throw new Error('selected count');
-      const selected = Array.from({ length: count }, () => c.ref([5]));
-      if (new Set(selected.map(x => x.key)).size !== count) throw new Error('duplicated selected');
-      c.str(); c.u32(); c.str(1048576);
-      const state = c.ref([4]), revision = c.ref([5]);
-      c.take(32); c.u64();
-      this.state(state); this.generic(revision);
-      if (earlier) this.generic(earlier);
-      for (const x of selected) this.generic(x);
-      const rv = new Reader(this.fetch(revision));
-      if (rv.ref([4]).key !== state.key) throw new Error('result revision state mismatch');
     } else throw new Error('unsupported kind');
     this.close(ref, c);
   }
@@ -593,7 +650,7 @@ if (process.argv[1] && new URL(`file://${process.argv[1]}`).href === import.meta
     const corpus = JSON.parse(readFileSync(0, 'utf8')), b = new Builder();
     for (const item of corpus.objects) b.put(item.kind, Buffer.from(item.payload_hex, 'hex'));
     const results = corpus.roots.map(hex => {
-      const c = new Reader(Buffer.from(hex, 'hex')), ref = c.ref([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      const c = new Reader(Buffer.from(hex, 'hex')), ref = c.ref(Array.from({ length: 255 }, (_, i) => i + 1));
       c.finish();
       try { new Inspector(b.store).generic(ref); return true; }
       catch (err) {

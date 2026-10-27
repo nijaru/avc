@@ -211,7 +211,7 @@ class Builder {
       ...moves.map(ref => bytes(b8(+(ref !== null)), ...(ref ? [wire(ref)] : []))));
   }
   provenance(result, inputs, occurrences, record, observation = null) {
-    return this.put(7, bytes(wire(result), b32(inputs.length), ...inputs.map(wire), b32(occurrences.length),
+    return this.put(7, bytes(wire(result), b8(1), b32(inputs.length), ...inputs.map(wire), b32(occurrences.length),
       ...occurrences.map(([path, ref, roles]) => bytes(this.path(path), wire(ref),
         b32(roles.length), ...roles.map(b32))), b8(observation ? 2 : 1), record,
       ...(observation ? [observation] : [])));
@@ -275,7 +275,7 @@ function samples() {
 
 // Separately structured decoder: untrusted data must be checked beyond its hash.
 class Reader {
-  constructor(data) { this.data = data; this.pos = 0; }
+  constructor(data) { this.data = data; this.pos = 0; this.commitments = new Set(); }
   take(n) {
     if (!Number.isSafeInteger(n) || n < 0 || n > this.data.length - this.pos)
       throw new Error('invalid/truncated length');
@@ -298,6 +298,9 @@ class Reader {
     if (!kinds.includes(kind)) throw new Error('invalid reference kind');
     return { kind, digest, key: `${kind}:${digest.toString('hex')}` };
   }
+  commitment(kinds) {
+    const ref = this.ref(kinds); this.commitments.add(ref.key); return ref;
+  }
   nibbles() {
     const n = this.u16(), b = this.take(Math.ceil(n / 2));
     if (n % 2 && (b[b.length - 1] & 15)) throw new Error('nibble padding');
@@ -306,7 +309,7 @@ class Reader {
   finish() { if (this.pos !== this.data.length) throw new Error('trailing bytes'); }
 }
 class Inspector {
-  constructor(store) { this.store = store; this.active = new Set(); this.edges = 0; this.variants = new Map(); }
+  constructor(store) { this.store = store; this.active = new Set(); this.edges = 0; this.commitments = new Map(); }
   fetch(ref) {
     const item = this.store.get(ref.key);
     if (!item) throw new Error('missing closure');
@@ -420,28 +423,37 @@ class Inspector {
     }
     return out;
   }
+  auditEntry(c) {
+    const tag = c.u8();
+    if (tag === 1 || tag === 2) {
+      c.commitment([1]); if (tag === 1) c.flag();
+    } else if (tag === 3) c.commitment([2, 3]);
+    else if (tag === 4) c.commitment([6]);
+    else throw new Error('audit entry type');
+  }
+  auditMaybe(c) { if (c.flag()) this.auditEntry(c); }
   record(c, inputs) {
     const tag = c.u8();
     if (tag === 1) {
-      this.state(c.ref([4]));
+      c.commitment([4]);
       let n = c.u32();
       if (n > 1e6) throw new Error('structural count');
       for (let i = 0; i < n; i++) {
         const op = c.u8();
         if (op === 1) {
           if (!this.path(c).length || !this.path(c).length) throw new Error('empty structural path');
-          this.entry(c); this.maybe(c);
+          this.auditEntry(c); this.auditMaybe(c);
         } else if (op === 2) {
-          this.entry(c);
+          this.auditEntry(c);
           if (!this.path(c).length) throw new Error('empty structural path');
-          this.maybe(c);
+          this.auditMaybe(c);
         } else throw new Error('structural operation');
       }
       n = c.u32();
       if (n > 1e6) throw new Error('leaf count');
       for (let i = 0; i < n; i++) {
         if (!this.path(c).length) throw new Error('empty leaf path');
-        this.maybe(c); this.maybe(c);
+        this.auditMaybe(c); this.auditMaybe(c);
       }
     } else if (tag === 2) {
       const mode = c.u8();
@@ -449,22 +461,18 @@ class Inspector {
         if (c.u32() >= inputs.length || c.u32() >= inputs.length) throw new Error('merge input index');
         c.flag();
       } else if (mode === 1) {
-        for (let i = 0; i < 3; i++) this.state(c.ref([4]));
+        for (let i = 0; i < 3; i++) c.commitment([4]);
       } else throw new Error('merge mode');
       for (let i = 0; i < 2; i++) {
         const algorithm = c.u16(), version = c.u32();
         if (algorithm === 0 ? i === 0 || version !== 0 : version === 0) throw new Error('algorithm version');
       }
       for (let i = 0; i < 2; i++) if (c.flag()) {
-        const evidence = c.ref([7]); this.generic(evidence);
-        if (!this.variants.get(evidence.key).has(1)) throw new Error('move evidence must be Transform');
+        c.commitment([7]);
       }
     } else if (tag === 3) {
-      const base = c.ref([4]); this.state(base);
-      if (c.flag()) {
-        const revision = c.ref([5]); this.generic(revision);
-        if (new Reader(this.fetch(revision)).ref([4]).key !== base.key) throw new Error('observation base mismatch');
-      }
+      c.commitment([4]);
+      if (c.flag()) c.commitment([5]);
       c.u64();
       if (c.u8() > 2) throw new Error('consistency label');
       if (c.flag()) c.take(16);
@@ -494,7 +502,7 @@ class Inspector {
         const p = this.path(c);
         if (previous && comparePaths(previous, p) >= 0) throw new Error('resolution order');
         if (!within(p)) throw new Error('resolution outside scope');
-        previous = p; this.conflict(c.ref([6])); this.maybe(c);
+        previous = p; c.commitment([6]); this.auditMaybe(c);
       }
     } else throw new Error('unknown provenance record');
     return tag;
@@ -518,27 +526,28 @@ class Inspector {
       if (c.flag()) {
         const prov = c.ref([7]); this.generic(prov);
         if (new Reader(this.fetch(prov)).ref([4]).key !== state.key) throw new Error('provenance result mismatch');
+        if (this.commitments.get(prov.key).has(ref.key)) throw new Error('output revision in audit inputs');
       }
       for (const p of parents) this.generic(p);
     } else if (ref.kind === 7) {
       if (c.data.length > 1048576) throw new Error('provenance payload size limit');
       this.state(c.ref([4]));
+      if (c.u8() !== 1) throw new Error('provenance binding');
       const n = c.u32();
       if (n > 64) throw new Error('provenance inputs');
-      const inputs = Array.from({ length: n }, () => c.ref([5]));
+      const inputs = Array.from({ length: n }, () => c.commitment([5]));
       if (new Set(inputs.map(r => r.key)).size !== n) throw new Error('duplicate provenance inputs');
       const count = c.u32();
       if (count > 1e6) throw new Error('provenance list');
       let previous = null;
       for (let i = 0; i < count; i++) {
         const path = this.path(c);
-        const conflict = c.ref([6]);
+        const conflict = c.commitment([6]);
         if (previous) {
           const order = comparePaths(previous.path, path) || compare(wire(previous.conflict), wire(conflict));
           if (order >= 0) throw new Error('provenance order');
         }
         previous = { path, conflict };
-        this.conflict(conflict);
         const roles = c.u32();
         for (let j = 0; j < roles; j++) if (c.u32() >= n) throw new Error('invalid role');
       }
@@ -547,8 +556,8 @@ class Inspector {
       const tags = Array.from({ length: records }, () => this.record(c, inputs));
       if (tags.some((tag, i) => i > 0 && tag <= tags[i - 1]) || tags.includes(1) && tags.includes(2))
         throw new Error('provenance record combination');
-      this.variants.set(ref.key, new Set(tags));
-      for (const x of inputs) this.generic(x);
+      if (c.commitments.has(ref.key)) throw new Error('self audit commitment');
+      this.commitments.set(ref.key, c.commitments);
     } else throw new Error('unsupported kind');
     this.close(ref, c);
   }

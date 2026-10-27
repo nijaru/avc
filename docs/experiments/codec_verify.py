@@ -1,7 +1,7 @@
 """Independent strict decoder and alternate radix encoder for AVC v0 fixtures.
 
 Uses different control flow than codec_reference.Builder: decodes untrusted
-payloads, checks all transitively referenced objects, then re-encodes a fully
+payloads, checks all owning dependencies (never audit commitments), then re-encodes a fully
 reconstructed flat name map using a separate min/max-prefix split algorithm.
 Both use the independently officially-vectored slow BLAKE3 fixture backend.
 """
@@ -19,7 +19,9 @@ MAX_ACTIVE=256
 class Invalid(ValueError):pass
 
 class Cursor:
-    def __init__(self, data: bytes):self.data,self.pos=data,0
+    def __init__(self, data: bytes):
+        self.data,self.pos=data,0
+        self.commitments:set[Ref]=set()
     def take(self,n:int)->bytes:
         if n<0 or n>len(self.data)-self.pos:raise Invalid('truncated/oversized field')
         v=self.data[self.pos:self.pos+n];self.pos+=n;return v
@@ -36,6 +38,8 @@ class Cursor:
         k=self.number(1)
         if k not in allowed:raise Invalid(f'wrong kind {k}')
         return Ref(k,self.take(32))
+    def commitment(self,allowed:set[int])->Ref:
+        ref=self.ref(allowed);self.commitments.add(ref);return ref
     def nibbles(self,n:int)->tuple[int,...]:
         raw=self.take((n+1)//2)
         if n%2 and raw[-1]&15:raise Invalid('nonzero trailing nibble pad')
@@ -95,14 +99,15 @@ class Verifier:
     def __init__(self,objects:dict[Ref,bytes]):
         self.objects=objects
         self.active:set[Ref]=set()
-        self.validated:set[Ref]=set()
+        self.closure:set[Ref]=set()
         self.edges=0
-        self.provenance_variants={}
+        self.commitments:dict[Ref,set[Ref]]={}
 
     def fetch(self,ref:Ref)->bytes:
         if ref not in self.objects:raise Invalid('missing required object')
         payload=self.objects[ref]
         if object_id(ref.kind,payload)!=ref:raise Invalid('content hash mismatch')
+        self.closure.add(ref)
         return payload
 
     def enter(self,ref:Ref)->bytes:
@@ -221,34 +226,48 @@ class Verifier:
             paths.append(path)
         return paths
 
+    @staticmethod
+    def audit_entry(c:Cursor):
+        # Same descriptor framing as Entry; IDs are claims, never custody edges.
+        tag=c.number(1)
+        if tag in (1,2):
+            c.commitment({K_BLOB})
+            if tag==1:c.flag()
+        elif tag==3:c.commitment({K_LEAF,K_BRANCH})
+        elif tag==4:c.commitment({K_CONFLICT})
+        else:raise Invalid('unsupported audit entry type')
+
+    def audit_maybe(self,c:Cursor):
+        if c.flag():self.audit_entry(c)
+
     def record(self,c:Cursor,inputs:list[Ref]):
         tag=c.number(1)
         if tag==1:  # Transform: the structural batch precedes ordered leaf edits.
-            self.state(c.ref({K_STATE}))
+            c.commitment({K_STATE})
             n=c.number(4)
             if n>1000000:raise Invalid('structural count')
             for _ in range(n):
                 op=c.number(1)
                 if op==1:
                     if not self.path(c) or not self.path(c):raise Invalid('empty structural path')
-                    self.entry(c);self.maybe(c)
+                    self.audit_entry(c);self.audit_maybe(c)
                 elif op==2:
-                    self.entry(c)
+                    self.audit_entry(c)
                     if not self.path(c):raise Invalid('empty structural path')
-                    self.maybe(c)
+                    self.audit_maybe(c)
                 else:raise Invalid('structural operation')
             n=c.number(4)
             if n>1000000:raise Invalid('leaf edit count')
             for _ in range(n):
                 if not self.path(c):raise Invalid('empty leaf path')
-                self.maybe(c);self.maybe(c)
+                self.audit_maybe(c);self.audit_maybe(c)
         elif tag==2:  # Merge: reduction traces are derived, not another object graph.
             mode=c.number(1)
             if mode==0:
                 if c.number(4)>=len(inputs) or c.number(4)>=len(inputs):raise Invalid('merge input index')
                 c.flag()  # explicit permission for synthetic bases throughout reduction
             elif mode==1:
-                for _ in range(3):self.state(c.ref({K_STATE}))
+                for _ in range(3):c.commitment({K_STATE})
             else:raise Invalid('merge mode')
             for index in range(2):
                 algorithm,version=c.number(2),c.number(4)
@@ -256,13 +275,10 @@ class Verifier:
                     raise Invalid('algorithm version')
             for _ in range(2):
                 if c.flag():
-                    evidence=c.ref({K_PROV});self.generic(evidence)
-                    if 1 not in self.provenance_variants[evidence]:raise Invalid('move evidence must be Transform')
+                    c.commitment({K_PROV})
         elif tag==3:  # Observation is descriptive, never a replayable FS snapshot.
-            base=c.ref({K_STATE});self.state(base)
-            if c.flag():
-                base_rev=c.ref({K_REV});self.generic(base_rev)
-                if Cursor(self.fetch(base_rev)).ref({K_STATE})!=base:raise Invalid('observation base mismatch')
+            c.commitment({K_STATE})
+            if c.flag():c.commitment({K_REV})
             c.number(8)  # non-owning selection generation
             if c.number(1)>2:raise Invalid('consistency label')
             if c.flag():c.take(16)  # non-owning capture/receipt identity
@@ -289,7 +305,7 @@ class Verifier:
                 if previous is not None and path<=previous:raise Invalid('resolution order')
                 if not within(path):raise Invalid('resolution outside scope')
                 previous=path
-                self.conflict(c.ref({K_CONFLICT}));self.maybe(c)
+                c.commitment({K_CONFLICT});self.audit_maybe(c)
         else:raise Invalid('unknown provenance record')
         return tag
 
@@ -319,24 +335,25 @@ class Verifier:
             if c.flag():
                 prov=c.ref({K_PROV});self.generic(prov)
                 if Cursor(self.fetch(prov)).ref({K_STATE})!=state:raise Invalid('provenance result mismatch')
+                if ref in self.commitments[prov]:raise Invalid('output revision in audit inputs')
             for p in parents:self.generic(p)
         elif ref.kind==K_PROV:
             if len(c.data)>1048576:raise Invalid('provenance payload size limit')
             self.state(c.ref({K_STATE}))
+            if c.number(1)!=1:raise Invalid('provenance binding')
             n=c.number(4)
             if n>64:raise Invalid('provenance input budget')
-            inputs=[c.ref({K_REV}) for _ in range(n)]
+            inputs=[c.commitment({K_REV}) for _ in range(n)]
             if len(set(inputs))!=n:raise Invalid('duplicate provenance inputs')
             occurrences=c.number(4)
             if occurrences>1000000:raise Invalid('provenance count')
             previous=None
             for _ in range(occurrences):
                 path=self.path(c)
-                cf=c.ref({K_CONFLICT})
+                cf=c.commitment({K_CONFLICT})
                 if previous is not None and (path,cf.encode())<=previous:
                     raise Invalid('noncanonical provenance occurrence ordering')
                 previous=(path,cf.encode())
-                self.conflict(cf)
                 roles=c.number(4)
                 for _ in range(roles):
                     if c.number(4)>=len(inputs):raise Invalid('bad role')
@@ -344,7 +361,7 @@ class Verifier:
             if count not in (1,2):raise Invalid('provenance record count')
             tags=[self.record(c,inputs) for _ in range(count)]
             if tags!=sorted(set(tags)) or (1 in tags and 2 in tags):raise Invalid('provenance record combination')
-            self.provenance_variants[ref]=set(tags)
-            for inp in inputs:self.generic(inp)
+            if ref in c.commitments:raise Invalid('self audit commitment')
+            self.commitments[ref]=c.commitments
         else:raise Invalid('unknown kind')
         c.done();self.exit(ref)

@@ -335,13 +335,16 @@ class CanonicalQualification(unittest.TestCase):
             history=(0,0),source_algorithm=(65535,99)))
         combined=b.provenance(state,[rev],[],b.transform_record(state),b.observation_record(state,rev))
         combined_merge=b.provenance(state,[rev],[],b.merge_record(history=(0,0)),b.observation_record(state,rev))
-        cases=[(transform,True),(observe,True),(merge,True),(combined,True),
+        # Audit IDs are not fetched: mismatched/unavailable claims are checked
+        # only when explicit evidence is consumed, not by canonical decoding.
+        invalid_binding=b.store_obj(7,b.store[transform][:33]+b'\0'+b.store[transform][34:])
+        cases=[(invalid_binding,False),(transform,True),(observe,True),(merge,True),(combined,True),
                (combined_merge,True),(unknown_algorithm,True),
                (b.provenance(state,[],[],b.transform_record(state),b.merge_record(source=(state,state,state))),False),
                (b.provenance(state,[],[],b.observation_record(state),b.observation_record(state)),False),
                (b.provenance(state,[],[],b'\x04'),False),
                (b.provenance(state,[rev],[],b.merge_record(history=(0,1))),False),
-               (b.provenance(state,[rev],[],b.merge_record(history=(0,0),moves=(observe,None))),False),
+               (b.provenance(state,[rev],[],b.merge_record(history=(0,0),moves=(observe,None))),True),
                (b.provenance(state,[rev],[],b.merge_record(history=(0,0),text_algorithm=(0,1))),False),
                (obs(failed=[(b'a',)]),False),(obs(failed=[(b'a',)],partial=True),True),
                (obs(coverage_mode=1),True),(obs(coverage_mode=1,covered=[()]),False),
@@ -350,9 +353,40 @@ class CanonicalQualification(unittest.TestCase):
                (obs(covered=[(b'a',)],failed=[(b'a',)],partial=True),False),
                (obs(scope=[(b'a',)],covered=[(b'b',)]),False),
                (obs(scope=[(),(b'a',)]),False),(obs(covered=[(b'z',),(b'aa',)]),False),
-               (b.provenance(state,[],[],b.observation_record(other,rev)),False),
+               (b.provenance(state,[],[],b.observation_record(other,rev)),True),
                (b.revision(state,[rev],b'B'*16,b'a',b'd',0,transform),False)]
         self.check_admission(b,cases)
+
+    def test_private_amend_inputs_do_not_own_source_closure(self):
+        b=Builder()
+        empty=b.state(b.directory(b.map({})))
+        parent=b.revision(empty,[],b'P'*16,b'a',b'base',0)
+        secret=b.blob(b'private discarded bytes')
+        old_map=b.map({b'credentials':b.file(secret)})
+        old_state=b.state(b.directory(old_map))
+        old=b.revision(old_state,[parent],b'C'*16,b'a',b'private draft',1)
+        clean=b.state(b.directory(b.map({b'app':b.file(b.blob(b'public bytes'))})))
+        prov=b.provenance(clean,[old],[],b.observation_record(old_state,old,coverage_mode=1))
+        amended=b.revision(clean,[parent],b'C'*16,b'a',b'cleaned draft',2,prov)
+        private={secret,old_map,old_state,old}
+        source_only={ref:data for ref,data in b.store.items() if ref not in private}
+        v=Verifier(source_only)
+        v.generic(amended)
+        self.assertTrue(v.closure.isdisjoint(private))
+        # Keeping private evidence is a separate, explicit custody choice.
+        audit=Verifier(b.store)
+        audit.generic(amended)
+        self.assertTrue(audit.closure.isdisjoint(private))
+        audit.generic(old)
+        self.assertIn(secret,audit.closure)
+        self.check_admission(b,[(amended,True)])
+        without=Builder();without.store=source_only
+        self.check_admission(without,[(amended,True)])
+        # Present but corrupt audit inputs must not affect source admission
+        # either: decoding cannot depend on locally available private objects.
+        corrupt=Builder();corrupt.store=dict(b.store)
+        for ref in private:corrupt.store[ref]=b'not an audit dependency'
+        self.check_admission(corrupt,[(amended,True)])
 
     def test_deep_history_has_an_explicit_reference_resource_refusal(self):
         b=Builder()

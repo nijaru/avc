@@ -241,7 +241,7 @@ class Builder:
     def provenance(self, result: Ref, inputs: list[Ref],
                    occurrences: list[tuple[tuple[bytes,...],Ref,list[int]]], record: bytes,
                    observation: bytes|None=None) -> Ref:
-        payload = result.encode()+u32(len(inputs))+b''.join(v.encode() for v in inputs)
+        payload = result.encode()+u8(1)+u32(len(inputs))+b''.join(v.encode() for v in inputs)
         payload += u32(len(occurrences))
         for path, conflict, roles in occurrences:
             payload += self.path(path)+conflict.encode()

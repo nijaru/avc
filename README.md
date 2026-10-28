@@ -10,19 +10,19 @@ The v0 design uses **immutable content-addressed source States**, a separate imm
 
 The other core decisions fit this source authority:
 
-- Private, bounded recovery captures are separate from permanent authored history and shared publication.
-- Distinct workspaces own distinct writable directories, source selection, recovery heads and materialization outcomes. Shared targets use conditional updates.
+- Private recovery captures are separate from authored history and shared publication. Ordinary checkpoints expire; explicitly parked unfinished work stays protected until resumed or deliberately discarded.
+- Serial tasks normally preserve and resume work in one directory. Concurrent writers use distinct workspaces with independent source selection, recovery heads and materialization outcomes. Shared targets use conditional updates.
 - Safe source reads, diffs, merges and conditional edits work by immutable IDs **without a checkout**; full repositories work offline, with optional native sparse and hosted clients.
 - Conservative three-way merging preserves nested binary conflicts and separate typed provenance. Rebase creates new immutable revisions; undo and content revert are distinct.
 - One SQLite authority owns local objects and roots; large payloads use bounded staged segment rows before short durable root transactions.
 - Hosted publication is a later protocol with exact candidate validation, not an initial-core object or dependency.
-- Git conversion is a deferred boundary adapter, not native Git-compatible storage, IDs or protocol. Unsupported/lossy conversion must be explicit; native export remains the full-fidelity custody path. Agent runtimes and hosted services are not native requirements.
+- Git interoperability is a deferred boundary interface, not a required Git backend. Conversion is a likely starting point; the exact adapter shape remains open. Unsupported/lossy conversion must be explicit; native export remains the full-fidelity custody path. Agent runtimes and hosted services are not native requirements.
 
 **The selected architecture and proposed v0 byte format are specified and undergoing independent qualification**, not proven globally optimal or released as stable. The [authoritative specification](docs/design.md) includes typed BLAKE3 IDs, a canonical nibble-radix Merkle source map, conservative bounded merge/conflict semantics, exact revision evolution, guarded workspace recovery, GC-safe staged admission/backup, typed Transform/Merge/Observation claims with separately retained private evidence, and future sparse/publication boundaries. The next work is native-language differential codec verification, typed-operation semantic checks, adversarial merge/recovery/durability qualification and representative layout/merge evidence **before format freeze**. Algorithms and byte constants remain candidates to qualify, not product requirements. Earlier changeset-first and causal graph candidates remain documented as rejected defaults.
 
 ## User experience
 
-The [workflow contract](docs/ux.md) defines deliberate partial commits, private checkpoints, task workspaces, history-only undo versus file recovery, conflict resolution and sharing disclosure. Command spellings are candidates, **not an implemented native CLI**. The goal is predictable effects and recoverable mistakes without requiring users to learn the storage model; usability and real-workflow comparisons remain untested.
+The [workflow contract](docs/ux.md) defines deliberate partial commits, private checkpoints, same-directory task interruption/return, optional concurrent workspaces, history-only undo versus file recovery, conflict resolution and sharing disclosure. Command spellings are candidates, **not an implemented native CLI**. The goal is predictable effects and recoverable mistakes without requiring users to learn the storage model; usability and real-workflow comparisons remain untested.
 
 ## Current status
 

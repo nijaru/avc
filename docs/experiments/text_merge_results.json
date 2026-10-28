@@ -1,0 +1,137 @@
+{
+  "source_revision": "19710524aa87cdd076bd8755257fa17b71bb7a69",
+  "driver_sha256": "7313abcec8b2e34c7fcc571565f6652372371a7c93544d5483049a85db9bfdc5",
+  "python_version": "3.15.2",
+  "git_version": "git version 2.56.0",
+  "jj_version": "jj 0.46.0",
+  "scope": "Controlled disjoint edits on pinned source; not sampled merge histories, semantic correctness, a usability trial, or a latency benchmark.",
+  "summary": {
+    "unique_only": {
+      "intended": 4,
+      "conflict": 4
+    },
+    "confluent": {
+      "intended": 8
+    },
+    "git": {
+      "intended": 8
+    },
+    "jj": {
+      "intended": 8
+    }
+  },
+  "cases": [
+    {
+      "source": "docs/experiments/codec_verify.py",
+      "edit": "replace",
+      "input_sha256": [
+        "b675e2f0a7be89a09bdcca161c4ce664128a6a0e2acbd064b69031fb9fde789b",
+        "24c72b3371d1eff200b79a8c1a2d9020d10f3abc55f385f21d7da2f4c97aa6ff",
+        "75846f0599e6ee1ba6d31951ec496ee1b899a6a72050d078997c0f6ba5827d20"
+      ],
+      "expected_sha256": "79e52a040c1e1d225803663cd63b4bf48c408959fdb3e2a91d6e941d27be2db1",
+      "unique_only": "intended",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    },
+    {
+      "source": "docs/experiments/codec_verify.py",
+      "edit": "delete-blank",
+      "input_sha256": [
+        "b675e2f0a7be89a09bdcca161c4ce664128a6a0e2acbd064b69031fb9fde789b",
+        "3dd2ba65e04630bc9fb3d2eedddc09c6ec6f0cb2b73a8a5d7de5cfb5412ffbb8",
+        "75846f0599e6ee1ba6d31951ec496ee1b899a6a72050d078997c0f6ba5827d20"
+      ],
+      "expected_sha256": "4f64f38d2c873d3ecaf986dd7f0f660bf2dc47da8a51a11dfefaa0bb011df8aa",
+      "unique_only": "conflict",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    },
+    {
+      "source": "docs/experiments/codec_verify.py",
+      "edit": "insert-blank",
+      "input_sha256": [
+        "b675e2f0a7be89a09bdcca161c4ce664128a6a0e2acbd064b69031fb9fde789b",
+        "62240e14b292a12573683c9ff716e3809e0199b591d72cb3be9cc0569784c1c0",
+        "75846f0599e6ee1ba6d31951ec496ee1b899a6a72050d078997c0f6ba5827d20"
+      ],
+      "expected_sha256": "4b7ae4b5703c6db552a7764edf8e57758d3d8bb9d118e6930248cc2b888100d8",
+      "unique_only": "conflict",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    },
+    {
+      "source": "docs/experiments/authority_model.py",
+      "edit": "replace",
+      "input_sha256": [
+        "6383b6ec9409810683e153135605714728c9166d7200c3ee62b67e3fde995fee",
+        "1e40ec030856a162dddea517b2c90e861502adbb5e9ab243cd61525990db93d8",
+        "1a54152040094e25b406774e842d68754d3d77d9c3c7b7cd28433815ea110441"
+      ],
+      "expected_sha256": "077c77f5854bdddcbbe60c9d53dd545001a346cef2e99ce55a3a4cffc19457af",
+      "unique_only": "intended",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    },
+    {
+      "source": "docs/experiments/authority_model.py",
+      "edit": "delete-blank",
+      "input_sha256": [
+        "6383b6ec9409810683e153135605714728c9166d7200c3ee62b67e3fde995fee",
+        "b21347ffde8c1b823a8bfe3d1f3b8bcf3659d1401c00578bbff2a3bd49413b58",
+        "1a54152040094e25b406774e842d68754d3d77d9c3c7b7cd28433815ea110441"
+      ],
+      "expected_sha256": "4042865729e523006aa1bc6e60a93f6b5adff64eaa85c726d73a1cab261ba1b5",
+      "unique_only": "conflict",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    },
+    {
+      "source": "docs/experiments/authority_model.py",
+      "edit": "insert-blank",
+      "input_sha256": [
+        "6383b6ec9409810683e153135605714728c9166d7200c3ee62b67e3fde995fee",
+        "f765d6ad40f4d7937aa311d5b56f91c0c1399db4541f956700cc6c8ac8a5062b",
+        "1a54152040094e25b406774e842d68754d3d77d9c3c7b7cd28433815ea110441"
+      ],
+      "expected_sha256": "35349473a3cecb98446781670f0e4b6f679b392d8b13e26f10dd3505699113dd",
+      "unique_only": "conflict",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    },
+    {
+      "source": "src/cli.rs",
+      "edit": "replace",
+      "input_sha256": [
+        "245430cfb8b6a493d01c54a83f5d7f6a174a3a53ca869a2db76f79ad4a8074a5",
+        "293f4d65f84d4b493db7dc325489cefaca4010172d9d6964ce2646037a892e69",
+        "8e633ac4aa54dbc692a2f058b000ca6a58507bdfb3007ea060e040b1ac992708"
+      ],
+      "expected_sha256": "b48bf6debe5c10e67bf84eccc45aaa54aa4815fb713ec03f91c02b14525de47a",
+      "unique_only": "intended",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    },
+    {
+      "source": "src/commands/save.rs",
+      "edit": "replace",
+      "input_sha256": [
+        "d5bb0f4defd44cecb9bf66b4c06652a6cffbea3c90bce9f5b10d22dbbb302899",
+        "774d6429ac944eb0afab64bfcd1101eee1923accc4ea712a80e20541baaba29c",
+        "013d35f697c01f4ab2c53e51efec0e78690bff9d3e8e04520beba791d4b16d42"
+      ],
+      "expected_sha256": "a30f591e8bb36b3e2a13548a7ff6d7b5753479507b30f1867cbc4711c7b9f2e8",
+      "unique_only": "intended",
+      "confluent": "intended",
+      "git": "intended",
+      "jj": "intended"
+    }
+  ]
+}

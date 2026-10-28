@@ -10,8 +10,8 @@ The v0 design uses **immutable content-addressed source States**, a separate imm
 
 The other core decisions fit this source authority:
 
-- Private recovery captures are separate from authored history and shared publication. Ordinary checkpoints expire; explicitly parked unfinished work stays protected until resumed or deliberately discarded.
-- Serial tasks normally preserve and resume work in one directory. Concurrent writers use distinct workspaces with independent source selection, recovery heads and materialization outcomes. Shared targets use conditional updates.
+- Private recovery is separate from deliberate commits and sharing. Explicit recovery includes eligible new files without tracking or authoring them. Ordinary checkpoints expire; work explicitly preserved for return stays protected until verified resume or deliberate discard.
+- Serial work can preserve and resume source in one directory. Concurrent writers use distinct workspaces with independent source selection, recovery heads and materialization outcomes. Shared targets use conditional updates.
 - Safe source reads, diffs, merges and conditional edits work by immutable IDs **without a checkout**; full repositories work offline, with optional native sparse and hosted clients.
 - Conservative three-way merging preserves nested binary conflicts and separate typed provenance. Rebase creates new immutable revisions; undo and content revert are distinct.
 - One SQLite authority owns local objects and roots; large payloads use bounded staged segment rows before short durable root transactions.
@@ -22,7 +22,7 @@ The other core decisions fit this source authority:
 
 ## User experience
 
-The [workflow contract](docs/ux.md) defines deliberate partial commits, private checkpoints, same-directory task interruption/return, optional concurrent workspaces, history-only undo versus file recovery, conflict resolution and sharing disclosure. Command spellings are candidates, **not an implemented native CLI**. The goal is predictable effects and recoverable mistakes without requiring users to learn the storage model; usability and real-workflow comparisons remain untested.
+The [workflow contract](docs/ux.md) separates private protection from commit selection, addresses unfinished work before its first commit, and proposes same-directory interruption/return with optional concurrent directories. It also covers history-only undo versus file recovery, conflicts, review scope and sharing/backup disclosure. **The interaction model and command spellings are candidates, not an implemented or usability-validated CLI.** The [research review](docs/research.md#15-product-and-user-experience-evidence--october-28-2026) distinguishes user evidence, observed tool behavior and design inferences. Navigation, edit transfer/stack interactions and the Git adoption journey still need qualification; source-storage feasibility does not settle them.
 
 ## Current status
 

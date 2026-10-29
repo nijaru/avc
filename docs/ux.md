@@ -184,7 +184,7 @@ Errors state **what happened, what was saved, what did not change, and one concr
 
 ## 5. Qualification, not UX claims
 
-These workflows are paper contracts, not usability-test results or a running CLI. Compare representative tasks against **well-configured Git and Jujutsu**, in both ordinary single-directory and optional multi-workspace workflows, not only raw Git's worst commands. Preserve Git's deliberate selection, offline operation and reviewability; do not count fewer verbs as success.
+These workflows are paper contracts, not usability-test results or a running CLI. Compare representative tasks against **well-configured Git and Jujutsu**, in both ordinary single-directory and optional multi-workspace workflows, not only raw Git's worst commands. Preserve Git's deliberate selection, offline operation and reviewability; do not count fewer verbs as success. For agent-thread tasks, [Delta's documented workflows](research.md#deltadb-causal-collaboration-versus-source-custody) add a relevant comparison: find uncommitted work independently of its branch, fork without changing the parent, and bring back selected file changes without copying the conversation. These are documented behaviors, not measured advantages or a requirement for AVC to own an agent harness.
 
 Before enabling each workflow, exercise its complete normal path and the failure that makes it risky:
 

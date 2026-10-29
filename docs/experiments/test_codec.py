@@ -1,4 +1,4 @@
-"""Independent AVC canonical v0 qualification fixtures, NOT native tests.
+"""Independent AVC canonical v0 qualification fixtures, NOT an engine suite.
 
 Run: python -m unittest -v test_codec.py
 Golden vectors are pinned in codec_vectors.json; regeneration is deliberate.
@@ -6,15 +6,16 @@ Golden vectors are pinned in codec_vectors.json; regeneration is deliberate.
 from __future__ import annotations
 import json
 import hashlib
+import os
 import random
 import shutil
-import subprocess
 import unittest
 from pathlib import Path
 from codec_reference import (Builder,Ref,object_id,nibs,packed_nibbles,u16,u32,
                              K_LEAF,K_BRANCH,K_STATE,K_CONFLICT)
 from codec_verify import Verifier, Invalid, alternate_map
 from blake3_reference import blake3, OFFICIAL_VECTORS
+from codec_runtime_checks import commands, corpus, invoke
 
 HERE=Path(__file__).resolve().parent
 
@@ -110,6 +111,7 @@ class CanonicalQualification(unittest.TestCase):
     def test_pinned_avc_golden_vectors(self):
         want=json.loads((HERE/'codec_vectors.json').read_text())
         self.assertEqual(render_vectors(self.builder,self.roots),want)
+        self.check_admission(self.builder,[(ref,True) for ref in self.roots.values()])
 
     def test_all_canonical_object_roots_parse(self):
         v=Verifier(self.builder.store)
@@ -127,6 +129,11 @@ class CanonicalQualification(unittest.TestCase):
         s=self.roots['empty_map'].display()
         bad=s[:-1]+('b' if s[-1]!='b' else 'c')
         with self.assertRaises(ValueError):Ref.parse(bad)
+        valid=[ref.display() for ref in self.roots.values()]
+        invalid=[text.upper() for text in valid]+[bad,'not-an-id']
+        for runtime,command in commands('--ids-stdin'):
+            with self.subTest(runtime=runtime):
+                self.assertEqual(invoke(command,valid+invalid),valid+[None]*len(invalid))
 
     def test_flat_semantics_independent_radix(self):
         entry=self.builder.file(self.builder.blob(b'tiny'))
@@ -162,8 +169,9 @@ class CanonicalQualification(unittest.TestCase):
         self.assertEqual(ref.kind,K_BRANCH)
         self.assertEqual(len(Verifier(self.builder.store).map(ref,(),0,0)),102)
 
-    @unittest.skipUnless(shutil.which('node'), 'Node.js cross-language fixture unavailable')
-    def test_independent_javascript_radix_randomized(self):
+    @unittest.skipUnless(shutil.which('node') or os.environ.get('AVC_RUST_CODEC'),
+                         'Independent codec fixture unavailable')
+    def test_independent_radix_randomized(self):
         rng=random.Random(20261016)
         groups=[]
         for count in (0,1,2,15,63,64,94,95,96,97,102,103,128,255,260,400):
@@ -184,10 +192,10 @@ class CanonicalQualification(unittest.TestCase):
         b=Builder()
         value=b.file(b.blob(b'fixture'))
         expected=[b.map({name:value for name in group}).display() for group in groups]
-        result=subprocess.run(['node',str(HERE/'codec_crosscheck.mjs'),'--maps-stdin'],
-                              input=json.dumps([[name.hex() for name in group] for group in groups]),
-                              text=True,capture_output=True,check=True,timeout=35)
-        self.assertEqual(json.loads(result.stdout),expected)
+        values=[[name.hex() for name in group] for group in groups]
+        for runtime,command in commands('--maps-stdin'):
+            with self.subTest(runtime=runtime):
+                self.assertEqual(invoke(command,values),expected)
 
     def test_coupled_deletion_and_root_constraint(self):
         b=Builder()
@@ -201,6 +209,7 @@ class CanonicalQualification(unittest.TestCase):
         bad_path_root=b.state(b.conflict_entry(path))
         with self.assertRaisesRegex(Invalid,'root kind'):
             Verifier(b.store).state(bad_path_root)
+        self.check_admission(b,[(sub,True),(bad_root,False),(path,True),(bad_path_root,False)])
 
     def test_nested_coupled_conflict_cannot_hide_deletion_or_file(self):
         b=Builder()
@@ -221,11 +230,15 @@ class CanonicalQualification(unittest.TestCase):
             Verifier(b.store).state(b.state(b.conflict_entry(nested_base)))
         # A non-root coupled conflict may itself represent deletion.
         Verifier(b.store).conflict(hidden_deletion)
+        self.check_admission(b,[(outer,False),(outer_file,False),(nested_base,False),
+                                (hidden_deletion,True)])
 
     def test_mutated_hash_valid_input_never_crashes_decoder(self):
         rng=random.Random(643024)
         eligible=[(ref,payload) for ref,payload in self.builder.store.items()
                   if ref.kind not in (1,) and payload]
+        b=Builder();b.store=dict(self.builder.store)
+        cases=[]
         for i in range(200):
             ref,payload=rng.choice(eligible)
             candidate=bytearray(payload)
@@ -233,23 +246,26 @@ class CanonicalQualification(unittest.TestCase):
             candidate[pos]^=1<<rng.randrange(8)
             candidate=bytes(candidate)
             corrupted=object_id(ref.kind,candidate)
-            store={**self.builder.store,corrupted:candidate}
+            b.store[corrupted]=candidate
             try:
-                Verifier(store).generic(corrupted)
+                Verifier(b.store).generic(corrupted)
+                accepted=True
             except Invalid:
-                pass
+                accepted=False
             except Exception as e:
                 self.fail(f'mutant {i} kind {ref.kind} caused {type(e).__name__}: {e}')
+            cases.append((corrupted,accepted))
+        self.check_admission(b,cases)
 
     def test_conflict_depth_limit(self):
         b=Builder()
         f=b.file(b.blob(b'constant'))
         current=b.conflict(0,None,[None,f])
+        cases=[]
         for depth in range(2,66):
             current=b.conflict(0,None,[f,b.conflict_entry(current)])
-            if depth==64:Verifier(b.store).conflict(current)
-        with self.assertRaisesRegex(Invalid,'nesting'):
-            Verifier(b.store).conflict(current)
+            if depth in (64,65):cases.append((current,depth<=64))
+        self.check_admission(b,cases)
 
     def check_admission(self, builder, cases):
         """The wire corpus lets the other runtime judge the same exact objects."""
@@ -261,16 +277,10 @@ class CanonicalQualification(unittest.TestCase):
                 with self.assertRaises(Invalid):
                     Verifier(builder.store).generic(ref)
             expected.append(accepted)
-        if shutil.which('node'):
-            corpus={
-                'objects':[{'kind':ref.kind,'payload_hex':payload.hex()}
-                           for ref,payload in builder.store.items()],
-                'roots':[ref.encode().hex() for ref,_ in cases],
-            }
-            result=subprocess.run(['node',str(HERE/'codec_crosscheck.mjs'),'--objects-stdin'],
-                                  input=json.dumps(corpus),text=True,capture_output=True,
-                                  check=True,timeout=35)
-            self.assertEqual(json.loads(result.stdout),expected)
+        value=corpus(builder.store,[ref for ref,_ in cases])
+        for runtime,command in commands('--objects-stdin'):
+            with self.subTest(runtime=runtime):
+                self.assertEqual(invoke(command,value),expected)
 
     def test_conflict_depth_survives_directory_boundaries(self):
         b=Builder()
@@ -414,10 +424,13 @@ class CanonicalQualification(unittest.TestCase):
         base=self.builder.file(self.builder.blob(b'K'))
         valid=self.builder.map({b'a':base,b'b':base})
         payload=self.builder.store[valid]
+        b=Builder();b.store=dict(self.builder.store)
+        cases=[]
         def invalid_node(kind,data,checker):
             ref=object_id(kind,data)
-            store={**self.builder.store,ref:data}
-            with self.assertRaises(Invalid):checker(Verifier(store),ref)
+            b.store[ref]=data
+            with self.assertRaises(Invalid):checker(Verifier(b.store),ref)
+            cases.append((ref,False))
         invalid_node(K_LEAF,payload+b'\0',lambda v,r:v.map(r,(),0,0))
         # Duplicate and unsorted records are hash-valid yet noncanonical.
         rec1=u16(2)+b'a'+base
@@ -433,6 +446,8 @@ class CanonicalQualification(unittest.TestCase):
         underfull={**self.builder.store,child:child_payload,branch_ref:branch}
         with self.assertRaisesRegex(Invalid,'noncanonical map'):
             Verifier(underfull).map(branch_ref,(),0,0)
+        b.store.update({child:child_payload,branch_ref:branch})
+        cases.append((branch_ref,False))
         # Invalid executable bool even with a *matching* outer object ID.
         invalid_node(K_LEAF,u32(1)+u16(2)+b'a'+base[:-1]+b'\x02',lambda v,r:v.map(r,(),0,0))
         # A file cannot be the State root.
@@ -443,9 +458,10 @@ class CanonicalQualification(unittest.TestCase):
         # Odd trailing nibble must be zero even when a parent prefix would complete it.
         invalid_node(K_LEAF,u32(1)+u16(1)+b'\xf1'+base,
                      lambda v,r:v.map(r,(6,1,3),0,0))
-        # Hash doesn't match content: reject before decoding.
-        store={**self.builder.store,valid:payload+b'\xff'}
-        with self.assertRaises(Invalid):Verifier(store).map(valid,(),0,0)
+        self.check_admission(b,cases)
+        # Preserve the corrupt object's address across runtime boundaries.
+        corrupt=Builder();corrupt.store={**self.builder.store,valid:payload+b'\xff'}
+        self.check_admission(corrupt,[(valid,False)])
 
 
 if __name__=='__main__':unittest.main()

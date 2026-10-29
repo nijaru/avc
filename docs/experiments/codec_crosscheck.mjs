@@ -655,9 +655,17 @@ if (process.argv[1] && new URL(`file://${process.argv[1]}`).href === import.meta
     });
     console.log(JSON.stringify(ids));
   } else if (process.argv.includes('--objects-stdin')) {
-    // Differential admission corpus: exact hash-valid payloads, not Python verdicts.
+    // Explicit addresses preserve corrupt-at-address cases, including private
+    // audit objects that must not be fetched. No Python verdicts are supplied.
     const corpus = JSON.parse(readFileSync(0, 'utf8')), b = new Builder();
-    for (const item of corpus.objects) b.put(item.kind, Buffer.from(item.payload_hex, 'hex'));
+    for (const item of corpus.objects) {
+      const data = Buffer.from(item.payload_hex, 'hex');
+      const c = new Reader(Buffer.from(item.id_hex, 'hex'));
+      const ref = c.ref(Array.from({ length: 255 }, (_, i) => i + 1));
+      c.finish();
+      assert(!b.store.has(ref.key), 'duplicate corpus object');
+      b.store.set(ref.key, { ref, data });
+    }
     const results = corpus.roots.map(hex => {
       const c = new Reader(Buffer.from(hex, 'hex')), ref = c.ref(Array.from({ length: 255 }, (_, i) => i + 1));
       c.finish();

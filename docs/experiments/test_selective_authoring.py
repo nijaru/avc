@@ -1,14 +1,11 @@
 """Selective authoring/privacy contracts, not native filesystem/durability tests."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-import shutil
-import subprocess
 import unittest
 
 from codec_reference import Builder, K_BLOB, K_REV, K_STATE
 from codec_verify import Cursor, Invalid, Verifier
+from codec_runtime_checks import commands, corpus, invoke
 from selective_authoring_reference import Authority, Base, Choice, File, Refused, read_state, write_state
 
 README, MAIN, NOTES = (b'README.md',), (b'src', b'main.py'), (b'private-notes.txt',)
@@ -70,14 +67,9 @@ class SelectiveAuthoring(unittest.TestCase):
 
     def assert_independent_export(self, objects, root):
         Verifier(objects).generic(root)
-        if shutil.which('node'):
-            corpus = {'objects': [{'kind': ref.kind, 'payload_hex': value.hex()}
-                                  for ref, value in objects.items()],
-                      'roots': [root.encode().hex()]}
-            result = subprocess.run(
-                ['node', str(Path(__file__).with_name('codec_crosscheck.mjs')), '--objects-stdin'],
-                input=json.dumps(corpus), text=True, capture_output=True, check=True, timeout=35)
-            self.assertEqual(json.loads(result.stdout), [True])
+        for runtime, command in commands('--objects-stdin'):
+            with self.subTest(runtime=runtime):
+                self.assertEqual(invoke(command, corpus(objects, [root])), [True])
 
     def test_first_subset_commit_recovery_and_selected_export(self):
         authority, capture = self.initial_capture()

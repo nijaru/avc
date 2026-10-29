@@ -275,7 +275,7 @@ Run [map_layout_study.py](experiments/map_layout_study.py). It compares flat sor
 | Same / packed | 307 | 681,377 | 3,967 |
 | Same / one-key | 16,066 | 1,253,933 | 1,297 |
 
-The **shared-content** 10k-name case changes the picture: repeated suffix maps deduplicate to only four packed nodes (1,438 bytes) or five one-key nodes (1,395 bytes). The 128-directory chain rewrites 129 maps / 5,293 bytes in all three layouts. Report both content distributions: neither assuming every blob is identical nor assuming every subtree is unique is representative by itself. These are shape costs, **not** latency, memory, throughput or engine comparisons; lookup/diff/move, churn and real-workload qualification remain open.
+The **shared-content** 10k-name case changes the picture: repeated suffix maps deduplicate to only four packed nodes (1,438 bytes) or five one-key nodes (1,395 bytes). The 128-directory chain rewrites 129 maps / 5,293 bytes in all three layouts. Report both content distributions: neither assuming every blob is identical nor assuming every subtree is unique is representative by itself. These are shape costs, **not** latency, memory, throughput or engine comparisons. The [public-input follow-through](#20-public-history-and-map-access-costs--october-29-2026) adds bounded lookup/diff/move and Python allocation evidence; churn and native workload qualification remain open.
 
 ### SQLite evidence and remaining limits
 
@@ -313,7 +313,7 @@ The [reproducible study](experiments/text_merge_study.py) reads four source file
 
 The [reference](experiments/text_merge_reference.py) compares complete alignment sets with the independent recursive oracle for **961 pairs**, and merge outcomes with independent subset-enumeration/application for **3,375 three-way cases**. Boundary tests retain conflicts where any plausible pairing overlaps, while accepting the formerly rejected identical-output deletion. Budget cases cover matrix size, enumeration work, 64/65 variants, cross-product size and rendered-byte work; the 2,001-line unique case still avoids the dense fallback. Object framing, codec vectors, package version and the legacy CLI are unchanged.
 
-**Limits:** these are controlled synthetic edits on real files, not sampled real merge histories, user testing, a semantic-correctness proof or a speed comparison. The study deliberately targets one known failure; its counts are not a general conflict rate. The fallback adds bounded quadratic work on ambiguous small files and still refuses difficult/large cases. Real-history false-clean/conflict review burden and native resource qualification remain open before driver freeze. This revises the unreleased candidate; published driver behavior must be versioned rather than silently changed.
+**Limits:** these are controlled synthetic edits on real files, not sampled real merge histories, user testing, a semantic-correctness proof or a speed comparison. The study deliberately targets one known failure; its counts are not a general conflict rate. The fallback adds bounded quadratic work on ambiguous small files and still refuses difficult/large cases. The [sampled-history follow-through](#20-public-history-and-map-access-costs--october-29-2026) exposes additional budget refusals; false-clean/conflict review burden and native resource qualification remain open before driver freeze. This revises the unreleased candidate; published driver behavior must be versioned rather than silently changed.
 
 ## 14. Serial tasks, concurrent directories and environment costs — October 28, 2026
 
@@ -460,4 +460,53 @@ Observation is not filesystem replay. The bounded authoring check requires a sep
 
 Temporary in-memory faults bypassed result binding, input protection, relocation validation, side binding, observation-fact matching, explicit conflict choices and the algorithm whitelist. Each caused an assertion failure without a test error; no files were changed by those probes. The restored **78-test reference suite**, including Node/Rust codec checks, passes. Independent read-only review found no defect within the reviewed scope; it was static review, not another runtime implementation.
 
-**Limits:** this fully expands small source trees and copies protected input bytes in memory. It does not implement leases/GC, sparse/path-restricted authorization, a scanner or authenticated observation attestations, deliberate subset-consent policy, current-selection CAS, publication authorization or durable root admission. Those are not conferred by replay success. History has additional reference limits of 128 original nodes and 10,000 work units; exceeding them refuses without a State, not a source conflict. Positive recorded-move merge cases, agreed descendant reads through conflicts, large/wide graph behavior, real observing authority and native pending/receipt lifecycles remain unqualified. Representative layout and real-history merge evidence are still open. Milestone 0 is not complete.
+**Limits:** this fully expands small source trees and copies protected input bytes in memory. It does not implement leases/GC, sparse/path-restricted authorization, a scanner or authenticated observation attestations, deliberate subset-consent policy, current-selection CAS, publication authorization or durable root admission. Those are not conferred by replay success. History has additional reference limits of 128 original nodes and 10,000 work units; exceeding them refuses without a State, not a source conflict. Positive recorded-move merge cases, agreed descendant reads through conflicts, large/wide graph behavior, real observing authority and native pending/receipt lifecycles remain unqualified. The [following studies](#20-public-history-and-map-access-costs--october-29-2026) add finite layout and real-history evidence, not complete workload qualification. Milestone 0 is not complete.
+
+## 20. Public-history and map-access costs — October 29, 2026
+
+**Inputs:** upstream [git/git v2.48.1](https://github.com/git/git/tree/f93ff170b93a1782659637824b25923245ac9dd1), peeled commit `f93ff170b93a1782659637824b25923245ac9dd1`, resolved directly from the published tag. The local bare input contained 75,874 reachable commits and no shallow boundaries. Scripts read immutable objects without checkout, filters, source execution or implicit network acquisition; replacement objects are disabled and grafted histories refuse. Results retain public paths as hex, object/content hashes, selection rules, tool versions and study-source fingerprints, not source blobs. These are one-project samples, not a general performance or correctness rate.
+
+### Map access and relocation
+
+The [access study](experiments/map_access_study.py) reuses the earlier surrogate layout builder. It reconstructs 4,582 regular-file/symlink bindings, excludes one submodule explicitly, and compares the same tree in flat, packed-4096 and one-key layouts. It also uses controlled 10k shared-prefix/distributed directories and a valid 32-directory chain. References preserve AVC descriptor widths but use **SHA-256 surrogates, not AVC IDs**; no Blob payload or physical object framing is included.
+
+Each lookup starts cold and reads whole map payloads, reusing fetched objects within that operation. The public sample uses 64 evenly spaced raw-byte-sorted leaf paths and 64 missing siblings. Diff skips equal map references, recursively compares directories and falls back to complete maps when radix shapes differ. The edit replaces the sorted midpoint leaf, `t/helper/test-proc-receive.c`. [Recorded results](experiments/map_access_results.json):
+
+| Public snapshot / layout | Unique maps | Total map bytes | Median present-lookup bytes | Edit-diff bytes read | New map bytes on edit |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Flat | 222 | 260,679 | 94,525 | 197,662 | 98,831 |
+| Packed-4096 | 479 | 260,437 | 4,168 | 13,590 | 6,795 |
+| One-key | 7,098 | 484,998 | 1,951 | 3,278 | 1,639 |
+
+Smaller reads are not automatically faster: median lookup reads are respectively **3, 7 and 12 objects**. Reference full-build incremental Python allocation peaks are about **1.1, 3.2 and 4.2 MiB**, with input trees already resident. The distributed 10k case reaches about 18.2 MiB for packed construction versus 8.9 MiB flat. These include this builder's temporary nibble/serialization structures, not just retained objects; they are not native RSS forecasts or incremental-update implementations. Warm caches, range reads, derived indexes, SQLite pages, compression and Blob data can change the trade-off.
+
+The recorded move `t → relocated-t` reuses the subtree reference, adding 1/4/8 maps and 26,205/3,693/974 map bytes. **Admission is not thereby O(1):** uncached descendant-bound checking visits 2,504 bindings in every layout and reads 148,047/147,519/251,764 payload bytes. The controlled 10k moves visit 10,001 bindings despite rewriting only one ancestor map. No trusted cached bound-summary optimization is implemented. The 32-directory edit rewrites all 33 ancestor/leaf maps in every layout.
+
+**Consequence:** retain packed radix provisionally: it trades more object reads and construction allocation for much smaller cold reads/deltas than flat maps, without one-key's object proliferation. This does not establish 4096 as optimal, justify native speed claims or qualify large-scale churn. Three [cost-accounting tests](experiments/test_study_maps.py) protect raw-byte lookup/reuse, complete diff across threshold/prefix changes and relocated descendants whose longer prefix violates path bounds; they do not snapshot measured timings or byte tables.
+
+### Actual merge histories
+
+The [history study](experiments/history_merge_study.py) scans the latest 40 first-parent merges at the pinned tip, requires two parents and a provably complete single maximal base, then intersects both sides' changed raw paths without rename inference. Four multiple-base merges are skipped. The 64-triple cap yields samples from **14 merges**, excludes 23 further mode-qualified paths, and excludes three paths without three regular-file inputs. This chronology/path-order cap, same-mode restriction and one older project/release are substantial selection biases.
+
+With Python 3.15.2/arm64, Git 2.56.0 and Jujutsu 0.46.0, the unchanged candidate produces **40 clean / 24 conflicts**; Git and Jujutsu each produce **58 clean / 6 conflicts**. Every clean output equals that historical merge's bytes; none differs cleanly. Eleven candidate successes have multiple optimal alignments, including a 12-by-5 pairing. All 24 candidate refusals hit the ambiguous alignment's 1,000,000-cell matrix budget, not the sparse match-pair limit. Eighteen are additional refusals where both baselines reproduce the historical output. Those outputs are comparison references, **not semantic correctness oracles**: manual amendment can explain differences, and baseline agreement does not prove all-optimal confluence.
+
+The predeclared maximum-match-pair allocation probe is `po/bg.po`: 3,381,048 left-side match pairs, below the sparse budgets, but the later ambiguous fallback refuses. A separate deterministic replay peaks at **325,467,425 incremental traced bytes (about 310 MiB)** with inputs already resident. This is not the maximum over all cases, a native allocation estimate, or RSS. Per-case Python function timings in the [results](experiments/history_merge_results.json) exclude diagnostics and Git/Jujutsu CLI work; they support no cross-tool speed comparison.
+
+A temporary depth-16 view supplies 62 shallow boundaries. Of 14 examined two-parent merges, eleven have no known base, two have a candidate base but incomplete frontier, and only one qualifies; that base matches the complete store. The shared reader refuses whenever an unknown branch could hide another maximal base rather than interpreting truncation as unrelated history. Independent static review found no concrete defect within the studies' measurement/input scope; it did not rerun the measurements or independently verify upstream objects.
+
+**Remaining gate:** evaluate the refusal/re-review burden and lower-allocation ambiguity strategies before accepting driver constants. Do not merely raise budgets or pick a convenient alignment to improve the table. The current conservative driver remains unreleased and unqualified for general workflow cost. Move-aware remapping, agreed-conflict descendant reads, native resource/durability behavior and full workflow usability also remain open; neither these samples nor the codec agreement complete Milestone 0 or authorize format freeze.
+
+Reproduce against an explicitly supplied local public input; scripts never clone/fetch automatically. For example, from an empty owned temporary directory, initialize a bare repository and fetch the pinned public commit (Git may return complete history even at this requested depth):
+
+```sh
+git -c core.hooksPath=/dev/null init --bare /tmp/avc-git-input.git
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+  git -c core.hooksPath=/dev/null -C /tmp/avc-git-input.git fetch --no-tags --depth=1500 \
+  https://github.com/git/git.git f93ff170b93a1782659637824b25923245ac9dd1:refs/heads/study
+PYTHONDONTWRITEBYTECODE=1 python3 docs/experiments/map_access_study.py \
+  --repository /tmp/avc-git-input.git
+PYTHONDONTWRITEBYTECODE=1 python3 docs/experiments/history_merge_study.py \
+  --repository /tmp/avc-git-input.git --merges 40 --cases 64 --jj
+```
+
+Omit `--jj` when Jujutsu is unavailable. Different/truncated history may change eligibility; exact input/output hashes and structural costs should reproduce for the same sampled triples, while timings/allocation peaks are environment-specific.

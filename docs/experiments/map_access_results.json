@@ -1,0 +1,854 @@
+{
+  "source": {
+    "upstream": "https://github.com/git/git.git",
+    "tag": "v2.48.1",
+    "revision": "f93ff170b93a1782659637824b25923245ac9dd1",
+    "git_version": "git version 2.56.0",
+    "reachable_commits": 75874,
+    "shallow_boundaries": 0,
+    "snapshot_modes": {
+      "100644": 3328,
+      "100755": 1253,
+      "120000": 1,
+      "160000": 1
+    }
+  },
+  "excluded_snapshot_entries": {
+    "160000": 1
+  },
+  "python_version": "3.15.2",
+  "machine": "arm64",
+  "study_sources": {
+    "map_access_study.py": "c751df83a75107c7d111c5d01d695fee1b67f18e7f16bebd926718afdb15510f",
+    "map_layout_study.py": "859423d89323b0268d0692dab483a7e7bea76700f5d62f1e5313663d5890fe36",
+    "git_study_inputs.py": "878dd4e4891edc1f29db54b90217e9499d3ab1256e9ddb796432e699c7d707ac",
+    "text_merge_study.py": "9a7e36151a2f3d6b3270e6e47d003cb2a97323fcf7bf7bdea97ffe5e52065652"
+  },
+  "scope": "SHA-256 surrogate IDs, same Entry widths; no Blob payloads. Cold whole-object reads with per-operation reuse, no range I/O or derived indexes. Merkle diff falls back to full maps on shape mismatch. Build peaks trace incremental Python allocations with input trees already resident; not native RSS, persistence or throughput.",
+  "workloads": {
+    "git-v2.48.1": {
+      "leaf_bindings": 4582,
+      "layouts": {
+        "flat": {
+          "map_objects": 222,
+          "map_payload_bytes": 260679,
+          "max_node_bytes": 68330,
+          "incremental_python_build_peak_bytes": 1137509,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 1,
+                "median": 3.0,
+                "p95_nearest_rank": 3,
+                "max": 4
+              },
+              "payload_bytes_read": {
+                "min": 26195,
+                "median": 94525.0,
+                "p95_nearest_rank": 105068,
+                "max": 109737
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 1,
+                "median": 3.0,
+                "p95_nearest_rank": 3,
+                "max": 4
+              },
+              "payload_bytes_read": {
+                "min": 26195,
+                "median": 94525.0,
+                "p95_nearest_rank": 105068,
+                "max": 109737
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "742f68656c7065722f746573742d70726f632d726563656976652e63",
+            "objects_read": 6,
+            "payload_bytes_read": 197662,
+            "equal_map_pairs_skipped": 0,
+            "shape_fallbacks": 0,
+            "new_map_objects": 3,
+            "new_map_payload_bytes": 98831
+          },
+          "recorded_move": {
+            "source_hex": "74",
+            "destination_hex": "72656c6f63617465642d74",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 26205,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 52400,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 2504,
+              "objects_read": 120,
+              "payload_bytes_read": 148047,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "packed-4096": {
+          "map_objects": 479,
+          "map_payload_bytes": 260437,
+          "max_node_bytes": 4042,
+          "incremental_python_build_peak_bytes": 3330441,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 2,
+                "median": 7.0,
+                "p95_nearest_rank": 13,
+                "max": 16
+              },
+              "payload_bytes_read": {
+                "min": 662,
+                "median": 4168.0,
+                "p95_nearest_rank": 6795,
+                "max": 7636
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 2,
+                "median": 7.0,
+                "p95_nearest_rank": 13,
+                "max": 16
+              },
+              "payload_bytes_read": {
+                "min": 662,
+                "median": 4168.0,
+                "p95_nearest_rank": 6795,
+                "max": 7636
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "742f68656c7065722f746573742d70726f632d726563656976652e63",
+            "objects_read": 16,
+            "payload_bytes_read": 13590,
+            "equal_map_pairs_skipped": 19,
+            "shape_fallbacks": 0,
+            "new_map_objects": 8,
+            "new_map_payload_bytes": 6795
+          },
+          "recorded_move": {
+            "source_hex": "74",
+            "destination_hex": "72656c6f63617465642d74",
+            "subtree_ref_reused": true,
+            "new_map_objects": 4,
+            "new_map_payload_bytes": 3693,
+            "structural_diff": {
+              "objects_read": 8,
+              "payload_bytes_read": 7376,
+              "equal_map_pairs_skipped": 11,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 2504,
+              "objects_read": 289,
+              "payload_bytes_read": 147519,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "one-key-radix": {
+          "map_objects": 7098,
+          "map_payload_bytes": 484998,
+          "max_node_bytes": 500,
+          "incremental_python_build_peak_bytes": 4353349,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 5,
+                "median": 12.0,
+                "p95_nearest_rank": 19,
+                "max": 29
+              },
+              "payload_bytes_read": {
+                "min": 500,
+                "median": 1951.0,
+                "p95_nearest_rank": 2999,
+                "max": 3736
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 5,
+                "median": 12.0,
+                "p95_nearest_rank": 19,
+                "max": 29
+              },
+              "payload_bytes_read": {
+                "min": 500,
+                "median": 1951.0,
+                "p95_nearest_rank": 2999,
+                "max": 3736
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "742f68656c7065722f746573742d70726f632d726563656976652e63",
+            "objects_read": 24,
+            "payload_bytes_read": 3278,
+            "equal_map_pairs_skipped": 35,
+            "shape_fallbacks": 0,
+            "new_map_objects": 12,
+            "new_map_payload_bytes": 1639
+          },
+          "recorded_move": {
+            "source_hex": "74",
+            "destination_hex": "72656c6f63617465642d74",
+            "subtree_ref_reused": true,
+            "new_map_objects": 8,
+            "new_map_payload_bytes": 974,
+            "structural_diff": {
+              "objects_read": 15,
+              "payload_bytes_read": 1901,
+              "equal_map_pairs_skipped": 20,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 2504,
+              "objects_read": 3466,
+              "payload_bytes_read": 251764,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        }
+      }
+    },
+    "wide-shared-prefix-10000": {
+      "leaf_bindings": 10000,
+      "layouts": {
+        "flat": {
+          "map_objects": 2,
+          "map_payload_bytes": 510047,
+          "max_node_bytes": 510004,
+          "incremental_python_build_peak_bytes": 6103894,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 2,
+                "median": 2.0,
+                "p95_nearest_rank": 2,
+                "max": 2
+              },
+              "payload_bytes_read": {
+                "min": 510047,
+                "median": 510047.0,
+                "p95_nearest_rank": 510047,
+                "max": 510047
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 2,
+                "median": 2.0,
+                "p95_nearest_rank": 2,
+                "max": 2
+              },
+              "payload_bytes_read": {
+                "min": 510047,
+                "median": 510047.0,
+                "p95_nearest_rank": 510047,
+                "max": 510047
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "706b672f66696c652d30353030302e747874",
+            "objects_read": 4,
+            "payload_bytes_read": 1020094,
+            "equal_map_pairs_skipped": 0,
+            "shape_fallbacks": 0,
+            "new_map_objects": 2,
+            "new_map_payload_bytes": 510047
+          },
+          "recorded_move": {
+            "source_hex": "706b67",
+            "destination_hex": "72656c6f63617465642d706b67",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 53,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 96,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 10001,
+              "objects_read": 1,
+              "payload_bytes_read": 510004,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "packed-4096": {
+          "map_objects": 1112,
+          "map_payload_bytes": 461345,
+          "max_node_bytes": 424,
+          "incremental_python_build_peak_bytes": 7569517,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 5,
+                "median": 5.0,
+                "p95_nearest_rank": 5,
+                "max": 5
+              },
+              "payload_bytes_read": {
+                "min": 1481,
+                "median": 1481.0,
+                "p95_nearest_rank": 1481,
+                "max": 1481
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 5,
+                "median": 5.0,
+                "p95_nearest_rank": 5,
+                "max": 5
+              },
+              "payload_bytes_read": {
+                "min": 1481,
+                "median": 1481.0,
+                "p95_nearest_rank": 1481,
+                "max": 1481
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "706b672f66696c652d30353030302e747874",
+            "objects_read": 10,
+            "payload_bytes_read": 2962,
+            "equal_map_pairs_skipped": 27,
+            "shape_fallbacks": 0,
+            "new_map_objects": 5,
+            "new_map_payload_bytes": 1481
+          },
+          "recorded_move": {
+            "source_hex": "706b67",
+            "destination_hex": "72656c6f63617465642d706b67",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 53,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 96,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 10001,
+              "objects_read": 1111,
+              "payload_bytes_read": 461302,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "one-key-radix": {
+          "map_objects": 11112,
+          "map_payload_bytes": 823345,
+          "max_node_bytes": 342,
+          "incremental_python_build_peak_bytes": 9181988,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 6,
+                "median": 6.0,
+                "p95_nearest_rank": 6,
+                "max": 6
+              },
+              "payload_bytes_read": {
+                "min": 1438,
+                "median": 1438.0,
+                "p95_nearest_rank": 1438,
+                "max": 1438
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 6,
+                "median": 6.0,
+                "p95_nearest_rank": 6,
+                "max": 6
+              },
+              "payload_bytes_read": {
+                "min": 1438,
+                "median": 1438.0,
+                "p95_nearest_rank": 1438,
+                "max": 1438
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "706b672f66696c652d30353030302e747874",
+            "objects_read": 12,
+            "payload_bytes_read": 2876,
+            "equal_map_pairs_skipped": 36,
+            "shape_fallbacks": 0,
+            "new_map_objects": 6,
+            "new_map_payload_bytes": 1438
+          },
+          "recorded_move": {
+            "source_hex": "706b67",
+            "destination_hex": "72656c6f63617465642d706b67",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 53,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 96,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 10001,
+              "objects_read": 11111,
+              "payload_bytes_read": 823302,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        }
+      }
+    },
+    "wide-distributed-10000": {
+      "leaf_bindings": 10000,
+      "layouts": {
+        "flat": {
+          "map_objects": 2,
+          "map_payload_bytes": 690047,
+          "max_node_bytes": 690004,
+          "incremental_python_build_peak_bytes": 9319494,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 2,
+                "median": 2.0,
+                "p95_nearest_rank": 2,
+                "max": 2
+              },
+              "payload_bytes_read": {
+                "min": 690047,
+                "median": 690047.0,
+                "p95_nearest_rank": 690047,
+                "max": 690047
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 2,
+                "median": 2.0,
+                "p95_nearest_rank": 2,
+                "max": 2
+              },
+              "payload_bytes_read": {
+                "min": 690047,
+                "median": 690047.0,
+                "p95_nearest_rank": 690047,
+                "max": 690047
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "706b672f3765363263653135343939383738636138383365353532623438356363633266",
+            "objects_read": 4,
+            "payload_bytes_read": 1380094,
+            "equal_map_pairs_skipped": 0,
+            "shape_fallbacks": 0,
+            "new_map_objects": 2,
+            "new_map_payload_bytes": 690047
+          },
+          "recorded_move": {
+            "source_hex": "706b67",
+            "destination_hex": "72656c6f63617465642d706b67",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 53,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 96,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 10001,
+              "objects_read": 1,
+              "payload_bytes_read": 690004,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "packed-4096": {
+          "map_objects": 308,
+          "map_payload_bytes": 681420,
+          "max_node_bytes": 3689,
+          "incremental_python_build_peak_bytes": 19047601,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 6,
+                "median": 6.0,
+                "p95_nearest_rank": 6,
+                "max": 6
+              },
+              "payload_bytes_read": {
+                "min": 2737,
+                "median": 3406.0,
+                "p95_nearest_rank": 4211,
+                "max": 4410
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 6,
+                "median": 6.0,
+                "p95_nearest_rank": 6,
+                "max": 6
+              },
+              "payload_bytes_read": {
+                "min": 2737,
+                "median": 3406.0,
+                "p95_nearest_rank": 4211,
+                "max": 4410
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "706b672f3765363263653135343939383738636138383365353532623438356363633266",
+            "objects_read": 12,
+            "payload_bytes_read": 6546,
+            "equal_map_pairs_skipped": 16,
+            "shape_fallbacks": 0,
+            "new_map_objects": 6,
+            "new_map_payload_bytes": 3273
+          },
+          "recorded_move": {
+            "source_hex": "706b67",
+            "destination_hex": "72656c6f63617465642d706b67",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 53,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 96,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 10001,
+              "objects_read": 307,
+              "payload_bytes_read": 681377,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "one-key-radix": {
+          "map_objects": 16067,
+          "map_payload_bytes": 1253976,
+          "max_node_bytes": 335,
+          "incremental_python_build_peak_bytes": 20676409,
+          "lookups": {
+            "present": {
+              "queries": 64,
+              "objects_read": {
+                "min": 8,
+                "median": 10.0,
+                "p95_nearest_rank": 11,
+                "max": 11
+              },
+              "payload_bytes_read": {
+                "min": 1076,
+                "median": 1276.5,
+                "p95_nearest_rank": 1439,
+                "max": 1472
+              }
+            },
+            "missing": {
+              "queries": 64,
+              "objects_read": {
+                "min": 8,
+                "median": 10.0,
+                "p95_nearest_rank": 11,
+                "max": 11
+              },
+              "payload_bytes_read": {
+                "min": 1076,
+                "median": 1276.5,
+                "p95_nearest_rank": 1439,
+                "max": 1472
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "706b672f3765363263653135343939383738636138383365353532623438356363633266",
+            "objects_read": 18,
+            "payload_bytes_read": 2672,
+            "equal_map_pairs_skipped": 29,
+            "shape_fallbacks": 0,
+            "new_map_objects": 9,
+            "new_map_payload_bytes": 1336
+          },
+          "recorded_move": {
+            "source_hex": "706b67",
+            "destination_hex": "72656c6f63617465642d706b67",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 53,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 96,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 10001,
+              "objects_read": 16066,
+              "payload_bytes_read": 1253933,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        }
+      }
+    },
+    "deep-32": {
+      "leaf_bindings": 1,
+      "layouts": {
+        "flat": {
+          "map_objects": 33,
+          "map_payload_bytes": 1613,
+          "max_node_bytes": 49,
+          "incremental_python_build_peak_bytes": 7279,
+          "lookups": {
+            "present": {
+              "queries": 1,
+              "objects_read": {
+                "min": 33,
+                "median": 33,
+                "p95_nearest_rank": 33,
+                "max": 33
+              },
+              "payload_bytes_read": {
+                "min": 1613,
+                "median": 1613,
+                "p95_nearest_rank": 1613,
+                "max": 1613
+              }
+            },
+            "missing": {
+              "queries": 1,
+              "objects_read": {
+                "min": 33,
+                "median": 33,
+                "p95_nearest_rank": 33,
+                "max": 33
+              },
+              "payload_bytes_read": {
+                "min": 1613,
+                "median": 1613,
+                "p95_nearest_rank": 1613,
+                "max": 1613
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f66696c65",
+            "objects_read": 66,
+            "payload_bytes_read": 3226,
+            "equal_map_pairs_skipped": 0,
+            "shape_fallbacks": 0,
+            "new_map_objects": 33,
+            "new_map_payload_bytes": 1613
+          },
+          "recorded_move": {
+            "source_hex": "6469726563746f7279",
+            "destination_hex": "72656c6f63617465642d6469726563746f7279",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 59,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 108,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 33,
+              "objects_read": 32,
+              "payload_bytes_read": 1564,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "packed-4096": {
+          "map_objects": 33,
+          "map_payload_bytes": 1613,
+          "max_node_bytes": 49,
+          "incremental_python_build_peak_bytes": 7279,
+          "lookups": {
+            "present": {
+              "queries": 1,
+              "objects_read": {
+                "min": 33,
+                "median": 33,
+                "p95_nearest_rank": 33,
+                "max": 33
+              },
+              "payload_bytes_read": {
+                "min": 1613,
+                "median": 1613,
+                "p95_nearest_rank": 1613,
+                "max": 1613
+              }
+            },
+            "missing": {
+              "queries": 1,
+              "objects_read": {
+                "min": 33,
+                "median": 33,
+                "p95_nearest_rank": 33,
+                "max": 33
+              },
+              "payload_bytes_read": {
+                "min": 1613,
+                "median": 1613,
+                "p95_nearest_rank": 1613,
+                "max": 1613
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f66696c65",
+            "objects_read": 66,
+            "payload_bytes_read": 3226,
+            "equal_map_pairs_skipped": 0,
+            "shape_fallbacks": 0,
+            "new_map_objects": 33,
+            "new_map_payload_bytes": 1613
+          },
+          "recorded_move": {
+            "source_hex": "6469726563746f7279",
+            "destination_hex": "72656c6f63617465642d6469726563746f7279",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 59,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 108,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 33,
+              "objects_read": 32,
+              "payload_bytes_read": 1564,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        },
+        "one-key-radix": {
+          "map_objects": 33,
+          "map_payload_bytes": 1613,
+          "max_node_bytes": 49,
+          "incremental_python_build_peak_bytes": 7279,
+          "lookups": {
+            "present": {
+              "queries": 1,
+              "objects_read": {
+                "min": 33,
+                "median": 33,
+                "p95_nearest_rank": 33,
+                "max": 33
+              },
+              "payload_bytes_read": {
+                "min": 1613,
+                "median": 1613,
+                "p95_nearest_rank": 1613,
+                "max": 1613
+              }
+            },
+            "missing": {
+              "queries": 1,
+              "objects_read": {
+                "min": 33,
+                "median": 33,
+                "p95_nearest_rank": 33,
+                "max": 33
+              },
+              "payload_bytes_read": {
+                "min": 1613,
+                "median": 1613,
+                "p95_nearest_rank": 1613,
+                "max": 1613
+              }
+            }
+          },
+          "one_file_edit": {
+            "path_hex": "6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f6469726563746f72792f66696c65",
+            "objects_read": 66,
+            "payload_bytes_read": 3226,
+            "equal_map_pairs_skipped": 0,
+            "shape_fallbacks": 0,
+            "new_map_objects": 33,
+            "new_map_payload_bytes": 1613
+          },
+          "recorded_move": {
+            "source_hex": "6469726563746f7279",
+            "destination_hex": "72656c6f63617465642d6469726563746f7279",
+            "subtree_ref_reused": true,
+            "new_map_objects": 1,
+            "new_map_payload_bytes": 59,
+            "structural_diff": {
+              "objects_read": 2,
+              "payload_bytes_read": 108,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            },
+            "uncached_bound_validation": {
+              "bindings_visited": 33,
+              "objects_read": 32,
+              "payload_bytes_read": 1564,
+              "equal_map_pairs_skipped": 0,
+              "shape_fallbacks": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

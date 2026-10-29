@@ -1,0 +1,936 @@
+{
+  "source": {
+    "upstream": "https://github.com/git/git.git",
+    "tag": "v2.48.1",
+    "revision": "f93ff170b93a1782659637824b25923245ac9dd1",
+    "git_version": "git version 2.56.0",
+    "reachable_commits": 75874,
+    "shallow_boundaries": 0,
+    "snapshot_modes": {
+      "100644": 3328,
+      "100755": 1253,
+      "120000": 1,
+      "160000": 1
+    }
+  },
+  "baseline_sha256": "44e77673b67b198c6cccf2d7d770ff79630c04466166b22f713e35ea3a999021",
+  "baseline_driver_sha256": "7313abcec8b2e34c7fcc571565f6652372371a7c93544d5483049a85db9bfdc5",
+  "driver_sha256": "47338d0504e896f373ed275eb82db15cc1c1b3f89f2b8359abf24e3ed3cb068b",
+  "study_sources": {
+    "merge_refinement_study.py": "cdcd47237646ad457b7dfb64c9c056bd53922dab9de841f1c30f2f638a6f3db9",
+    "git_study_inputs.py": "878dd4e4891edc1f29db54b90217e9499d3ab1256e9ddb796432e699c7d707ac",
+    "history_merge_study.py": "5be0ed72019745424d89752141e099f9616fab92536abdecf1d64d5405bb86d6"
+  },
+  "python_version": "3.15.2",
+  "machine": "arm64",
+  "unsigned_array_item_bytes": 4,
+  "scope": "Exact same 64 public file triples; historical bytes are comparison references, not a correctness oracle. Prior Git/JJ outcomes are reused, not rerun. Allocation probes use the same case and resident-input baseline; function timings are unpaired samples, not a throughput/speedup claim.",
+  "summary": {
+    "clean-equal-historical": 54,
+    "conflict": 10
+  },
+  "alignment_routes": {
+    "alignments-qualified": 58,
+    "alignment-budget": 5,
+    "combination-budget": 1
+  },
+  "new_clean_cases": [
+    8,
+    17,
+    18,
+    22,
+    28,
+    35,
+    36,
+    41,
+    45,
+    50,
+    51,
+    53,
+    58,
+    63
+  ],
+  "python_allocation_probe": {
+    "baseline_case_index": 11,
+    "baseline_incremental_peak_bytes": 325467425,
+    "incremental_peak_bytes": 17869849
+  },
+  "cases": [
+    {
+      "baseline_case_index": 0,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "e6eb91a6b5a711f4672e2f3ba06e731937f4db4634997143bc789c6dfb2b547a",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.021096374839544296
+    },
+    {
+      "baseline_case_index": 1,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "3d399920e29b5549b62fb76199a2a9a967bf5a99a6c3154c86ddbeac4cf43ed0",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.05651495815254748
+    },
+    {
+      "baseline_case_index": 2,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "6f96aa7ba8788a085e094839489ad47208395c2aef0545150c8e007a44fb79a1",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          3,
+          1
+        ],
+        "combinations": 3
+      },
+      "python_seconds": 0.03411187487654388
+    },
+    {
+      "baseline_case_index": 3,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignment-budget",
+        "reason": "alignment variant budget exceeded"
+      },
+      "python_seconds": 0.05239199986681342
+    },
+    {
+      "baseline_case_index": 4,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "31991fcb225a1abe354367d5841f687246ecc41b2af014518b7e2008f5b61ddf",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.010320917004719377
+    },
+    {
+      "baseline_case_index": 5,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "aa4097cfac5cfd584ef332fd028eaa2552051aa88709a110269b172fd554518b",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          8,
+          1
+        ],
+        "combinations": 8
+      },
+      "python_seconds": 0.0157108751591295
+    },
+    {
+      "baseline_case_index": 6,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "8f7e762da81756e0f90e3e18526dbc38d09787fc0c06b20be034651a59b55637",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.028420250164344907
+    },
+    {
+      "baseline_case_index": 7,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "58619caa7c4c3eb265cf3c7d1f4f96c240e1fef7527dd17b6d966c5db60bde7e",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.033112708013504744
+    },
+    {
+      "baseline_case_index": 8,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "c431ddbc2631d4294d4752c5636549ef963658e26d713bd4af4df37c883343d6",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          6,
+          1
+        ],
+        "combinations": 6
+      },
+      "python_seconds": 0.2711101248860359
+    },
+    {
+      "baseline_case_index": 9,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "b9c06d2174e867afa7ec3f7ef7c35c55bc36876868f5e0b348b102a713f5ff49",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.08620979194529355
+    },
+    {
+      "baseline_case_index": 10,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignment-budget",
+        "reason": "alignment variant budget exceeded"
+      },
+      "python_seconds": 2.5493251669686288
+    },
+    {
+      "baseline_case_index": 11,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignment-budget",
+        "reason": "alignment variant budget exceeded"
+      },
+      "python_seconds": 4.374318999936804
+    },
+    {
+      "baseline_case_index": 12,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "4f5ba6ee0c12a14432b6345772304484835ee867fc32cc3551284df417479e47",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.5122394158970565
+    },
+    {
+      "baseline_case_index": 13,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "9e50d4e47571da3388cfd73150ded37c3b7c3a0da921f75d76a1cca954e0898f",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.005767832975834608
+    },
+    {
+      "baseline_case_index": 14,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "7d0d1e2d5033a5c541be39af2a5e64ffe2e7f9d5195aa320119294ab031d9bc7",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          6,
+          1
+        ],
+        "combinations": 6
+      },
+      "python_seconds": 0.0006619589403271675
+    },
+    {
+      "baseline_case_index": 15,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "bfac43be66ea394d697a76d3b03a8d966edbd8dc35c548781975f73838aa95d8",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          5
+        ],
+        "combinations": 5
+      },
+      "python_seconds": 0.047829207964241505
+    },
+    {
+      "baseline_case_index": 16,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "43ca0d818c9c15ff3440ca446191ee2be1059963f42aee9f3cd47da6731e9647",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          7
+        ],
+        "combinations": 7
+      },
+      "python_seconds": 0.0009204170200973749
+    },
+    {
+      "baseline_case_index": 17,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "a2d5bd64168fe1071ad22427fc7b229948e4b09e38693675227af39e4009822e",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          6
+        ],
+        "combinations": 6
+      },
+      "python_seconds": 0.5554079578723758
+    },
+    {
+      "baseline_case_index": 18,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "f46067a0d7bf4dba76217dc3ccd4074246882ff9122c40a9c0230fc225cda743",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          2
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.07704575010575354
+    },
+    {
+      "baseline_case_index": 19,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "7debb5f8eecc085c0e0322d29fa5e83688cc913a0a14943bcf928fa73fded1c3",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          2
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.0006282918620854616
+    },
+    {
+      "baseline_case_index": 20,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "combination-budget",
+        "optimal_alignment_counts": [
+          24,
+          12
+        ],
+        "combinations": 288
+      },
+      "python_seconds": 0.6779870828613639
+    },
+    {
+      "baseline_case_index": 21,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "9bfff8c0fd56158501b66ae3c408b23fa5e2d9ce744439c005bdbe9f91326914",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.3728074999526143
+    },
+    {
+      "baseline_case_index": 22,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "35e64944428a6b79cfc35e54116bc9310a264321c27355383d717c762eeda73b",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          2
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.37525558308698237
+    },
+    {
+      "baseline_case_index": 23,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "9041b9f7e8ecd9ec8b78f80e6c6363acc28f12ffc61ef62f902efde24def0ea4",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.37350500002503395
+    },
+    {
+      "baseline_case_index": 24,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "7e2a96a4fc9cd519682cab0d3c98790c42b358b867a9216242d92202d2d773c8",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.0030426669400185347
+    },
+    {
+      "baseline_case_index": 25,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "29981e9f407817544fb8743aa9769b00cfc9c15663dd96e31417f5c7c43301ba",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          2
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.0007819170132279396
+    },
+    {
+      "baseline_case_index": 26,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "0c4ff33e7d51d592a1da98498d0609959df206c9bd3c10d78e771fe027c27b3d",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          12,
+          5
+        ],
+        "combinations": 60
+      },
+      "python_seconds": 0.02683908282779157
+    },
+    {
+      "baseline_case_index": 27,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "89b816718b0a9557492063a271278712161ae54cbf6195541d4f33dd8f68f908",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.00443379208445549
+    },
+    {
+      "baseline_case_index": 28,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "c9bd5ed6744aaa87f66a251ea60f1e4898d23de37519d930cd606ef4844aa832",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          4,
+          1
+        ],
+        "combinations": 4
+      },
+      "python_seconds": 0.0946883331052959
+    },
+    {
+      "baseline_case_index": 29,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "f990bc72988699e408cbe061e26a7f50fbfcd43943558d322550562b87734625",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.035918208071962
+    },
+    {
+      "baseline_case_index": 30,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "0c6a0d0681dc40f3755ec01a0225d5c598bdaae62e7773f292c8d3e094914995",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.04983766609802842
+    },
+    {
+      "baseline_case_index": 31,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "5b6da9ba360d79dd246c3670c3b80bb49c385f0763e69ce202de8eaee5c5828d",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.13738104095682502
+    },
+    {
+      "baseline_case_index": 32,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "49726e70acfa99fdd583cf39a6df55ddaa2aee5fc200620c7ad6e046b340e2d2",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          2,
+          1
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.01805212488397956
+    },
+    {
+      "baseline_case_index": 33,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "cb6d01663118ab15d9408b1ef263766c316b62b271f40b533f19f4bd1278d6fd",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.511491582961753
+    },
+    {
+      "baseline_case_index": 34,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignment-budget",
+        "reason": "alignment variant budget exceeded"
+      },
+      "python_seconds": 0.12747333385050297
+    },
+    {
+      "baseline_case_index": 35,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "bd2a7b7eadd02639e7b2e1083db524c8ecd80ddfe0d46b3684a11471263df359",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          2,
+          1
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.4828141671605408
+    },
+    {
+      "baseline_case_index": 36,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "ab8001a638ecd728a6f0ec87e56a042cb80036da9955a97d9afd4587dc2b44a2",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          14,
+          1
+        ],
+        "combinations": 14
+      },
+      "python_seconds": 0.17912612482905388
+    },
+    {
+      "baseline_case_index": 37,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "617c51375da10d7da122aee6899f8463d6b7fcbee732a45c371479ece5630988",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.24195316690020263
+    },
+    {
+      "baseline_case_index": 38,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "6a1db8f81e2873454f8dba5d57943df62ac8d707eaa799538dec10c2b291ab8c",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.10290766600519419
+    },
+    {
+      "baseline_case_index": 39,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "dbf8db3790d81ceb40a3d0c86e8856fbb1cb7d670f513d7303a78ce496664b9b",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.8303411251399666
+    },
+    {
+      "baseline_case_index": 40,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "47c260844a56fc103980bd222cd5cf734ec4599fff3630b6a5fc005c01dacc27",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.022272040834650397
+    },
+    {
+      "baseline_case_index": 41,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "d7c515d4b34591ce494bd51a6d74f588c6b174cf4021cbfb91ebfad96c70ea36",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          15,
+          1
+        ],
+        "combinations": 15
+      },
+      "python_seconds": 0.14177987514995039
+    },
+    {
+      "baseline_case_index": 42,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "6a063db124614264a50430f8bd758caac36acbf212311811ce400085cc0bc9f9",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.1175961249973625
+    },
+    {
+      "baseline_case_index": 43,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "5746e774ff593b2814221b0323c13457cdc0c86124038b3574ed021121f60745",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.024420375004410744
+    },
+    {
+      "baseline_case_index": 44,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "8a3a1267f2ee70b7216aebba6e2cc5d1ad56e41a4038199634930e188ae25641",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          5,
+          1
+        ],
+        "combinations": 5
+      },
+      "python_seconds": 0.018750916933640838
+    },
+    {
+      "baseline_case_index": 45,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "108b764293539c732fdbf0bc6b0ab1b93082b4ade3ceab3d849b147c4f3fee11",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          2,
+          1
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.07258362509310246
+    },
+    {
+      "baseline_case_index": 46,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "4f7c526fe57135a12c17ffae2e364c47e8f8d4c15a225be8f590837e79cb9c12",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.04577079205773771
+    },
+    {
+      "baseline_case_index": 47,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "92e5da719a5bdb732bcea061249f1323558a45e23ab40c91827a154535a58fc1",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          8,
+          1
+        ],
+        "combinations": 8
+      },
+      "python_seconds": 0.019153166096657515
+    },
+    {
+      "baseline_case_index": 48,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "dbd5d14a191628a6bd564a264f9c93852a39126cefae129c726f9d9161ccb7e9",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.6269248339813203
+    },
+    {
+      "baseline_case_index": 49,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "6cdb535878b2dc398af0b57a4bac0e322280cc3b21ace8a0e4a7cf84116c9b42",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.14742045802995563
+    },
+    {
+      "baseline_case_index": 50,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "19da79c19b956bb577b2e5282704b163ba93669ad1e4ab9a2886970da636d4b1",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          50,
+          1
+        ],
+        "combinations": 50
+      },
+      "python_seconds": 0.7299604590516537
+    },
+    {
+      "baseline_case_index": 51,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "8ca1e8a77990c2368155c9123598550eb2194c04054e05701af477600ad78d95",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          2
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.0955066669266671
+    },
+    {
+      "baseline_case_index": 52,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "f278bc2ed29d8fa5f4aac9e05e9e4f00010784dee84c123ec29abb502b9c0d78",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 1.8965189170558006
+    },
+    {
+      "baseline_case_index": 53,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "7c988b2e446c855cfcb20eff89ed56703202cdd98aaea30035737747e28ecd6b",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          6,
+          1
+        ],
+        "combinations": 6
+      },
+      "python_seconds": 0.17415941692888737
+    },
+    {
+      "baseline_case_index": 54,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "ab1e5cca79a39fe6952470252844013a9555c2dc017bc868905c0b49f7607296",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.3532284169923514
+    },
+    {
+      "baseline_case_index": 55,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "11f54023bcb081df5ed73f96867968eaa4d344cb1e449ba94dd6a66e9b8948c1",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.007176999934017658
+    },
+    {
+      "baseline_case_index": 56,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          3,
+          1
+        ],
+        "combinations": 3
+      },
+      "python_seconds": 0.22505612508393824
+    },
+    {
+      "baseline_case_index": 57,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          2,
+          1
+        ],
+        "combinations": 2
+      },
+      "python_seconds": 0.0724616670049727
+    },
+    {
+      "baseline_case_index": 58,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "121e9a3aebca15fe6b4a4405531cfb720acb36840804bc28de3ed6b1196c4638",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          13,
+          1
+        ],
+        "combinations": 13
+      },
+      "python_seconds": 0.18416675017215312
+    },
+    {
+      "baseline_case_index": 59,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          24,
+          1
+        ],
+        "combinations": 24
+      },
+      "python_seconds": 0.8083814999554306
+    },
+    {
+      "baseline_case_index": 60,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          6,
+          1
+        ],
+        "combinations": 6
+      },
+      "python_seconds": 0.2715149591676891
+    },
+    {
+      "baseline_case_index": 61,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "fb3171c741a522ac074940367b88ff8bdeadf4928f4553e98da359fd3767639e",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          1,
+          1
+        ],
+        "combinations": 1
+      },
+      "python_seconds": 0.068338125012815
+    },
+    {
+      "baseline_case_index": 62,
+      "outcome": "conflict",
+      "output_sha256": null,
+      "alignment": {
+        "route": "alignment-budget",
+        "reason": "alignment variant budget exceeded"
+      },
+      "python_seconds": 0.21608833316713572
+    },
+    {
+      "baseline_case_index": 63,
+      "outcome": "clean-equal-historical",
+      "output_sha256": "805a30ceac634759fda8c8443d8f10ddea477bde8a6f584f7be8205033f5c007",
+      "alignment": {
+        "route": "alignments-qualified",
+        "optimal_alignment_counts": [
+          9,
+          1
+        ],
+        "combinations": 9
+      },
+      "python_seconds": 0.5606333340983838
+    }
+  ]
+}

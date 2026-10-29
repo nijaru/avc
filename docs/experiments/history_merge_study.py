@@ -43,13 +43,24 @@ def alignment_diagnostic(inputs):
     except UnicodeDecodeError:
         return {'route': 'text-ineligible'}
     try:
-        counts = [len(driver.optimal_alignments(driver.lines(base), driver.lines(side)))
-                  for side in (left, right)]
+        indexes = []
+        tokens = driver.lines(base)
+        for side in (left, right):
+            index = driver.AlignmentIndex(tokens, driver.lines(side))
+            if index.count > driver.MAX_ALIGNMENTS:
+                raise driver.AlignmentBudget('alignment variant budget exceeded')
+            indexes.append(index)
+        counts = [index.count for index in indexes]
+        pairs = counts[0] * counts[1]
+        refused = (pairs > driver.MAX_COMBINATIONS or
+                   pairs * sum(map(len, inputs)) > driver.MAX_MERGE_BYTES)
+        if not refused:
+            # Validate enumeration work without retaining every full anchor set.
+            for index in indexes:
+                for _ in index.alignments():
+                    pass
     except driver.AlignmentBudget as error:
         return {'route': 'alignment-budget', 'reason': str(error)}
-    pairs = counts[0] * counts[1]
-    refused = (pairs > driver.MAX_COMBINATIONS or
-               pairs * sum(map(len, inputs)) > driver.MAX_MERGE_BYTES)
     return {'route': 'combination-budget' if refused else 'alignments-qualified',
             'optimal_alignment_counts': counts, 'combinations': pairs}
 

@@ -8,13 +8,12 @@ from array import array
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from functools import lru_cache
-from itertools import combinations, product
+from itertools import chain, combinations, product
 import re
 import unittest
 
 MAX_MATCHES = 4_000_000
 MAX_RANK_WORK = 64_000_000
-MAX_DENSE_CELLS = 1_000_000
 MAX_ALIGNMENTS = 64
 MAX_ENUM_WORK = 4_000_000
 MAX_COMBINATIONS = 256
@@ -29,112 +28,137 @@ def lines(data: bytes) -> list[bytes]:
     return re.findall(rb'[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$', data)
 
 
-def unique_alignment(base, side, *, max_matches=MAX_MATCHES, max_rank_work=MAX_RANK_WORK):
-    """Return the unique optimal index-pair sequence, or None if ambiguous.
+class AlignmentIndex:
+    """Sparse suffix lengths and capped counts, without Python pair-state nodes.
 
-    Each state counts chains ending at one particular match. Fenwick nodes
-    aggregate disjoint endpoint ranges; empty prefixes contain one empty chain.
-    All queries for a base row precede its updates, preventing same-row chains.
+    Rank one match (p,q) by 1 + LCS(base[p+1:], side[q+1:]). Store ranks in
+    row-major packed integers; side positions and row offsets identify pairs.
+    Fenwick nodes aggregate disjoint side ranges, counting distinct chains by
+    their first pair. Counts saturate at 65, sufficient for every admitted cap.
     """
-    positions = defaultdict(list)
-    for j, token in enumerate(side):
-        positions[token].append(j)
-    matches = sum(count * len(positions[token]) for token, count in Counter(base).items())
-    if matches > max_matches or matches * len(side).bit_length() > max_rank_work:
-        raise AlignmentBudget('equal-line match-pair budget exceeded')
-    # (length, number of maximum chains capped at 2, representative endpoint)
-    empty = (0, 0, None)
-    tree = [empty] * (len(side) + 1)
-    states = []
+    def __init__(self, base, side, *, max_matches=MAX_MATCHES, max_rank_work=MAX_RANK_WORK):
+        self.base, self.m = base, len(side)
+        self.positions = defaultdict(lambda: array('I'))
+        for j, token in enumerate(side):
+            self.positions[token].append(j)
+        matches = sum(count * len(self.positions.get(token, ()))
+                      for token, count in Counter(base).items())
+        if matches > max_matches or matches * self.m.bit_length() > max_rank_work:
+            raise AlignmentBudget('equal-line match-pair budget exceeded')
+        self.offsets = array('I', [0])
+        for token in base:
+            self.offsets.append(self.offsets[-1] + len(self.positions.get(token, ())))
+        self.ranks = array('I', [0]) * matches
+        lengths = array('I', [0]) * (self.m + 1)
+        counts = array('I', [0]) * (self.m + 1)
 
-    def combine(a, b):
-        if a[0] != b[0]:
-            return a if a[0] > b[0] else b
-        return (a[0], min(2, a[1] + b[1]), a[2] if a[1] else b[2])
+        def prefix(end):
+            length = count = 0
+            while end:
+                if lengths[end] > length:
+                    length, count = lengths[end], counts[end]
+                elif lengths[end] == length:
+                    count = min(MAX_ALIGNMENTS + 1, count + counts[end])
+                end -= end & -end
+            return (length, count) if length else (0, 1)
 
-    def prefix(end):
-        best = empty
-        while end:
-            best = combine(best, tree[end])
-            end -= end & -end
-        return best if best[0] else (0, 1, None)
+        for p in range(len(base) - 1, -1, -1):
+            # Descending base rows, ASCENDING side positions. Updates from this
+            # row have smaller q and cannot enter a strict-greater-q query.
+            for slot, q in enumerate(self.positions.get(base[p], ())):
+                length, count = prefix(self.m - q - 1)
+                length += 1
+                self.ranks[self.offsets[p] + slot] = length
+                index = self.m - q
+                while index <= self.m:
+                    if length > lengths[index]:
+                        lengths[index], counts[index] = length, count
+                    elif length == lengths[index]:
+                        counts[index] = min(MAX_ALIGNMENTS + 1, counts[index] + count)
+                    index += index & -index
+        # Do not refuse on an intermediate saturated count: earlier rows can
+        # supply a strictly longer, unique optimum (e.g. equal repeated files).
+        self.length, self.count = prefix(self.m)
 
-    for i, token in enumerate(base):
-        row = []
-        for j in positions[token]:
-            length, count, previous = prefix(j)  # side indices strictly < j
-            state = len(states)
-            states.append((i, j, previous))
-            row.append((j + 1, (length + 1, count, state)))
-        for index, value in row:
-            while index < len(tree):
-                tree[index] = combine(tree[index], value)
-                index += index & -index
-    _, count, endpoint = prefix(len(side))
-    if count != 1:
-        return None
-    result = []
-    while endpoint is not None:
-        i, j, endpoint = states[endpoint]
-        result.append((i, j))
-    return list(reversed(result))
+    def alignments(self, *, max_variants=MAX_ALIGNMENTS, max_work=MAX_ENUM_WORK):
+        if not 1 <= max_variants <= MAX_ALIGNMENTS:
+            raise ValueError('variant limit outside the candidate driver bound')
+        if self.count > max_variants:
+            raise AlignmentBudget('alignment variant budget exceeded')
+        if not self.length:
+            yield []
+            return
+        if self.count == 1:
+            # A monotone scan reconstructs the unique chain in O(r+n), without
+            # parent pointers, DFS frames or the ambiguous enumeration budget.
+            pairs, j, remaining = [], 0, self.length
+            for p, token in enumerate(self.base):
+                positions = self.positions.get(token, ())
+                for slot in range(bisect_left(positions, j), len(positions)):
+                    if self.ranks[self.offsets[p] + slot] == remaining:
+                        q = positions[slot]
+                        pairs.append((p, q))
+                        j, remaining = q + 1, remaining - 1
+                        break
+                if not remaining:
+                    break
+            assert not remaining
+            yield pairs
+            return
+        work = 0
+        def candidates(i, j, remaining):
+            nonlocal work
+            for p in range(i, len(self.base) - remaining + 1):
+                work += 1
+                if work > max_work:
+                    raise AlignmentBudget('alignment enumeration work exceeded')
+                positions = self.positions.get(self.base[p], ())
+                lo, hi = bisect_left(positions, j), bisect_right(positions, self.m - remaining)
+                for slot in range(lo, hi):
+                    work += 1
+                    if work > max_work:
+                        raise AlignmentBudget('alignment enumeration work exceeded')
+                    if self.ranks[self.offsets[p] + slot] == remaining:
+                        yield p, positions[slot]
+        # Keep one mutable path, sharing its immutable pairs across yielded
+        # shallow copies. Copying the full prefix at every step is quadratic.
+        pairs, stack = [], [candidates(0, 0, self.length)]
+        while stack:
+            try:
+                p, q = next(stack[-1])
+            except StopIteration:
+                stack.pop()
+                if pairs:
+                    pairs.pop()
+                continue
+            pairs.append((p, q))
+            remaining = self.length - len(pairs)
+            if remaining:
+                stack.append(candidates(p + 1, q + 1, remaining))
+            else:
+                yield list(pairs)
+                pairs.pop()
+
+
+def unique_alignment(base, side, *, max_matches=MAX_MATCHES, max_rank_work=MAX_RANK_WORK):
+    """Return the unique optimal index-pair sequence, or None if ambiguous."""
+    index = AlignmentIndex(base, side, max_matches=max_matches, max_rank_work=max_rank_work)
+    return next(index.alignments()) if index.count == 1 else None
 
 
 def hunks(base, side, anchors):
     result = []
     old = new = 0
-    for i, j in [*anchors, (len(base), len(side))]:
+    for i, j in chain(anchors, ((len(base), len(side)),)):
         if old != i or new != j:
             result.append((old, i, tuple(side[new:j])))
         old, new = i + 1, j + 1
     return result
 
 
-def optimal_alignments(base, side, *, max_cells=MAX_DENSE_CELLS,
-                       max_variants=MAX_ALIGNMENTS, max_work=MAX_ENUM_WORK):
-    """All optimal pair sequences, with a sparse fast path for unique input.
-
-    The dense fallback is bounded before allocation. Enumerating first matched
-    pairs avoids duplicate paths caused by interleaved skips in a DP traceback.
-    """
-    unique = unique_alignment(base, side)
-    if unique is not None:
-        return [unique]
-    n, m = len(base), len(side)
-    if (n + 1) * (m + 1) > max_cells:
-        raise AlignmentBudget('ambiguous alignment matrix budget exceeded')
-    table = [array('I', [0]) * (m + 1) for _ in range(n + 1)]
-    for i in range(n - 1, -1, -1):
-        row, following = table[i], table[i + 1]
-        for j in range(m - 1, -1, -1):
-            row[j] = (1 + following[j + 1] if base[i] == side[j]
-                      else max(following[j], row[j + 1]))
-    positions = defaultdict(list)
-    for j, token in enumerate(side):
-        positions[token].append(j)
-    result, stack, work = [], [(0, 0, table[0][0], ())], 0
-    while stack:
-        i, j, remaining, pairs = stack.pop()
-        if not remaining:
-            result.append(list(pairs))
-            continue
-        for p in range(i, n - remaining + 1):
-            work += 1
-            if work > max_work:
-                raise AlignmentBudget('alignment enumeration work exceeded')
-            matches = positions[base[p]]
-            lo, hi = bisect_left(matches, j), bisect_right(matches, m - remaining)
-            for index in range(lo, hi):
-                q = matches[index]
-                work += 1
-                if work > max_work:
-                    raise AlignmentBudget('alignment enumeration work exceeded')
-                if table[p + 1][q + 1] == remaining - 1:
-                    stack.append((p + 1, q + 1, remaining - 1, pairs + ((p, q),)))
-                    # Every pending state has at least one distinct completion.
-                    if len(result) + len(stack) > max_variants:
-                        raise AlignmentBudget('alignment variant budget exceeded')
-    return result
+def optimal_alignments(base, side, *, max_variants=MAX_ALIGNMENTS, max_work=MAX_ENUM_WORK):
+    """Materialize bounded complete pair sets for independent qualification."""
+    return list(AlignmentIndex(base, side).alignments(max_variants=max_variants, max_work=max_work))
 
 
 def merge_hunks(base, lh, rh):
@@ -190,17 +214,24 @@ def merge_text(base: bytes, left: bytes, right: bytes) -> bytes | None:
             return None
     b, l, r = map(lines, (base, left, right))
     try:
-        left_options, right_options = optimal_alignments(b, l), optimal_alignments(b, r)
+        left_index = AlignmentIndex(b, l)
+        if left_index.count > MAX_ALIGNMENTS:
+            return None
+        right_index = AlignmentIndex(b, r)
+        combinations = left_index.count * right_index.count
+        if (right_index.count > MAX_ALIGNMENTS or combinations > MAX_COMBINATIONS or
+                combinations * (len(base) + len(left) + len(right)) > MAX_MERGE_BYTES):
+            return None
+        # Check cardinality/byte work BEFORE expanding alternatives. Retain only
+        # hunks, not a full mostly-identical anchor list for every alignment.
+        left_options = [hunks(b, l, a) for a in left_index.alignments()]
+        right_options = [hunks(b, r, a) for a in right_index.alignments()]
     except AlignmentBudget:
         return None
-    combinations = len(left_options) * len(right_options)
-    if (combinations > MAX_COMBINATIONS or
-            combinations * (len(base) + len(left) + len(right)) > MAX_MERGE_BYTES):
-        return None
     result = None
-    for la in left_options:
-        for ra in right_options:
-            candidate = merge_hunks(b, hunks(b, l, la), hunks(b, r, ra))
+    for lh in left_options:
+        for rh in right_options:
+            candidate = merge_hunks(b, lh, rh)
             if candidate is None or (result is not None and candidate != result):
                 return None
             result = candidate
@@ -225,7 +256,10 @@ class TextMergeQualification(unittest.TestCase):
                 actual = unique_alignment(base, side)
                 self.assertEqual(actual, list(next(iter(expected))) if len(expected) == 1 else None,
                                  (base, side))
-                self.assertEqual({tuple(a) for a in optimal_alignments(base, side)}, expected)
+                self.assertEqual(AlignmentIndex(base, side).count, len(expected))
+                options = optimal_alignments(base, side)
+                self.assertEqual(len(options), len(expected))
+                self.assertEqual({tuple(a) for a in options}, expected)
 
     def test_large_unique_file_combines_distant_edits(self):
         base = [f'line-{i:04d}\n'.encode() for i in range(2001)]
@@ -234,6 +268,22 @@ class TextMergeQualification(unittest.TestCase):
         expected = [left[0], *base[1:-1], right[-1]]
         self.assertEqual(merge_text(b''.join(base), b''.join(left), b''.join(right)),
                          b''.join(expected))
+
+    def test_large_harmless_ambiguity_without_a_dense_matrix(self):
+        base = [f'line-{i:04d}\n'.encode() for i in range(2001)]
+        base[1000:1000] = [b'\n', b'\n']
+        left, right = base.copy(), base.copy()
+        del left[1000]
+        right[-1] = b'last\n'
+        expected = left.copy()
+        expected[-1] = right[-1]
+        self.assertEqual(merge_text(*map(b''.join, (base, left, right))), b''.join(expected))
+
+    def test_partial_ambiguity_does_not_refuse_a_later_unique_optimum(self):
+        base = [b'a'] * 20
+        index = AlignmentIndex(base, base)
+        self.assertEqual(index.count, 1)
+        self.assertEqual(list(index.alignments()), [list(zip(range(20), range(20)))])
 
     def test_exact_lines_and_conservative_hunks(self):
         cases = [
@@ -261,9 +311,8 @@ class TextMergeQualification(unittest.TestCase):
             with self.assertRaises(AlignmentBudget):
                 unique_alignment([b'a'] * 2, [b'a'] * 2, **limits)
         self.assertIsNone(unique_alignment([b'a'], [b'a', b'a']))
-        self.assertEqual(len(optimal_alignments([b'a'] * 2, [b'a'],
-                                                max_cells=6, max_work=4)), 2)
-        for limits in ({'max_cells': 5}, {'max_variants': 1}, {'max_work': 3}):
+        self.assertEqual(len(optimal_alignments([b'a'] * 2, [b'a'], max_work=4)), 2)
+        for limits in ({'max_variants': 1}, {'max_work': 3}):
             with self.assertRaises(AlignmentBudget):
                 optimal_alignments([b'a'] * 2, [b'a'], **limits)
         base = b'a\n' + b'\n' * 20 + b'b\n' + b'\n' * 20 + b'c\n'

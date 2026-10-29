@@ -7,7 +7,7 @@ Both use the independently officially-vectored slow BLAKE3 fixture backend.
 """
 from __future__ import annotations
 from collections import defaultdict
-from codec_records import Copy, Edit, Merge, Move, Observation, Provenance, Transform
+from codec_records import ConflictValue, Copy, Edit, Merge, Move, Observation, Provenance, Transform
 from struct import unpack
 from codec_reference import (Ref, object_id, u16, u32, nibs, packed_nibbles,
                              name_valid, K_BLOB,K_LEAF,K_BRANCH,K_STATE,K_REV,
@@ -18,6 +18,12 @@ MAX_EDGES=30000
 MAX_ACTIVE=256
 
 class Invalid(ValueError):pass
+
+
+def entry_ref(entry:bytes)->Ref:
+    """Reference projection from an already verified canonical Entry descriptor."""
+    return Ref(entry[1],entry[2:34])
+
 
 class Cursor:
     def __init__(self, data: bytes):
@@ -104,6 +110,9 @@ class Verifier:
         self.edges=0
         self.commitments:dict[Ref,set[Ref]]={}
         self.provenances:dict[Ref,Provenance]={}
+        # Retained decoded facts never skip another path/root/depth validation.
+        self.maps:dict[Ref,dict[bytes,bytes]]={}
+        self.conflicts:dict[Ref,ConflictValue]={}
 
     def fetch(self,ref:Ref)->bytes:
         if ref not in self.objects:raise Invalid('missing required object')
@@ -180,6 +189,7 @@ class Verifier:
         if not prefix:
             alt,_=alternate_map(got)
             if alt!=ref:raise Invalid('noncanonical map shape / order')
+            self.maps[ref]=got
         # Note: non-root suffix map shapes are checked via the independent
         # builder of the *root* to avoid losing their prefix parity context.
         return got
@@ -193,6 +203,8 @@ class Verifier:
         terms=[self.maybe(c,depth,pathlen,conf_depth,region==1,not(root or require_dir)) for _ in range(2)]
         c.done();self.exit(ref)
         if terms!=sorted(set(terms)):raise Invalid('noncanonical alternatives')
+        self.conflicts[ref]=ConflictValue(region,base[1:] if base[0] else None,
+                                         tuple(t[1:] if t[0] else None for t in terms))
         # Parsing every present coupled alternative as a strictly directory-valued
         # Entry, including nested conflict alternatives, is stronger than checking
         # only the nested conflict's region byte. This prevents root states whose
@@ -210,13 +222,17 @@ class Verifier:
         c.done();self.exit(ref)
 
     @staticmethod
+    def checked_path(parts):
+        if len(parts)>256:raise Invalid('long path')
+        if any(not isinstance(p,bytes) or not name_valid(p) for p in parts):raise Invalid('path part')
+        if sum(map(len,parts))+max(0,len(parts)-1)>4096:raise Invalid('path length')
+        return tuple(parts)
+
+    @staticmethod
     def path(c:Cursor):
         n=c.number(4)
         if n>256:raise Invalid('long path')
-        parts=tuple(c.str(255) for _ in range(n))
-        if any(not name_valid(p) for p in parts):raise Invalid('path part')
-        if sum(map(len,parts))+max(0,len(parts)-1)>4096:raise Invalid('path length')
-        return parts
+        return Verifier.checked_path(tuple(c.str(255) for _ in range(n)))
 
     def paths(self,c:Cursor):
         n=c.number(4)

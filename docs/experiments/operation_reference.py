@@ -9,24 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TypeAlias
-from codec_reference import Builder, Ref, K_STATE, K_REV, K_PROV
+from codec_reference import Builder, Ref, K_STATE, K_REV
 from codec_records import Merge, Move, Observation, Path, Transform
-from codec_verify import Cursor, Invalid, Verifier
+from codec_verify import Cursor, Invalid, Verifier, entry_ref
+from protected_inputs import ProtectedInputs, Refused
 from text_merge_reference import merge_text
 
 Tree: TypeAlias = bytes | dict[bytes, 'Tree']  # directories expanded; other Entries opaque
-
-
-class Refused(ValueError):
-    pass
-
-
-class NotAuthorized(Refused):
-    pass
-
-
-class EvidenceUnavailable(Refused):
-    pass
 
 
 class UnsupportedRecipe(Refused):
@@ -35,49 +24,6 @@ class UnsupportedRecipe(Refused):
 
 class MergeTooComplex(Refused):
     pass
-
-
-class ProtectedInputs:
-    """Full-closure read grants only, not path-restricted or write capabilities.
-
-    A trusted caller supplies authorized roots and separately acquires pins.
-    This snapshot models their lifetime; it is not an implementation of GC.
-    Unpinned audit targets are never acquired implicitly, even if locally present.
-    """
-    def __init__(self, objects: dict[Ref, bytes], authorized: set[Ref], pins: set[Ref]):
-        self.authorized = frozenset(authorized)
-        protected = {}
-        for root in sorted(pins):
-            if root not in authorized:
-                raise NotAuthorized('input root not authorized')
-            verifier = Verifier(objects)
-            try:
-                verifier.generic(root)
-            except Invalid as error:
-                if str(error) == 'missing required object':
-                    raise EvidenceUnavailable('incomplete input closure') from error
-                raise
-            protected.update((ref, objects[ref]) for ref in verifier.closure)
-        self.objects = MappingProxyType(protected)
-
-    def payload(self, ref: Ref) -> bytes:
-        if ref in self.objects:
-            return self.objects[ref]
-        if ref in self.authorized:
-            raise EvidenceUnavailable('authorized input was not protected')
-        raise NotAuthorized('audit commitment is not a read grant')
-
-    def provenance(self, ref: Ref):
-        if ref.kind != K_PROV:
-            raise Refused('expected Provenance')
-        self.payload(ref)
-        verifier = Verifier(self.objects)
-        verifier.generic(ref)
-        return verifier.provenances[ref]
-
-
-def entry_ref(entry: bytes) -> Ref:
-    return Ref(entry[1], entry[2:34])
 
 
 def lookup(tree: Tree | None, path: Path) -> Tree | None:

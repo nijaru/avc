@@ -7,9 +7,9 @@ from codec_reference import Builder, K_REV, Ref
 from codec_records import Observation
 from codec_verify import Verifier
 from codec_runtime_checks import commands, corpus, invoke
+from protected_inputs import EvidenceUnavailable, NotAuthorized, ProtectedInputs, Refused
 from operation_reference import (
-    EvidenceUnavailable, MergeTooComplex, NotAuthorized, ObservationFacts,
-    ProtectedInputs, Refused, UnsupportedRecipe, check_move_evidence,
+    MergeTooComplex, ObservationFacts, UnsupportedRecipe, check_move_evidence,
     qualify_authoring, replay,
 )
 

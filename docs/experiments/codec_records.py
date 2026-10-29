@@ -1,10 +1,17 @@
-"""Decoded closed provenance values; commitments here do not confer custody."""
+"""Decoded canonical values; audit commitments here do not confer custody."""
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 from codec_reference import Ref
 
 Path = tuple[bytes, ...]
+
+
+@dataclass(frozen=True)
+class ConflictValue:
+    region: int
+    base: bytes | None
+    alternatives: tuple[bytes | None, bytes | None]
 
 
 @dataclass(frozen=True)

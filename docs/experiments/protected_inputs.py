@@ -24,9 +24,10 @@ class ProtectedInputs:
     """A trusted caller supplies grants and separately acquires full-root pins."""
     def __init__(self, objects: dict[Ref, bytes], authorized: set[Ref], pins: set[Ref]):
         self.authorized = frozenset(authorized)
+        self.pins = frozenset(pins)
         protected = {}
-        for root in sorted(pins):
-            if root not in authorized:
+        for root in sorted(self.pins):
+            if root not in self.authorized:
                 raise NotAuthorized('input root not authorized')
             verifier = Verifier(objects)
             try:

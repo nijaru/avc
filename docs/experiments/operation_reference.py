@@ -2,8 +2,8 @@
 
 Read authorization and input protection are separate from untrusted audit IDs.
 No target writes, filesystem observations, GC leases or durable receipts occur.
-Source merges qualify one recorded mapping per side. History move evidence and
-independent multiple mappings refuse explicitly, never becoming source-only merges.
+Source and history merges qualify one recorded mapping per side. Independent
+multiple mappings refuse explicitly, never becoming source-only merges.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -152,11 +152,12 @@ class Evaluation:
             self.complete(result)
         return result
 
-    def source_merge(self, record: Merge) -> Tree:
-        base_ref, left_ref, right_ref = record.source
-        base, left, right = (self.state(ref) for ref in record.source)
+    def merge_sources(self, sources: tuple[Ref, Ref, Ref],
+                      moves: tuple[Ref | None, Ref | None], text) -> Tree:
+        base_ref, left_ref, right_ref = sources
+        base, left, right = (self.state(ref) for ref in sources)
         mappings = []
-        for evidence, side in zip(record.moves, (left_ref, right_ref)):
+        for evidence, side in zip(moves, (left_ref, right_ref)):
             if evidence is None:
                 mappings.append(None)
                 continue
@@ -170,7 +171,6 @@ class Evaluation:
             raise UnsupportedRecipe('multiple moves per side not qualified')
         mappings = [None if ops is None else ops[0] for ops in mappings]
         active = [op for op in mappings if op is not None]
-        text = record.text_algorithm
         if not active:
             return self.merge(base, left, right, text, root=True)
         paths = [(op.source, op.destination) for op in active]
@@ -324,9 +324,7 @@ class History:
                 pending.extend(current.parents)
         return seen
 
-    def pair(self, left: Node, right: Node) -> Node:
-        if (left, right) in self.pairs:
-            return self.pairs[left, right]
+    def base(self, left: Node, right: Node) -> Tree:
         common = self.ancestors(left) & self.ancestors(right)
         # A common node is maximal iff it is not a strict ancestor of another.
         older = set()
@@ -346,11 +344,35 @@ class History:
             for other in frontier[1:]:
                 reduced = self.pair(reduced, other)
             base = reduced.state
+        return base
+
+    def pair(self, left: Node, right: Node) -> Node:
+        # Virtual reductions are always source-only. Evidence-specific tip
+        # results must never enter this ancestry-pair cache.
+        if (left, right) in self.pairs:
+            return self.pairs[left, right]
+        base = self.base(left, right)
         result = self.evaluation.merge(base, left.state, right.state, self.text, root=True)
         self.evaluation.complete(result)  # invalid virtual States cannot be bases
         virtual = Node(result, (left, right), None)
         self.pairs[left, right] = virtual
         return virtual
+
+    def merge_tips(self, left: Node, right: Node, moves) -> Tree:
+        if not any(moves):
+            return self.pair(left, right).state
+        evaluation = self.evaluation
+        base = evaluation.complete(self.base(left, right))
+        if base not in evaluation.inputs.objects:
+            # This root was actually computed from protected history sources,
+            # not selected from an audit commitment. Protect only its owning
+            # closure alongside the original pins, never all available objects
+            # or all authorized (possibly unacquired) private Copy inputs.
+            inputs = evaluation.inputs
+            evaluation.inputs = ProtectedInputs(evaluation.builder.store,
+                                                inputs.authorized | {base}, inputs.pins | {base})
+        sources = (base, evaluation.complete(left.state), evaluation.complete(right.state))
+        return evaluation.merge_sources(sources, moves, self.text)
 
 
 @dataclass(frozen=True)
@@ -381,16 +403,15 @@ def replay(provenance: Ref, inputs: ProtectedInputs, selected: tuple[Ref, ...], 
         if record.source is not None:
             if selected != record.source:
                 raise Refused('Source Merge inputs differ from selected inputs')
-            result = evaluation.source_merge(record)
+            result = evaluation.merge_sources(record.source, record.moves, record.text_algorithm)
         else:
-            if any(record.moves):
-                raise UnsupportedRecipe('history move remapping not qualified')
             left, right, permission = record.history
             tips = (claim.inputs[left], claim.inputs[right])
             if selected != tips or permission != permit_unrelated:
                 raise Refused('History Merge inputs/permission differ from request')
             history = History(evaluation, record.text_algorithm, permission)
-            result = history.pair(*(history.read(tip) for tip in tips)).state
+            nodes = tuple(history.read(tip) for tip in tips)
+            result = history.merge_tips(*nodes, record.moves)
             frontiers = tuple(history.frontiers)
     else:
         raise UnsupportedRecipe('Observation has no filesystem replay')

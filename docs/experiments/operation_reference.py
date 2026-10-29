@@ -2,8 +2,8 @@
 
 Read authorization and input protection are separate from untrusted audit IDs.
 No target writes, filesystem observations, GC leases or durable receipts occur.
-Recorded-move *evidence* is replayed here; merge remapping remains unqualified
-and is explicitly refused, not silently executed as a source-only merge.
+Source merges qualify one recorded mapping per side. History move evidence and
+independent multiple mappings refuse explicitly, never becoming source-only merges.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -52,6 +52,25 @@ def replace(tree: Tree, path: Path, value: Tree | None) -> Tree:
     else:
         result[name] = value
     return result
+
+
+def directory_barrier(tree: Tree | None, path: Path) -> Path | None:
+    """First missing/opaque parent, without traversing conflict alternatives."""
+    for index, part in enumerate(path):
+        if not isinstance(tree, dict):
+            return path[:index]
+        tree = tree.get(part)
+    return None
+
+
+def has_additions(base: Tree, side: Tree) -> bool:
+    """Any new relative binding, including children of a replaced leaf."""
+    if not isinstance(side, dict):
+        return False
+    if not isinstance(base, dict):
+        return bool(side)
+    return any(name not in base or has_additions(base[name], child)
+               for name, child in side.items())
 
 
 class Evaluation:
@@ -128,7 +147,110 @@ class Evaluation:
             if lookup(result, edit.path) != self.value(edit.expected):
                 raise Refused('stale post-structural leaf witness')
             result = replace(result, edit.path, self.value(edit.value))
+            # Directory-valued puts can relocate descendants too. A later edit
+            # must not hide an invalid intermediate from replay qualification.
+            self.complete(result)
         return result
+
+    def source_merge(self, record: Merge) -> Tree:
+        base_ref, left_ref, right_ref = record.source
+        base, left, right = (self.state(ref) for ref in record.source)
+        mappings = []
+        for evidence, side in zip(record.moves, (left_ref, right_ref)):
+            if evidence is None:
+                mappings.append(None)
+                continue
+            # Audit IDs never grant reads. Replay even when a source equality
+            # shortcut could otherwise hide a stale, false or unavailable claim.
+            check_move_evidence(evidence, self.inputs, base_ref, side)
+            transform = self.inputs.provenance(evidence).records[0]
+            moves = [op for op in transform.structural if isinstance(op, Move)]
+            mappings.append(moves)
+        if any(ops is not None and len(ops) != 1 for ops in mappings):
+            raise UnsupportedRecipe('multiple moves per side not qualified')
+        mappings = [None if ops is None else ops[0] for ops in mappings]
+        active = [op for op in mappings if op is not None]
+        text = record.text_algorithm
+        if not active:
+            return self.merge(base, left, right, text, root=True)
+        paths = [(op.source, op.destination) for op in active]
+        if len(paths) == 2 and paths[0] != paths[1]:
+            overlaps = any(a[:len(b)] == b or b[:len(a)] == a
+                           for a in paths[0] for b in paths[1])
+            if not overlaps:
+                raise UnsupportedRecipe('independent move composition not qualified')
+            return self.coupled_merge(base, left, right, paths[0] + paths[1], text)
+        # Source equality/base rules still apply, but only after all supplied
+        # evidence and the supported mapping shape have been checked.
+        if left == right or left == base or right == base:
+            return self.merge(base, left, right, text, root=True)
+        source, destination = paths[0]
+        old = lookup(base, source)
+        projected_base = replace(replace(base, source, None), destination, old)
+        self.complete(projected_base)
+        if all(op is not None for op in mappings):
+            # Both recipes removed the old binding. Any checked recreation at s
+            # is a fresh addition in these coordinates, not the moved identity.
+            return self.merge(projected_base, left, right, text, root=True)
+        moving_left = mappings[0] is not None
+        other = right if moving_left else left
+        if (directory_barrier(other, source) is not None
+                or directory_barrier(other, destination) is not None):
+            return self.coupled_merge(base, left, right, paths[0], text)
+        changed = lookup(other, source)
+        same_kind = (isinstance(changed, dict) if isinstance(old, dict)
+                     else isinstance(changed, bytes) and changed[0] == old[0])
+        if (not same_kind
+                or lookup(other, destination) != lookup(base, destination)
+                or isinstance(old, dict) and has_additions(old, changed)):
+            return self.coupled_merge(base, left, right, paths[0], text)
+        projected_other = replace(replace(other, source, None), destination, changed)
+        self.complete(projected_other)
+        sides = (left, projected_other) if moving_left else (projected_other, right)
+        return self.merge(projected_base, *sides, text, root=True)
+
+    def coupled_merge(self, base: Tree, left: Tree, right: Tree,
+                      paths: tuple[Path, ...], text) -> Tree:
+        scope = paths[0]
+        for path in paths[1:]:
+            size = 0
+            while size < min(len(scope), len(path)) and scope[size] == path[size]:
+                size += 1
+            scope = scope[:size]
+        # A conflict cannot be installed through an opaque or missing parent.
+        # Enlarge to that actual original value, not an agreed-query projection.
+        for tree in (base, left, right):
+            barrier = directory_barrier(tree, scope)
+            if barrier is not None:
+                scope = barrier
+
+        def visit(old, a, b, path):
+            if path == scope:
+                if a == b:
+                    return a
+                if a == old:
+                    return b
+                if b == old:
+                    return a
+                # Keep a nonroot opaque/type collision as a whole PathValue;
+                # do not reinterpret an existing conflict to force directory type.
+                region = int(not path or all(v is None or isinstance(v, dict) for v in (old, a, b)))
+                return self.conflict(old, a, b, region)
+            result = {}
+            for name in sorted(old.keys() | a.keys() | b.keys()):
+                values = (old.get(name), a.get(name), b.get(name))
+                child = (visit(*values, path + (name,)) if name == scope[len(path)]
+                         else self.merge(*values, text))
+                if child is not None:
+                    result[name] = child
+            return result
+
+        return visit(base, left, right, ())
+
+    def conflict(self, base, left, right, region):
+        alternatives = [self.descriptor(left), self.descriptor(right)]
+        conflict = self.builder.conflict(region, self.descriptor(base), alternatives)
+        return self.builder.conflict_entry(conflict)
 
     def merge(self, base: Tree | None, left: Tree | None, right: Tree | None,
               text: tuple[int, int], *, root=False) -> Tree | None:
@@ -153,9 +275,7 @@ class Evaluation:
             merged = merge_text(*data)  # MemoryError/cancellation never become conflicts
             if merged is not None:
                 return self.builder.file(self.builder.blob(merged), bool(left[-1]))
-        alternatives = [self.descriptor(left), self.descriptor(right)]
-        conflict = self.builder.conflict(int(root), self.descriptor(base), alternatives)
-        return self.builder.conflict_entry(conflict)
+        return self.conflict(base, left, right, int(root))
 
 
 @dataclass(eq=False)
@@ -258,13 +378,13 @@ def replay(provenance: Ref, inputs: ProtectedInputs, selected: tuple[Ref, ...], 
     elif isinstance(record, Merge):
         if record.source_algorithm != (1, 1) or record.text_algorithm not in ((0, 0), (1, 1)):
             raise UnsupportedRecipe('unknown algorithm/version')
-        if any(record.moves):
-            raise UnsupportedRecipe('move remapping not qualified by this reference')
         if record.source is not None:
             if selected != record.source:
                 raise Refused('Source Merge inputs differ from selected inputs')
-            result = evaluation.merge(*(evaluation.state(s) for s in selected), record.text_algorithm, root=True)
+            result = evaluation.source_merge(record)
         else:
+            if any(record.moves):
+                raise UnsupportedRecipe('history move remapping not qualified')
             left, right, permission = record.history
             tips = (claim.inputs[left], claim.inputs[right])
             if selected != tips or permission != permit_unrelated:

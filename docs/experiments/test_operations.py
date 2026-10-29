@@ -247,8 +247,8 @@ class OperationTests(unittest.TestCase):
         with self.assertRaises(Refused):
             check_move_evidence(lie, self.protect(lie, base, side), base, base)
         merge = self.source_merge(base, side, base, side, moves=(prov, None))
-        with self.assertRaises(UnsupportedRecipe):
-            replay(merge, self.protect(merge, prov, base), (base, side, base))
+        self.assertEqual(replay(merge, self.protect(merge, prov, base),
+                                (base, side, base)).state, side)
 
     def test_history_criss_cross_frontier_virtual_ancestry_and_unrelated_permission(self):
         a, b, c = map(self.file, (b'a', b'b', b'c'))

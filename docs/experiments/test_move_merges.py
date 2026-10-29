@@ -2,66 +2,15 @@
 import unittest
 from unittest.mock import patch
 
-from codec_reference import Builder
 from codec_runtime_checks import commands, corpus, invoke
 from codec_verify import Verifier, entry_ref
-from operation_reference import Evaluation, History, MergeTooComplex, UnsupportedRecipe, replay
-from protected_inputs import EvidenceUnavailable, NotAuthorized, ProtectedInputs, Refused
+from move_test_support import MoveFixture
+from operation_reference import Evaluation, History, MergeTooComplex, replay
+from protected_inputs import EvidenceUnavailable, NotAuthorized, Refused
 from source_query_reference import Known, SourceQueries
 
 
-class MoveFixture:
-    def setUp(self):
-        self.b = Builder()
-
-    def file(self, data, executable=False):
-        return self.b.file(self.b.blob(data), executable)
-
-    def directory(self, tree):
-        return self.b.directory(self.b.map({name: self.directory(value) if isinstance(value, dict)
-                                          else value for name, value in tree.items()}))
-
-    def state(self, tree):
-        return self.b.state(self.directory(tree))
-
-    def protect(self, *roots, authorized=None):
-        return ProtectedInputs(self.b.store, set(roots) if authorized is None else authorized, set(roots))
-
-    def evidence(self, base, side, source, destination, old, occupied=None, edits=(), copies=()):
-        move = self.b.move_op(source, destination, old, occupied)
-        record = self.b.transform_record(base, (move, *copies), edits)
-        return self.b.provenance(side, [], [], record)
-
-    def claim(self, base, left, right, result, moves, **options):
-        return self.b.provenance(result, [], [], self.b.merge_record(
-            source=(base, left, right), moves=moves, **options))
-
-    def conflict(self, base, left, right, region=1):
-        return self.b.conflict_entry(self.b.conflict(region, base, [left, right]))
-
-    def root_conflict(self, base, left, right):
-        return self.b.state(self.conflict(*(self.b.store[s] for s in (base, left, right))))
-
-    def revision(self, state, parents=()):
-        return self.b.revision(state, list(parents), len(self.b.store).to_bytes(16, 'big'),
-                               b'fixture', b'', 0)
-
-
 class MoveMergeTests(MoveFixture, unittest.TestCase):
-    def check(self, base, left, right, expected, moves, extra=(), **options):
-        # Source results, including canonical conflict grouping, must be symmetric.
-        for a, b, evidence in ((left, right, moves), (right, left, moves[::-1])):
-            claim = self.claim(base, a, b, expected, evidence, **options)
-            roots = (claim, base, a, b, *(e for e in evidence if e is not None), *extra)
-            before = dict(self.b.store)
-            result = replay(claim, self.protect(*roots), (base, a, b))
-            self.assertEqual(result.state, expected)
-            self.assertEqual(self.b.store, before)
-            verifier = Verifier(result.objects)
-            verifier.state(expected)
-            self.assertEqual(set(result.objects), verifier.closure)
-        return result
-
     def test_existing_descendant_edits_deletions_modes_and_symlinks_follow(self):
         old, a, b, merged = map(self.file, (b'a\nb\nc\n', b'A\nb\nc\n', b'a\nb\nC\n', b'A\nb\nC\n'))
         mode, executable = self.file(b'mode'), self.file(b'mode', True)
@@ -215,23 +164,18 @@ class MoveMergeTests(MoveFixture, unittest.TestCase):
                              for side, (s, d, value, occupied) in ((left, lmap), (right, rmap)))
             self.check(base, left, right, self.root_conflict(base, left, right), evidence)
 
-    def test_unsupported_composition_never_falls_back(self):
+    def test_independent_and_multi_move_batches_compose(self):
         a, b = self.file(b'a'), self.file(b'b')
         base = self.state({b'a': a, b'b': b})
         left, right = self.state({b'x': a, b'b': b}), self.state({b'a': a, b'y': b})
         le = self.evidence(base, left, (b'a',), (b'x',), a)
         re = self.evidence(base, right, (b'b',), (b'y',), b)
-        for l, r, moves in ((left, right, (le, re)), (right, left, (re, le))):
-            claim = self.claim(base, l, r, base, moves)
-            with self.assertRaisesRegex(UnsupportedRecipe, 'independent'):
-                replay(claim, self.protect(claim, base, l, r, le, re), (base, l, r))
         combined = self.state({b'x': a, b'y': b})
+        self.check(base, left, right, combined, (le, re))
         record = self.b.transform_record(base, (self.b.move_op((b'a',), (b'x',), a, None),
                                               self.b.move_op((b'b',), (b'y',), b, None)))
         evidence = self.b.provenance(combined, [], [], record)
-        claim = self.claim(base, combined, base, combined, (evidence, None))
-        with self.assertRaisesRegex(UnsupportedRecipe, 'multiple moves'):
-            replay(claim, self.protect(claim, evidence, base), (base, combined, base))
+        self.check(base, combined, base, combined, (evidence, None))
 
     def test_invalid_evidence_cannot_hide_behind_equal_inputs_or_wrong_roles(self):
         old, new = self.file(b'old'), self.file(b'new')
@@ -354,6 +298,19 @@ class HistoryMoveTests(MoveFixture, unittest.TestCase):
             self.assertEqual(set(checked.objects), verifier.closure)
             for _, command in commands('--objects-stdin'):
                 self.assertEqual(invoke(command, corpus(checked.objects, [checked.state])), [True])
+
+    def test_history_composes_multiple_moves_without_projecting_inside_opaque_values(self):
+        side = self.state({b'd': self.old, b'z': self.cf})
+        other = self.state({b's': self.new, b'x': self.cf})
+        left, right = self.revision(side, self.frontier), self.revision(other, self.frontier[::-1])
+        evidence = self.batch_evidence(self.base, side, (
+            ((b's',), (b'd',), self.old, None), ((b'x',), (b'z',), self.cf, None)))
+        expected = self.state({b'd': self.new, b'z': self.cf})
+        for a, b, moves in ((left, right, (evidence, None)), (right, left, (None, evidence))):
+            claim = self.history_claim(expected, a, b, moves)
+            checked = replay(claim, self.protect(claim, a, b, evidence), (a, b))
+            self.assertEqual(checked.state, expected)
+            self.assertEqual(checked.frontiers[0], tuple(sorted(self.frontier)))
 
     def test_virtual_text_base_is_recomputed_under_the_selected_driver(self):
         old, a, b, merged, l, r, final = map(self.file, (

@@ -2,8 +2,8 @@
 
 Read authorization and input protection are separate from untrusted audit IDs.
 No target writes, filesystem observations, GC leases or durable receipts occur.
-Source and history merges qualify one recorded mapping per side. Independent
-multiple mappings refuse explicitly, never becoming source-only merges.
+Source and history merges compose checked mappings in shared coordinates;
+unsafe interactions preserve complete original values in coupled scopes.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -71,6 +71,84 @@ def has_additions(base: Tree, side: Tree) -> bool:
         return bool(side)
     return any(name not in base or has_additions(base[name], child)
                for name, child in side.items())
+
+
+def overlaps(left: Path, right: Path) -> bool:
+    return left[:len(right)] == right or right[:len(left)] == left
+
+
+def covering_scope(trees, paths) -> Path:
+    scope = paths[0]
+    for path in paths[1:]:
+        while path[:len(scope)] != scope:
+            scope = scope[:-1]
+    for tree in trees:
+        barrier = directory_barrier(tree, scope)
+        if barrier is not None:
+            scope = barrier
+    return scope
+
+
+def minimal_scopes(scopes) -> tuple[Path, ...]:
+    result = []
+    for path in sorted(set(scopes)):
+        if not result or path[:len(result[-1])] != result[-1]:
+            result.append(path)
+    return tuple(result)
+
+
+def transportable(base: Tree, other: Tree, paths: tuple[Path, Path]) -> bool:
+    source, destination = paths
+    if (directory_barrier(other, source) is not None
+            or directory_barrier(other, destination) is not None):
+        return False
+    old, changed = lookup(base, source), lookup(other, source)
+    same_kind = (isinstance(changed, dict) if isinstance(old, dict)
+                 else isinstance(changed, bytes) and changed[0] == old[0])
+    return (same_kind and lookup(other, destination) == lookup(base, destination)
+            and not (isinstance(old, dict) and has_additions(old, changed)))
+
+
+def mapping_scopes(trees, mappings) -> tuple[Path, ...]:
+    """Close original-value scopes over every mapping they would cut across."""
+    work = 0
+
+    def tick():
+        nonlocal work
+        work += 1
+        if work > 10000:
+            raise MergeTooComplex('mapping reference planning budget')
+
+    keys = sorted(mappings)
+    base, *sides = trees
+    scopes = []
+    for paths in keys:
+        tick()
+        owners = mappings[paths]
+        if len(owners) == 1 and not transportable(base, sides[1 - next(iter(owners))], paths):
+            scopes.append(covering_scope(trees, paths))
+    # Shared and same-side endpoints were proved nonoverlapping by Transform
+    # replay. Only distinct, opposite-side mappings can collide here.
+    left_only = [p for p in keys if mappings[p] == {0}]
+    right_only = [p for p in keys if mappings[p] == {1}]
+    for left in left_only:
+        for right in right_only:
+            tick()
+            if any(overlaps(a, b) for a in left for b in right):
+                scopes.append(covering_scope(trees, left + right))
+    scopes = minimal_scopes(scopes)
+    while scopes:
+        grown = list(scopes)
+        for paths in keys:
+            for scope in scopes:
+                tick()
+                if any(overlaps(path, scope) for path in paths):
+                    grown.append(covering_scope(trees, (scope, *paths)))
+        closed = minimal_scopes(grown)
+        if closed == scopes:
+            break
+        scopes = closed
+    return scopes
 
 
 class Evaluation:
@@ -156,76 +234,48 @@ class Evaluation:
                       moves: tuple[Ref | None, Ref | None], text) -> Tree:
         base_ref, left_ref, right_ref = sources
         base, left, right = (self.state(ref) for ref in sources)
-        mappings = []
-        for evidence, side in zip(moves, (left_ref, right_ref)):
+        mappings = {}
+        for index, (evidence, side) in enumerate(zip(moves, (left_ref, right_ref))):
             if evidence is None:
-                mappings.append(None)
                 continue
             # Audit IDs never grant reads. Replay even when a source equality
             # shortcut could otherwise hide a stale, false or unavailable claim.
             check_move_evidence(evidence, self.inputs, base_ref, side)
             transform = self.inputs.provenance(evidence).records[0]
-            moves = [op for op in transform.structural if isinstance(op, Move)]
-            mappings.append(moves)
-        if any(ops is not None and len(ops) != 1 for ops in mappings):
-            raise UnsupportedRecipe('multiple moves per side not qualified')
-        mappings = [None if ops is None else ops[0] for ops in mappings]
-        active = [op for op in mappings if op is not None]
-        if not active:
+            for operation in transform.structural:
+                if isinstance(operation, Move):
+                    paths = (operation.source, operation.destination)
+                    mappings.setdefault(paths, set()).add(index)
+        # Every supported structural batch was replayed before this shortcut.
+        if not mappings or left == right or left == base or right == base:
             return self.merge(base, left, right, text, root=True)
-        paths = [(op.source, op.destination) for op in active]
-        if len(paths) == 2 and paths[0] != paths[1]:
-            overlaps = any(a[:len(b)] == b or b[:len(a)] == a
-                           for a in paths[0] for b in paths[1])
-            if not overlaps:
-                raise UnsupportedRecipe('independent move composition not qualified')
-            return self.coupled_merge(base, left, right, paths[0] + paths[1], text)
-        # Source equality/base rules still apply, but only after all supplied
-        # evidence and the supported mapping shape have been checked.
-        if left == right or left == base or right == base:
-            return self.merge(base, left, right, text, root=True)
-        source, destination = paths[0]
-        old = lookup(base, source)
-        projected_base = replace(replace(base, source, None), destination, old)
-        self.complete(projected_base)
-        if all(op is not None for op in mappings):
-            # Both recipes removed the old binding. Any checked recreation at s
-            # is a fresh addition in these coordinates, not the moved identity.
-            return self.merge(projected_base, left, right, text, root=True)
-        moving_left = mappings[0] is not None
-        other = right if moving_left else left
-        if (directory_barrier(other, source) is not None
-                or directory_barrier(other, destination) is not None):
-            return self.coupled_merge(base, left, right, paths[0], text)
-        changed = lookup(other, source)
-        same_kind = (isinstance(changed, dict) if isinstance(old, dict)
-                     else isinstance(changed, bytes) and changed[0] == old[0])
-        if (not same_kind
-                or lookup(other, destination) != lookup(base, destination)
-                or isinstance(old, dict) and has_additions(old, changed)):
-            return self.coupled_merge(base, left, right, paths[0], text)
-        projected_other = replace(replace(other, source, None), destination, changed)
-        self.complete(projected_other)
-        sides = (left, projected_other) if moving_left else (projected_other, right)
-        return self.merge(projected_base, *sides, text, root=True)
+        trees = (base, left, right)
+        scopes = mapping_scopes(trees, mappings)
+        active = [paths for paths in sorted(mappings)
+                  if not any(overlaps(path, scope) for path in paths for scope in scopes)]
+        projected = []
+        for index, tree in enumerate(trees):
+            # A moving side already has these coordinates. In particular, its
+            # checked recreation of an old source name must remain a fresh name.
+            missing = [paths for paths in active if index == 0 or index - 1 not in mappings[paths]]
+            projected.append(self.project(tree, missing))
+        # No projected endpoint intersects a coupled scope: its values remain
+        # the COMPLETE original base/left/right values, not synthetic branches.
+        return self.merge_scopes(*projected, scopes, text)
 
-    def coupled_merge(self, base: Tree, left: Tree, right: Tree,
-                      paths: tuple[Path, ...], text) -> Tree:
-        scope = paths[0]
-        for path in paths[1:]:
-            size = 0
-            while size < min(len(scope), len(path)) and scope[size] == path[size]:
-                size += 1
-            scope = scope[:size]
-        # A conflict cannot be installed through an opaque or missing parent.
-        # Enlarge to that actual original value, not an agreed-query projection.
-        for tree in (base, left, right):
-            barrier = directory_barrier(tree, scope)
-            if barrier is not None:
-                scope = barrier
+    def project(self, tree: Tree, mappings) -> Tree:
+        installs = [(destination, lookup(tree, source)) for source, destination in mappings]
+        result = tree
+        for source, _ in mappings:
+            result = replace(result, source, None)
+        for destination, value in installs:
+            result = replace(result, destination, value)
+        self.complete(result)  # one atomic coordinate view, never sequential intent
+        return result
 
+    def merge_scopes(self, base: Tree, left: Tree, right: Tree, scopes, text) -> Tree:
         def visit(old, a, b, path):
-            if path == scope:
+            if path in scopes:
                 if a == b:
                     return a
                 if a == old:
@@ -239,13 +289,16 @@ class Evaluation:
             result = {}
             for name in sorted(old.keys() | a.keys() | b.keys()):
                 values = (old.get(name), a.get(name), b.get(name))
-                child = (visit(*values, path + (name,)) if name == scope[len(path)]
+                child_path = path + (name,)
+                child = (visit(*values, child_path)
+                         if any(scope[:len(child_path)] == child_path for scope in scopes)
                          else self.merge(*values, text))
                 if child is not None:
                     result[name] = child
             return result
 
-        return visit(base, left, right, ())
+        return (visit(base, left, right, ()) if scopes
+                else self.merge(base, left, right, text, root=True))
 
     def conflict(self, base, left, right, region):
         alternatives = [self.descriptor(left), self.descriptor(right)]

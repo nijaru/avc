@@ -33,6 +33,7 @@ The [workflow contract](docs/ux.md) separates private protection from commit sel
 - [Qualification roadmap](docs/roadmap.md): independent golden-vector, merge, durability, portability and full-workflow verification gates.
 - [Python reference fixtures](docs/experiments/test_codec.py), [independent JavaScript verifier](docs/experiments/codec_crosscheck.mjs) and [pinned object vectors](docs/experiments/codec_vectors.json): executable partial Milestone-0 qualification, **not** a frozen/production codec.
 - [Source-model oracle](docs/experiments/source_models_oracle.py), [sparse text-merge reference](docs/experiments/text_merge_reference.py), [authority interleaving model](docs/experiments/authority_model.py), [bounded work-lifecycle model](docs/experiments/work_lifecycle_model.py) and [contract probes](docs/experiments/vcs_contract_probes.py): bounded research/verification artifacts.
+- [Selective-authoring reference](docs/experiments/selective_authoring_reference.py) and [contract tests](docs/experiments/test_selective_authoring.py): canonical-object checks for subset commits, recorded-base recovery and private metadata separation, not a native authoring implementation.
 - [SQLite boundary probes](docs/experiments/test_sqlite_custody.py) and [map-layout study](docs/experiments/map_layout_study.py): physical transaction checks and logical byte/object comparisons, **not** a native store, power-loss proof or engine benchmark.
 
 The project remains named AVC. Tavi and Delos were exploratory names only.

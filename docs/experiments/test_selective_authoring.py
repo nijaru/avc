@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 
 from codec_reference import Builder, K_BLOB, K_REV, K_STATE
+from codec_records import Observation, Transform
 from codec_verify import Cursor, Invalid, Verifier
 from codec_runtime_checks import commands, corpus, invoke
 from selective_authoring_reference import Authority, Base, Choice, File, Refused, read_state, write_state
@@ -15,46 +16,20 @@ LATER = b'UNOBSERVED-LATER-EDITOR-BYTES-4826'
 
 
 def observation(objects, provenance):
-    """Read the exported public record, rather than trusting plan attributes."""
-    cursor = Cursor(objects[provenance])
-    result = cursor.ref({K_STATE})
-    assert cursor.number(1) == 1
-    assert cursor.number(4) == 0  # No broad capture input commitments.
-    assert cursor.number(4) == 0
-    count = cursor.number(1)
+    """Read verified public records, rather than trusting plan attributes."""
+    verifier = Verifier(objects)
+    verifier.generic(provenance)
+    claim = verifier.provenances[provenance]
+    assert not claim.inputs and not claim.occurrences  # No broad capture inputs.
+    observed = claim.records[-1]
+    assert isinstance(observed, Observation) and not observed.resolutions
     transform = None
-    if count == 2:
-        assert cursor.number(1) == 1
-        base = cursor.ref({K_STATE})
-        assert cursor.number(4) == 0
-        edits = []
-        for _ in range(cursor.number(4)):
-            path = Verifier.path(cursor)
-            values = []
-            for _ in range(2):
-                start = cursor.pos
-                if cursor.flag():
-                    Verifier.audit_entry(cursor)
-                values.append(cursor.data[start:cursor.pos])
-            edits.append((path, *values))
-        transform = (base, edits)
-    assert cursor.number(1) == 3
-    base = cursor.ref({K_STATE})
-    revision = cursor.ref({K_REV}) if cursor.flag() else None
-    generation = cursor.number(8)
-    consistency = cursor.number(1)
-    receipt = cursor.take(16) if cursor.flag() else None
-    partial = cursor.flag()
-    mode = cursor.number(1)
-    lists = []
-    for _ in range(4):
-        lists.append(tuple(Verifier.path(cursor) for _ in range(cursor.number(4))))
-    assert cursor.number(4) == 0
-    cursor.done()
-    return dict(result=result, transform=transform, base=base, revision=revision,
-                generation=generation, consistency=consistency, receipt=receipt,
-                partial=partial, mode=mode, scope=lists[0], covered=lists[1],
-                failed=lists[2], skipped=lists[3])
+    if isinstance(claim.records[0], Transform):
+        record = claim.records[0]
+        assert not record.structural
+        transform = (record.base, [(e.path, Builder.maybe(e.expected), Builder.maybe(e.value))
+                                  for e in record.edits])
+    return dict(vars(observed), result=claim.result, transform=transform)
 
 
 class SelectiveAuthoring(unittest.TestCase):

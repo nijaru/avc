@@ -7,6 +7,7 @@ Both use the independently officially-vectored slow BLAKE3 fixture backend.
 """
 from __future__ import annotations
 from collections import defaultdict
+from codec_records import Copy, Edit, Merge, Move, Observation, Provenance, Transform
 from struct import unpack
 from codec_reference import (Ref, object_id, u16, u32, nibs, packed_nibbles,
                              name_valid, K_BLOB,K_LEAF,K_BRANCH,K_STATE,K_REV,
@@ -102,6 +103,7 @@ class Verifier:
         self.closure:set[Ref]=set()
         self.edges=0
         self.commitments:dict[Ref,set[Ref]]={}
+        self.provenances:dict[Ref,Provenance]={}
 
     def fetch(self,ref:Ref)->bytes:
         if ref not in self.objects:raise Invalid('missing required object')
@@ -227,8 +229,9 @@ class Verifier:
         return paths
 
     @staticmethod
-    def audit_entry(c:Cursor):
-        # Same descriptor framing as Entry; IDs are claims, never custody edges.
+    def audit_entry(c:Cursor)->bytes:
+        # Same framing as Entry, but IDs are never fetched or retained here.
+        start=c.pos
         tag=c.number(1)
         if tag in (1,2):
             c.commitment({K_BLOB})
@@ -236,52 +239,63 @@ class Verifier:
         elif tag==3:c.commitment({K_LEAF,K_BRANCH})
         elif tag==4:c.commitment({K_CONFLICT})
         else:raise Invalid('unsupported audit entry type')
+        return c.data[start:c.pos]
 
-    def audit_maybe(self,c:Cursor):
-        if c.flag():self.audit_entry(c)
+    def audit_maybe(self,c:Cursor)->bytes|None:
+        return self.audit_entry(c) if c.flag() else None
 
     def record(self,c:Cursor,inputs:list[Ref]):
         tag=c.number(1)
-        if tag==1:  # Transform: the structural batch precedes ordered leaf edits.
-            c.commitment({K_STATE})
+        if tag==1:
+            base=c.commitment({K_STATE})
             n=c.number(4)
             if n>1000000:raise Invalid('structural count')
+            structural=[]
             for _ in range(n):
                 op=c.number(1)
                 if op==1:
-                    if not self.path(c) or not self.path(c):raise Invalid('empty structural path')
-                    self.audit_entry(c);self.audit_maybe(c)
+                    source,destination=self.path(c),self.path(c)
+                    if not source or not destination:raise Invalid('empty structural path')
+                    structural.append(Move(source,destination,self.audit_entry(c),self.audit_maybe(c)))
                 elif op==2:
-                    self.audit_entry(c)
-                    if not self.path(c):raise Invalid('empty structural path')
-                    self.audit_maybe(c)
+                    value=self.audit_entry(c)
+                    destination=self.path(c)
+                    if not destination:raise Invalid('empty structural path')
+                    structural.append(Copy(value,destination,self.audit_maybe(c)))
                 else:raise Invalid('structural operation')
             n=c.number(4)
             if n>1000000:raise Invalid('leaf edit count')
+            edits=[]
             for _ in range(n):
-                if not self.path(c):raise Invalid('empty leaf path')
-                self.audit_maybe(c);self.audit_maybe(c)
-        elif tag==2:  # Merge: reduction traces are derived, not another object graph.
+                path=self.path(c)
+                if not path:raise Invalid('empty leaf path')
+                edits.append(Edit(path,self.audit_maybe(c),self.audit_maybe(c)))
+            return Transform(base,tuple(structural),tuple(edits))
+        if tag==2:
             mode=c.number(1)
+            history=source=None
             if mode==0:
-                if c.number(4)>=len(inputs) or c.number(4)>=len(inputs):raise Invalid('merge input index')
-                c.flag()  # explicit permission for synthetic bases throughout reduction
+                left,right=c.number(4),c.number(4)
+                if left>=len(inputs) or right>=len(inputs):raise Invalid('merge input index')
+                history=(left,right,c.flag())
             elif mode==1:
-                for _ in range(3):c.commitment({K_STATE})
+                source=tuple(c.commitment({K_STATE}) for _ in range(3))
             else:raise Invalid('merge mode')
+            algorithms=[]
             for index in range(2):
                 algorithm,version=c.number(2),c.number(4)
                 if (algorithm==0 and (index==0 or version!=0)) or (algorithm!=0 and version==0):
                     raise Invalid('algorithm version')
-            for _ in range(2):
-                if c.flag():
-                    c.commitment({K_PROV})
-        elif tag==3:  # Observation is descriptive, never a replayable FS snapshot.
-            c.commitment({K_STATE})
-            if c.flag():c.commitment({K_REV})
-            c.number(8)  # non-owning selection generation
-            if c.number(1)>2:raise Invalid('consistency label')
-            if c.flag():c.take(16)  # non-owning capture/receipt identity
+                algorithms.append((algorithm,version))
+            moves=tuple(c.commitment({K_PROV}) if c.flag() else None for _ in range(2))
+            return Merge(history,source,*algorithms,moves)
+        if tag==3:
+            base=c.commitment({K_STATE})
+            revision=c.commitment({K_REV}) if c.flag() else None
+            generation=c.number(8)
+            consistency=c.number(1)
+            if consistency>2:raise Invalid('consistency label')
+            receipt=c.take(16) if c.flag() else None
             partial=c.flag()
             coverage_mode=c.number(1)
             if coverage_mode not in (0,1):raise Invalid('coverage mode')
@@ -299,15 +313,17 @@ class Verifier:
                 if any(not within(p) for p in paths):raise Invalid('coverage outside scope')
             n=c.number(4)
             if n>1000000:raise Invalid('resolution count')
+            resolutions=[]
             previous=None
             for _ in range(n):
                 path=self.path(c)
                 if previous is not None and path<=previous:raise Invalid('resolution order')
                 if not within(path):raise Invalid('resolution outside scope')
                 previous=path
-                c.commitment({K_CONFLICT});self.audit_maybe(c)
-        else:raise Invalid('unknown provenance record')
-        return tag
+                resolutions.append((path,c.commitment({K_CONFLICT}),self.audit_maybe(c)))
+            return Observation(base,revision,generation,consistency,receipt,partial,coverage_mode,
+                               tuple(scope),*(tuple(paths) for paths in coverage),tuple(resolutions))
+        raise Invalid('unknown provenance record')
 
     def generic(self,ref:Ref)->None:
         if ref.kind==K_BLOB:
@@ -339,7 +355,7 @@ class Verifier:
             for p in parents:self.generic(p)
         elif ref.kind==K_PROV:
             if len(c.data)>1048576:raise Invalid('provenance payload size limit')
-            self.state(c.ref({K_STATE}))
+            result=c.ref({K_STATE});self.state(result)
             if c.number(1)!=1:raise Invalid('provenance binding')
             n=c.number(4)
             if n>64:raise Invalid('provenance input budget')
@@ -348,20 +364,23 @@ class Verifier:
             occurrences=c.number(4)
             if occurrences>1000000:raise Invalid('provenance count')
             previous=None
+            decoded_occurrences=[]
             for _ in range(occurrences):
                 path=self.path(c)
                 cf=c.commitment({K_CONFLICT})
                 if previous is not None and (path,cf.encode())<=previous:
                     raise Invalid('noncanonical provenance occurrence ordering')
                 previous=(path,cf.encode())
-                roles=c.number(4)
-                for _ in range(roles):
-                    if c.number(4)>=len(inputs):raise Invalid('bad role')
+                roles=tuple(c.number(4) for _ in range(c.number(4)))
+                if any(role>=len(inputs) for role in roles):raise Invalid('bad role')
+                decoded_occurrences.append((path,cf,roles))
             count=c.number(1)
             if count not in (1,2):raise Invalid('provenance record count')
-            tags=[self.record(c,inputs) for _ in range(count)]
+            records=tuple(self.record(c,inputs) for _ in range(count))
+            tags=[record.tag for record in records]
             if tags!=sorted(set(tags)) or (1 in tags and 2 in tags):raise Invalid('provenance record combination')
             if ref in c.commitments:raise Invalid('self audit commitment')
             self.commitments[ref]=c.commitments
+            self.provenances[ref]=Provenance(result,tuple(inputs),tuple(decoded_occurrences),records)
         else:raise Invalid('unknown kind')
         c.done();self.exit(ref)

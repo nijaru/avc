@@ -22,7 +22,7 @@ The other core decisions fit this source authority:
 
 ## User experience
 
-The [workflow contract](docs/ux.md) separates private protection from commit selection, addresses unfinished work before its first commit, and proposes same-directory interruption/return with optional concurrent directories. It also covers history-only undo versus file recovery, conflicts, review scope and sharing/backup disclosure. **The interaction model and command spellings are candidates, not an implemented or usability-validated CLI.** The [research review](docs/research.md#15-product-and-user-experience-evidence--october-28-2026) distinguishes user evidence, observed tool behavior and design inferences. Navigation, edit transfer/stack interactions and the Git adoption journey still need qualification; source-storage feasibility does not settle them.
+The [workflow contract](docs/ux.md) separates private protection from commit selection, addresses unfinished work before its first commit, and proposes same-directory interruption/return with optional concurrent directories. It also covers history-only undo versus file recovery, conflicts, review scope and sharing/backup disclosure. **The interaction model and command spellings are candidates, not an implemented or usability-validated CLI.** The [research review](docs/research.md#15-product-and-user-experience-evidence--october-28-2026) distinguishes user evidence, observed tool behavior and design inferences; the [local-work walkthrough](docs/research.md#16-local-work-addressing-and-resume-qualification--october-28-2026) refines creation, ownership and closure without claiming usability validation. Navigation, edit transfer/stack interactions and the Git adoption journey still need qualification; source-storage feasibility does not settle them.
 
 ## Current status
 
@@ -32,7 +32,7 @@ The [workflow contract](docs/ux.md) separates private protection from commit sel
 - [Research](docs/research.md): evidence, rejected models, and adversarial design audit with counterexamples.
 - [Qualification roadmap](docs/roadmap.md): independent golden-vector, merge, durability, portability and full-workflow verification gates.
 - [Python reference fixtures](docs/experiments/test_codec.py), [independent JavaScript verifier](docs/experiments/codec_crosscheck.mjs) and [pinned object vectors](docs/experiments/codec_vectors.json): executable partial Milestone-0 qualification, **not** a frozen/production codec.
-- [Source-model oracle](docs/experiments/source_models_oracle.py), [sparse text-merge reference](docs/experiments/text_merge_reference.py), [authority interleaving model](docs/experiments/authority_model.py) and [contract probes](docs/experiments/vcs_contract_probes.py): bounded research/verification artifacts.
+- [Source-model oracle](docs/experiments/source_models_oracle.py), [sparse text-merge reference](docs/experiments/text_merge_reference.py), [authority interleaving model](docs/experiments/authority_model.py), [bounded work-lifecycle model](docs/experiments/work_lifecycle_model.py) and [contract probes](docs/experiments/vcs_contract_probes.py): bounded research/verification artifacts.
 - [SQLite boundary probes](docs/experiments/test_sqlite_custody.py) and [map-layout study](docs/experiments/map_layout_study.py): physical transaction checks and logical byte/object comparisons, **not** a native store, power-loss proof or engine benchmark.
 
 The project remains named AVC. Tavi and Delos were exploratory names only.

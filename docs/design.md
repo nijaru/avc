@@ -198,6 +198,8 @@ The result may be conflicted; old C remains immutable. An explicit selected stac
 
 Content equality, revision identity, logical ChangeId, operation receipt, merge provenance and validation evidence are independent concepts; no single ID conflates them.
 
+The bounded [revision-evolution reference](experiments/revision_evolution_reference.py) exercises these identities, explicit linear-stack mapping, inverse-content formulas and separate non-owning lineage with actual canonical objects. [Qualification and limits](research.md#27-revision-evolution-and-inverse-content-qualification--october-29-2026) distinguish programmatic State selection from filesystem amendment and native authority; split/fold source operations and durable undo remain unqualified.
+
 ## 8. Workspace state, recovery and materialization
 
 Concurrent independent writers get distinct **writable directories**; serial human tasks normally reuse one directory through preserve-and-return switching. Immutable source and authorized cache entries can be shared. Workspace ID, actor/session ID, process/VM ID, root selection and on-disk inode identity are separate. Several workspaces may select the same immutable Revision; no exclusive branch-checkout rule is required. Source-directory separation does not isolate processes, ports, databases or mutable dependencies.

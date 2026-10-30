@@ -5,7 +5,9 @@ Symbolic immutable source IDs stand for complete admitted closure. Atomic method
 stand for authority transactions; write/verify are separate observations, NOT real
 filesystem operations. The scheduler explores one switch with expiry, a delayed
 capture, an external write, interruption and competing resume. Named scenarios
-also cover return, registration closure and stale/unknown replies. This is not a
+also cover return, registration closure, clean same-work navigation and stale/unknown
+replies. Source/work return targets are distinct; clean navigation is not a scanner
+or implicit permission to carry edits into another base. This is not a
 CLI, a full workspace state machine, or crash/power-loss qualification.
 
 Run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
@@ -28,6 +30,21 @@ class Base:
     state: str
     revision: str | None = None
 
+    def closure(self):
+        return {('state', self.state)} | ({('revision', self.revision)}
+                                        if self.revision is not None else set())
+
+
+@dataclass(frozen=True)
+class WorkTarget:
+    work: str
+
+
+@dataclass(frozen=True)
+class SourceTarget:
+    work: str  # navigation scope, NOT permission to resume this work's bytes
+    base: Base
+
 
 def presentation_roots(pending):
     # Each symbolic pending ID stands for the manifest, bound conflict alternatives
@@ -44,12 +61,11 @@ class Point:
     origins: tuple[tuple[str, str], ...] = ()
     pending: tuple[str, ...] = ()
     work: str | None = None
+    covered: bool = True  # trusted complete-observation fixture fact, not a scan
 
     def closure(self):
-        roots = {('descriptor', self), ('state', self.source), ('state', self.base.state)}
-        if self.base.revision is not None:
-            roots.add(('revision', self.base.revision))
-        return roots | presentation_roots(self.pending)
+        return ({('descriptor', self), ('state', self.source)} | self.base.closure()
+                | presentation_roots(self.pending))
 
     @property
     def dirty(self):
@@ -71,7 +87,7 @@ class Workspace:
     selection_gen: int = 0
     binding_gen: int = 0
     materialization_gen: int = 0
-    previous: str | None = None
+    previous: WorkTarget | SourceTarget | None = None
     presentation: tuple[str, ...] = ()
     capture_gen: int = 0  # advancing recovery cannot invalidate a history plan
 
@@ -84,11 +100,19 @@ class Plan:
     key: str
     workspace: str
     source: str
-    destination: str
+    target: WorkTarget | SourceTarget
     versions: tuple[int, int, int]
     work_generations: tuple[int, int]
     departing: Point
     returning: Point
+
+    @property
+    def destination(self):
+        return self.target.work
+
+    @property
+    def visit(self):
+        return isinstance(self.target, SourceTarget)
 
 
 @dataclass
@@ -114,20 +138,54 @@ class Repository:
 
     def prepare(self, key='switch', workspace='w1', destination='A'):
         w = self.workspaces[workspace]
-        dst = self.works[destination]
-        if dst.owner is not None or dst.saved is None:
+        dst = self.works.get(destination)
+        if dst is None or dst.owner is not None or dst.saved is None:
             raise Blocked('already active or unavailable; use an independent work reference')
-        return Plan(key, workspace, w.work, destination, w.versions(),
-                    (self.works[w.work].generation, dst.generation),
-                    replace(w.live, base=w.base, pending=w.presentation, work=w.work), dst.saved)
+        departing = replace(w.live, base=w.base, pending=w.presentation, work=w.work)
+        if not departing.covered:
+            raise Blocked('unknown departure coverage')
+        return Plan(key, workspace, w.work, WorkTarget(destination), w.versions(),
+                    (self.works[w.work].generation, dst.generation), departing, dst.saved)
+
+    def prepare_visit(self, key, base, workspace='w1'):
+        w = self.workspaces[workspace]
+        departing = replace(w.live, base=w.base, pending=w.presentation, work=w.work)
+        if not departing.covered:
+            raise Blocked('unknown departure coverage')
+        if departing.dirty:
+            raise Blocked('preserve and start independent work; do not carry edits')
+        if base == w.base:
+            raise Blocked('already selected; no completed switch')
+        generation = self.works[w.work].generation
+        returning = Point(key + '-source', base, base.state, work=w.work)
+        return Plan(key, workspace, w.work, SourceTarget(w.work, base), w.versions(),
+                    (generation, generation), departing, returning)
+
+    def prepare_back(self, key, workspace='w1'):
+        w = self.workspaces[workspace]
+        target = w.previous
+        if isinstance(target, SourceTarget):
+            if target.work != w.work:
+                raise Blocked('previous source belongs to another work scope')
+            return self.prepare_visit(key, target.base, workspace)
+        if isinstance(target, WorkTarget):
+            return self.prepare(key, workspace, target.work)
+        raise Blocked('no previous completed switch')
 
     def matches(self, p):
         w = self.workspaces.get(p.workspace)
         src, dst = self.works.get(p.source), self.works.get(p.destination)
+        if p.visit:
+            destination_matches = (p.source == p.destination and not p.departing.dirty
+                                   and p.returning.base == p.target.base
+                                   and not p.returning.dirty and p.returning.work == p.source)
+        else:
+            destination_matches = (p.source != p.destination and dst is not None
+                                   and dst.owner is None and dst.saved == p.returning)
         return (w is not None and src is not None and dst is not None
                 and w.work == p.source and src.owner == p.workspace
-                and dst.owner is None and dst.saved == p.returning
-                and w.versions() == p.versions
+                and p.departing.covered and p.returning.covered
+                and destination_matches and w.versions() == p.versions
                 and (src.generation, dst.generation) == p.work_generations)
 
     def begin(self, p):
@@ -144,11 +202,14 @@ class Repository:
                or involved & {op.plan.source, op.plan.destination}
                for op in self.operations.values()):
             raise Blocked('workspace or work reference reserved, including incomplete operations')
-        if not p.returning.closure() <= self.resident:
+        # A clean target's descriptor is constructed from a protected base; a
+        # resume instead requires the already-retained exact return descriptor.
+        required = p.returning.base.closure() if p.visit else p.returning.closure()
+        if not required <= self.resident:
             raise Blocked('unavailable source')
         # Plan carries observed bytes abstractly; admission models their durable
         # capture here, not a rescan or a full preview/staging implementation.
-        self.resident |= p.departing.closure()
+        self.resident |= p.departing.closure() | p.returning.closure()
         # Durable intent + both descriptors/before-images precede the first write.
         self.operations[p.key] = Operation(p)
         return 'writing'
@@ -158,7 +219,7 @@ class Repository:
         if op is None or op.phase != 'writing':
             raise Blocked('not writing')
         w = self.workspaces[op.plan.workspace]
-        if w.live.source != op.plan.departing.source:
+        if not w.live.covered or w.live.source != op.plan.departing.source:
             op.phase = 'incomplete'  # abstract path-guard failure; no blind rollback
         else:
             w.live = op.plan.returning
@@ -169,7 +230,8 @@ class Repository:
         if op is None or op.phase != 'written':
             raise Blocked('not ready to verify')
         w = self.workspaces[op.plan.workspace]
-        op.phase = 'verified' if w.live.source == op.plan.returning.source else 'incomplete'
+        op.phase = ('verified' if w.live.covered and w.live.source == op.plan.returning.source
+                    else 'incomplete')
 
     def finish(self, p):
         if p.key in self.receipts:
@@ -183,15 +245,20 @@ class Repository:
         # The restored source is not a replacement history base.
         self.captures[p.key] = (p.returning, self.now + 7)
         src, dst = self.works[p.source], self.works[p.destination]
-        src.owner, src.saved = None, p.departing
-        dst.owner, dst.saved = p.workspace, None
-        src.generation += 1
-        dst.generation += 1
         w = self.workspaces[p.workspace]
-        w.work, w.base, w.previous = p.destination, p.returning.base, p.source
+        if p.visit:
+            src.generation += 1
+            w.previous = SourceTarget(p.source, p.departing.base)
+        else:
+            src.owner, src.saved = None, p.departing
+            dst.owner, dst.saved = p.workspace, None
+            src.generation += 1
+            dst.generation += 1
+            w.previous = WorkTarget(p.source)
+            w.binding_gen += 1
+        w.work, w.base = p.destination, p.returning.base
         w.presentation = p.returning.pending
         w.selection_gen += 1
-        w.binding_gen += 1
         w.materialization_gen += 1
         self.receipts[p.key] = p
         del self.operations[p.key]
@@ -215,9 +282,7 @@ class Repository:
         w = self.workspaces[workspace]
         w.base = base
         w.selection_gen += 1
-        self.resident.add(('state', base.state))
-        if base.revision:
-            self.resident.add(('revision', base.revision))
+        self.resident |= base.closure()
 
     def current_head(self, workspace):
         w = self.workspaces[workspace]
@@ -231,6 +296,8 @@ class Repository:
         # This models the explicit preserve-and-unregister choice after a covered
         # scan, not an unrequested background scan or deletion of local files.
         observed = replace(w.live, base=w.base, pending=w.presentation, work=w.work)
+        if not observed.covered:
+            raise Blocked('unknown departure coverage')
         self.resident |= observed.closure()
         ref = self.works[w.work]
         ref.owner, ref.saved = None, observed
@@ -253,9 +320,9 @@ class Repository:
         roots = set()
         for w in self.workspaces.values():
             roots |= presentation_roots(w.presentation)
-            roots.add(('state', w.base.state))
-            if w.base.revision:
-                roots.add(('revision', w.base.revision))
+            roots |= w.base.closure()
+            if isinstance(w.previous, SourceTarget):
+                roots |= w.previous.base.closure()
         for ref in self.works.values():
             if ref.saved:
                 roots |= ref.saved.closure()
@@ -331,7 +398,7 @@ class WorkLifecycleQualification(unittest.TestCase):
                     if ref.owner is not None:
                         self.assertEqual(r.workspaces[ref.owner].work, work, (trace, event))
                 reserved = [work for op in r.operations.values()
-                            for work in (op.plan.source, op.plan.destination)]
+                            for work in {op.plan.source, op.plan.destination}]
                 self.assertEqual(len(reserved), len(set(reserved)), (trace, event))
                 if not resumed:
                     self.assertIsNone(r.workspaces['w1'].previous, (trace, event))
@@ -359,7 +426,7 @@ class WorkLifecycleQualification(unittest.TestCase):
             r.finish(back)
             self.assertEqual(r.workspaces['w1'].live.origins, (('new-b', 'new'),))
             self.assertEqual(r.workspaces['w1'].base, base)
-            self.assertEqual(r.workspaces['w1'].previous, 'A')  # one-slot toggle, not stack pop
+            self.assertEqual(r.workspaces['w1'].previous, WorkTarget('A'))  # toggle, not stack pop
             self.assertTrue(presentation_roots(r.a.pending) <= r.resident)
             r.close('A', discard=True)
             r.collect()
@@ -421,7 +488,7 @@ class WorkLifecycleQualification(unittest.TestCase):
         self.assertEqual(r.begin(p), 'completed')
         self.assertEqual(r.__dict__, before)
         with self.assertRaises(Blocked):
-            r.begin(Plan(p.key, p.workspace, p.source, p.destination, p.versions,
+            r.begin(Plan(p.key, p.workspace, p.source, p.target, p.versions,
                          p.work_generations, p.returning, p.departing))
 
     def test_capture_scope_and_reservation_are_not_equal_base_shortcuts(self):

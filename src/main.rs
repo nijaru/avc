@@ -1,41 +1,34 @@
-mod cli;
-mod commands;
-mod config;
-mod git;
-mod oplog;
-mod output;
-mod track;
+use std::{env, process::ExitCode};
 
-use anyhow::Result;
-use clap::Parser;
+const NOT_IMPLEMENTED: &str = "The native AVC engine is not implemented.\n\
+The legacy Git-wrapper commands have been retired; this executable cannot operate on repositories.\n\
+See docs/design.md, docs/ux.md and docs/roadmap.md for the proposed design and qualification work.";
 
-use cli::{Cli, Commands};
+fn main() -> ExitCode {
+    let mut args = env::args_os().skip(1);
+    let first = args.next();
+    let only_one = args.next().is_none();
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    let command = cli.command.unwrap_or(Commands::Status);
-
-    let result = match command {
-        Commands::Init => commands::init::run(cli.json),
-        Commands::Save { message, amend } => commands::save::run(message, amend, cli.json),
-        Commands::Undo => commands::undo::run(cli.json),
-        Commands::Redo => commands::redo::run(cli.json),
-        Commands::Log { limit, saves } => commands::log_cmd::run(limit, saves, cli.json),
-        Commands::Status => commands::status::run(cli.json),
-        Commands::Run { args } => commands::run::run(args, cli.json),
-        Commands::Watch { interval } => commands::watch::run(interval, cli.json),
-        Commands::Stack => commands::stack::run(cli.json),
-    };
-
-    if let Err(e) = result {
-        if cli.json {
-            println!("{{\"error\": \"{}\"}}", e);
-        } else {
-            output::error(&format!("{:#}", e));
-        }
-        std::process::exit(1);
+    if only_one
+        && first
+            .as_ref()
+            .is_some_and(|arg| arg == "--help" || arg == "-h")
+    {
+        println!(
+            "AVC {} — experimental native version control\n\n{}\n\nOptions:\n  -h, --help     Show this information\n  -V, --version  Show the package version",
+            env!("CARGO_PKG_VERSION"),
+            NOT_IMPLEMENTED
+        );
+        ExitCode::SUCCESS
+    } else if only_one
+        && first
+            .as_ref()
+            .is_some_and(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("avc {}", env!("CARGO_PKG_VERSION"));
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("{NOT_IMPLEMENTED}");
+        ExitCode::FAILURE
     }
-
-    Ok(())
 }

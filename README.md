@@ -26,7 +26,9 @@ The [workflow contract](docs/ux.md) separates private protection from commit sel
 
 ## Current status
 
-**The native engine has not been implemented.** The Rust 0.0.1 code is a legacy Git-command wrapper with a separate JSON operation log. It does not provide the native durability, recovery, conflict, workspace, or sync guarantees described above. Do not entrust it with the sole copy of important work.
+**The native engine has not been implemented.** The legacy Git-command wrapper has been retired after correctness and recovery auditing; its commands, configuration and JSON operation log are not a basis for the native implementation. The Rust executable now provides only `--help` and `--version`. Every operational invocation fails without reading or modifying a repository or running a child command. The proposed workflows remain design/reference work, not available commands.
+
+Existing Git repositories and `.avc` recovery data are left untouched; there is no automatic conversion or cleanup. Keep independent copies of important work and legacy recovery data.
 
 - [Architecture](docs/design.md): **single authoritative v0 specification** for canonical objects, directory representation, conflicts, recovery, durability, APIs and publication.
 - [Research](docs/research.md): evidence, rejected models, and adversarial design audit with counterexamples.
@@ -43,11 +45,15 @@ The [workflow contract](docs/ux.md) separates private protection from commit sel
 
 The project remains named AVC. Tavi and Delos were exploratory names only.
 
-## Legacy prototype checks
+## Checks
 
-    cargo test
-    cargo fmt --check
-    cargo clippy --all-targets --all-features -- -D warnings
+The root crate has no external dependencies. These checks cover the informational executable and refusal of operational commands, not a native engine:
+
+    cargo test --workspace --locked --offline
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+
+See the [qualification roadmap](docs/roadmap.md#milestone-0--independently-verify-the-selected-contracts) for Python, Node and independent Rust codec/reference checks.
 
 ## License
 

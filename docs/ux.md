@@ -14,14 +14,40 @@ Default status answers what work is selected, what differs, what is recoverable 
 
 ```text
 Work: parser-cleanup (7b4c)
+Base: Handle tokens (change c82d, version 2)
 Files: 3 modified, 1 new file not selected for a commit
 Recovery: checkpoint at current base, 20 seconds ago; retained for 7 days
-History: 2 local commits; no publish requested here
+History: 2 local commits; remote sharing not checked
 ```
 
 Those lines describe evidence, not a permanently clean filesystem. If current files differ from the last checkpoint, show that difference; do not call them saved merely because a checkpoint exists. Identify checkpoints at an earlier history base separately, including after a selective commit. The same work reference can have historical protection without current bytes being captured; showing that relation does not retarget the old checkpoint. Report uncaptured paths, exclusions and failed coverage separately. Unsaved editor buffers are outside filesystem recovery. Unknown sharing or recovery status is **unknown**, not an optimistic success.
 
 `status`, `diff`, `show`, `log` and listing checkpoints are read-only repository operations: no implicit capture, authoring, history rewrite, fetch or hook execution. Background recovery is an explicit workspace policy; it must report failures/gaps and never manufacture authored commits. Quote untrusted paths/descriptions safely, preserve non-UTF8 names losslessly, and bound default output.
+
+### Proposed overview and navigation
+
+Use the current work as the entry point: its history base (or “no commit yet”), current file differences, recovery coverage and known sharing status. Work is the effort to resume; a commit is authored history; a checkpoint is an earlier observation to recover. Exact object IDs, receipts and generations belong in details or automation, not a prerequisite tutorial. This is a presentation candidate for task trials, not a selected CLI layout.
+
+The interactive switch picker should distinguish **resume existing work** from **start work from a commit**, even when both have the same base. For example:
+
+```text
+Resume work
+  parser-cleanup  7b4c  here; 3 modified, 1 new
+  hotfix          9a12  preserved; base: Handle tokens; return protected
+  docs            4e61  active in ../parser-docs; cannot resume here
+
+Start independent work
+  Handle tokens   c82d  version 2; creates independent work
+  Add lexer       a63f  version 1; creates independent work
+```
+
+Before the first commit, show the base as **no commit yet** and offer **start independent work at the initial base** in the second group. Existing efforts still appear under resume, with their distinct handles and saved bytes. Neither navigation nor private preservation requires a synthetic first commit.
+
+Rows use displayed handles rather than guessing from equal bases or labels. A preserved row exposes the exact saved scope, exclusions and protection in its preview; “return protected” is not a promise about every historical checkpoint. Work detached from a closed workspace remains discoverable. Another workspace's active/reserved work is identified, not silently stolen. Large lists need bounded output, search and an explicit way to reveal omitted rows; historical checkpoints stay under their work's recovery view rather than competing with work destinations.
+
+The switch preview brings departure and destination into one decision: what is preserved, which source/base is restored, what local ignored/excluded files remain, and any obstacle that blocks writing. Do not add a separate acknowledgement for every internal capture/root transition. Unknown coverage and overwrite decisions still require their own resolution or refusal; a concise flow cannot imply consent to them. Noninteractive operation keeps explicit policy and machine-readable outcomes.
+
+This grouping does **not** solve reference accumulation. Starting from a commit still allocates work under the current contract. Offer explicit closure of clean departing work in the same navigation flow, without making it a required step or cancelling historical recovery promises. Trials must determine whether discovery and cleanup remain understandable as references accumulate; do not auto-retire work to make the mockup look simpler.
 
 ## 2. Selection and preview
 
@@ -201,5 +227,17 @@ Before enabling each workflow, exercise its complete normal path and the failure
 | Work disconnected or through Git tooling | Identify complete versus promised roots; qualify the chosen mixed-tool journey without pretending conversion preserves CI/review identity |
 
 The [selected-authoring reference checks](research.md#17-selective-authoring-and-private-recovery--october-29-2026) exercise part of the first-commit/recovery/privacy case with canonical objects, not an implemented interaction. These cases supplement deletion versus failed scan, edit-after-preview/stale selection, excluded-work expiry, coupled conflict confirmation, partial recovery and interrupted writes. The [architecture](design.md#8-workspace-state-recovery-and-materialization) owns custody and guarded writes; none of these workflows is implemented or proven by the generic root/SQLite tests. The [bounded work-lifecycle model](experiments/work_lifecycle_model.py) checks part of the authority/pin contract, not complete entry points or filesystem safety. Use paper task trials to compare mental models before fixing navigation, then real entry-point trials before enabling features. Observe whether users predict included bytes, unchanged files and recovery without learning Merkle objects. Do not delay initial local codec qualification on designing a forge or every deferred integration.
+
+### First interaction trial: predict the outcome
+
+Use the [proposed overview and navigation](#proposed-overview-and-navigation) with these concrete cases before adding more command vocabulary. These are paper trial scenarios and expected effects derived from the contract, not recorded user results or executable mock-output tests.
+
+| Scenario | What the person must be able to predict | Comparison and unresolved cost |
+| --- | --- | --- |
+| A and B both start at commit C. A has a modified tracked file and new `scratch.txt`; preserve A, start B without those edits, then return to A. Repeat before the first commit, with only new files at the initial base. | Resume A restores its exact recorded base and acknowledged files; `scratch.txt` is still new. Selecting C instead starts independent work, not A. At the initial base neither effort requires an authored commit; included files become tracked only through deliberate first authoring. Ignored `.env` remains directory-local. | Compare explicit new-file-inclusive Git stashes/branches and Jujutsu's separate working-copy changes. The grouped picker makes the two intents visible on paper; it does not establish that users understand them. Repeat navigation with many clean references to expose cleanup cost. |
+| File `parser.py` contains independent edits X and Y. Preview a commit containing X only, then the editor adds Z before confirmation. | Confirmation commits pinned X only; live files keep X, Y and Z. Status reports the remaining difference against the new commit. The preview's checkpoint protects its observed bytes, not later Z; a separate capture would be needed to protect Z. | Compare Git's partial staging/index and Jujutsu's selective commit flow. AVC must earn an advantage through one understandable selection/preview, not by claiming immutable selection is novel. Selecting/testing the candidate still differs from testing live files. |
+| A checkpoint protects `notes.txt` at bytes N1. The editor changes it to N2; recover the older checkpoint. | Default recovery creates another directory containing N1 with the recorded base/origins; the original N2 is not overwritten. History undo instead changes selected history and leaves files alone. | Compare explicit restore-to-another-directory workflows and Jujutsu recovery facilities. Predictable scope matters more than one magic undo command. Earlier-base labels and partial coverage must not look like complete current protection. |
+
+A walkthrough fails if the participant must learn StateId/RevisionId, search raw checkpoint timestamps to find an effort, or infer whether a row means resume versus start. It also fails if “saved” causes them to believe later bytes are protected, or if they expect history undo to change test inputs. Record predictions and mistakes before explaining the model. Git/Jujutsu baselines need equivalent source, recovery scope and task goals; count setup and cleanup rather than assuming the proposed AVC transcript is fewer steps.
 
 Measure task completion, mistakes/omissions, recovery success, comprehension and responsiveness, including unnecessary conflict burden on real repeated-line/refactoring histories. Count environment setup, dependency/cache cost, directory navigation and cleanup, stale editor/process context and wrong-server test risks; source-command time alone is not the complete workflow. A conservative merge policy that repeatedly interrupts ordinary disjoint edits is a product failure to investigate before driver freeze, not evidence that users should learn more machinery. The [controlled text study](experiments/text_merge_study.py) exposed and reduced harmless blank-line conflicts; eight synthetic cases are not evidence that real merge/review burden is solved. Native correctness, privacy and durability gates remain mandatory even if a workflow tests well.

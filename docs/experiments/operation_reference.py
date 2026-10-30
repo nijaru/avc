@@ -532,6 +532,35 @@ def qualify_authoring(provenance: Ref, inputs: ProtectedInputs, facts: Observati
         elif before[0] == 4 and before != lookup(result, path) and path not in resolutions:
             raise Refused('changed conflict needs an explicit whole-unit choice')
     require_choices(base)
-    if not isinstance(claim.records[0], Observation):
+    if isinstance(claim.records[0], Observation):
+        covered = set(observation.covered)
+
+        def require_entry(path):
+            in_scope = any(path[:len(scope)] == scope for scope in observation.scope)
+            if not in_scope or (observation.coverage_mode == 0 and path not in covered):
+                raise Refused('Observation-only result changes unobserved source')
+
+        def require_observed(before, after, path=()):
+            if before == after or path in resolutions:
+                return
+            if isinstance(after, dict):
+                if isinstance(before, dict):
+                    for name in sorted(before.keys() | after.keys()):
+                        require_observed(before.get(name), after.get(name), path + (name,))
+                else:
+                    # Known descendants establish necessary missing parents, but
+                    # type replacement/empty directories need their own evidence.
+                    if before is not None or not after:
+                        require_entry(path)
+                    # Observing a directory binding is not observing its children.
+                    for name, child in sorted(after.items()):
+                        require_observed(None, child, path + (name,))
+                return
+            require_entry(path)
+
+        require_observed(base, result)
+    else:
+        # Construction and observation are independent claims about one result,
+        # not sequential commands; their bases need not be the same State.
         replay(provenance, inputs, selected, permit_unrelated=permit_unrelated)
     return claim.result

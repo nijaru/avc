@@ -325,7 +325,8 @@ class OperationTests(unittest.TestCase):
         # Ordinary directory/type replacement is not a conflict resolution.
         directory_base = self.state({b'dir': {b'child': old}})
         replacement = self.state({b'dir': new})
-        ordinary = self.provenance(replacement, self.b.observation_record(directory_base))
+        ordinary = self.provenance(replacement, self.b.observation_record(
+                                   directory_base, coverage_mode=1))
         self.assertEqual(self.admit(ordinary, (directory_base,),
                                    ObservationFacts(replacement, self.observation(ordinary)),
                                    (directory_base,)), replacement)
@@ -335,6 +336,65 @@ class OperationTests(unittest.TestCase):
         bad = self.provenance(result, wrong_observation)
         with self.assertRaisesRegex(Refused, 'another State'):
             self.admit(bad, (base, wrong_revision), ObservationFacts(result, self.observation(bad)), (base,))
+
+    def test_observation_only_preserves_unobserved_source(self):
+        old, new = self.file(b'old'), self.file(b'new')
+        base = self.state({b'f': old, b'private': old})
+        result = self.state({b'f': new, b'private': new})
+        for options in (
+            dict(scope=((b'f',),), covered=((b'f',),)),
+            dict(scope=((),), covered=((b'f',),)),
+            dict(scope=((),), covered=((b'f',),), failed=((b'private',),), partial=True),
+            dict(scope=((),), covered=((b'f',),), skipped=((b'private',),), partial=True),
+            dict(scope=((b'f',),), coverage_mode=1),
+        ):
+            with self.subTest(options=options):
+                p = self.provenance(result, self.b.observation_record(base, **options))
+                with self.assertRaisesRegex(Refused, 'unobserved source'):
+                    self.admit(p, (base,), ObservationFacts(result, self.observation(p)), (base,))
+        # A known new descendant includes its necessary directory, not siblings.
+        empty = self.state({})
+        nested = self.state({b'src': {b'f': new}})
+        p = self.provenance(nested, self.b.observation_record(
+                            empty, scope=((b'src', b'f'),), covered=((b'src', b'f'),)))
+        self.assertEqual(self.admit(p, (empty,), ObservationFacts(nested, self.observation(p)),
+                                   (empty,)), nested)
+        # Whole-scope completion establishes coverage, not atomic observation.
+        complete = self.provenance(result, self.b.observation_record(base, coverage_mode=1))
+        self.assertEqual(self.admit(complete, (base,),
+                                   ObservationFacts(result, self.observation(complete)), (base,)), result)
+        # A genuine partial observation keeps the unobserved binding unchanged.
+        partial = self.state({b'f': new, b'private': old})
+        p = self.provenance(partial, self.b.observation_record(base, covered=((b'f',),),
+                            failed=((b'private',),), partial=True))
+        self.assertEqual(self.admit(p, (base,), ObservationFacts(partial, self.observation(p)),
+                                   (base,)), partial)
+
+    def test_individual_directory_observation_does_not_cover_unobserved_children(self):
+        old, private = self.file(b'old'), self.file(b'unobserved private bytes')
+        result = self.state({b'dir': {b'private': private}})
+        for previous in (None, old):
+            with self.subTest(previous=previous):
+                base = self.state({} if previous is None else {b'dir': previous})
+                p = self.provenance(result, self.b.observation_record(base,
+                    covered=((b'dir',),), failed=((b'dir', b'private'),), partial=True))
+                with self.assertRaisesRegex(Refused, 'unobserved source'):
+                    self.admit(p, (base,), ObservationFacts(result, self.observation(p)), (base,))
+                known = self.provenance(result, self.b.observation_record(base,
+                    covered=((b'dir',), (b'dir', b'private'))))
+                self.assertEqual(self.admit(known, (base,),
+                    ObservationFacts(result, self.observation(known)), (base,)), result)
+
+    def test_construction_and_observation_can_have_distinct_bases(self):
+        a, b, c = map(self.file, (b'a', b'b', b'c'))
+        construction, observed, result = (self.state({b'f': value}) for value in (a, b, c))
+        # These are two true claims about one result, not sequential commands.
+        record = self.b.transform_record(construction, edits=(((b'f',), a, c),))
+        p = self.provenance(result, record, observation=self.b.observation_record(
+                            observed, scope=((b'f',),), covered=((b'f',),)))
+        self.assertEqual(self.admit(p, (construction, observed),
+                                   ObservationFacts(result, self.observation(p)),
+                                   (construction,)), result)
 
     def test_changed_conflicts_need_exact_explicit_whole_unit_choices(self):
         a, b, c = map(self.file, (b'a', b'b', b'c'))

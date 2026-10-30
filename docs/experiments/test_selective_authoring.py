@@ -232,6 +232,19 @@ class SelectiveAuthoring(unittest.TestCase):
         self.assertTrue(public['partial'])
         self.assertEqual(public['covered'], (README,))
 
+    def test_known_descendant_can_be_authored_with_partial_ancestor_traversal(self):
+        authority = self.tracked_fixture()
+        authority.live[MAIN] = File(b'known independently observed edit\n')
+        capture = authority.checkpoint((MAIN,), failed=((b'src',),), partial=True)
+        candidate = authority.prepare(capture.receipt, (Choice((b'src',)),), partial=True)
+        revision = authority.confirm(candidate.key)
+        exported = authority.export(revision)
+        self.assertEqual(read_state(exported, candidate.state)[MAIN], authority.live[MAIN])
+        public = observation(exported, candidate.provenance)
+        self.assertEqual(public['covered'], (MAIN,))
+        self.assertEqual(public['failed'], ((b'src',),))
+        self.assertTrue(public['partial'])
+
     def test_bare_commit_defers_entire_tracked_subtree_removal(self):
         authority = self.tracked_fixture()
         del authority.live[MAIN]

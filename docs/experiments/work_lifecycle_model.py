@@ -121,6 +121,24 @@ class Operation:
     phase: str = 'writing'
 
 
+@dataclass(frozen=True)
+class CheckpointRequest:
+    workspace: str
+    work: str
+    versions: tuple[int, int, int]
+    point: Point
+
+
+@dataclass(frozen=True)
+class CaptureReceipt:
+    request: CheckpointRequest | Plan
+    deadline: int
+
+    @property
+    def point(self):
+        return self.request.returning if isinstance(self.request, Plan) else self.request.point
+
+
 class Repository:
     """No work head shadows an active workspace's Selection."""
 
@@ -132,7 +150,8 @@ class Repository:
         self.workspaces = {'w1': Workspace('B', base, self.b)}
         self.operations: dict[str, Operation] = {}
         self.receipts: dict[str, Plan] = {}
-        self.captures: dict[str, tuple[Point, int]] = {'A-old': (self.a, 7)}
+        self.captures: dict[str, CaptureReceipt] = {
+            'A-old': CaptureReceipt(CheckpointRequest('old-workspace', 'A', (0, 0, 0), self.a), 7)}
         self.heads: dict[str, tuple[str, tuple[int, int, int], Point]] = {}
         self.resident = self.a.closure() | self.b.closure()
 
@@ -195,6 +214,8 @@ class Repository:
             if (previous or active.plan) != p:
                 raise Blocked('retry key changed request')
             return 'completed' if previous else active.phase
+        if p.key in self.captures:
+            raise Blocked('retry key changed request')
         if not self.matches(p):
             raise Blocked('stale plan')
         involved = {p.source, p.destination}
@@ -243,7 +264,7 @@ class Repository:
             raise Blocked('unverified or stale completion; protections retained')
         # One transaction: recovery handoff, binding/Selection, navigation, receipt.
         # The restored source is not a replacement history base.
-        self.captures[p.key] = (p.returning, self.now + 7)
+        self.captures[p.key] = CaptureReceipt(p, self.now + 7)
         src, dst = self.works[p.source], self.works[p.destination]
         w = self.workspaces[p.workspace]
         if p.visit:
@@ -265,16 +286,29 @@ class Repository:
         return p
 
     def checkpoint(self, key, workspace, work, versions, point):
+        request = CheckpointRequest(workspace, work, versions, point)
+        previous = self.captures.get(key)
+        if previous is not None:
+            if previous.request != request:
+                raise Blocked('retry key changed request')
+            return previous
+        if key in self.operations or key in self.receipts:
+            raise Blocked('retry key changed request')
         # Delayed admission keeps its own acknowledged protection, not attribution
-        # to whichever effort now happens to select an equal revision.
+        # to whichever effort now happens to select an equal revision. This model
+        # has no partial-coverage descriptor; unknown observations cannot qualify.
+        if not point.covered:
+            raise Blocked('unknown capture coverage')
         if point.work != work:
             raise Blocked('capture origin cannot be relabeled to current work')
+        receipt = CaptureReceipt(request, self.now + 7)
         self.resident |= point.closure()
-        self.captures[key] = (point, self.now + 7)
+        self.captures[key] = receipt
         w = self.workspaces.get(workspace)
         if w and w.work == work and w.versions() == versions and w.base == point.base:
             self.heads[workspace] = (work, versions, point)
             w.capture_gen += 1
+        return receipt
 
     def select_base(self, workspace, base):
         if any(op.plan.workspace == workspace for op in self.operations.values()):
@@ -326,9 +360,9 @@ class Repository:
         for ref in self.works.values():
             if ref.saved:
                 roots |= ref.saved.closure()
-        for point, deadline in self.captures.values():
-            if deadline > self.now:
-                roots |= point.closure()
+        for receipt in self.captures.values():
+            if receipt.deadline > self.now:
+                roots |= receipt.point.closure()
         for op in self.operations.values():
             roots |= op.plan.departing.closure() | op.plan.returning.closure()
         return roots
@@ -383,7 +417,7 @@ class WorkLifecycleQualification(unittest.TestCase):
                 if not resumed:
                     self.assertTrue(r.a.closure() <= r.resident, (trace, event, 'unresumed A'))
                 else:
-                    deadline = r.captures[p.key][1]
+                    deadline = r.captures[p.key].deadline
                     if r.now < deadline:
                         self.assertTrue(r.a.closure() <= r.resident, (trace, event, 'handoff A'))
                     self.assertNotEqual(r.current_head('w1'), r.b, (trace, event, 'late B attribution'))
@@ -412,7 +446,7 @@ class WorkLifecycleQualification(unittest.TestCase):
             r.verify(p.key)
             r.finish(p)
             self.assertEqual((r.workspaces['w1'].work, r.workspaces['w1'].base), ('A', base))
-            self.assertEqual(r.captures[p.key][0], r.a)
+            self.assertEqual(r.captures[p.key].point, r.a)
             self.assertEqual(r.works['B'].saved, r.b)
             r.now = 8
             r.collect()
@@ -516,6 +550,62 @@ class WorkLifecycleQualification(unittest.TestCase):
         r.checkpoint('late-B', 'w1', 'B', p.versions, r.b)
         self.assertIsNone(r.current_head('w1'))
         self.assertIn('late-B', r.captures)  # historical acknowledgement still kept
+
+    def test_checkpoint_retry_keeps_original_deadline_and_head_generation(self):
+        r = Repository()
+        versions = r.workspaces['w1'].versions()
+        r.checkpoint('capture', 'w1', 'B', versions, r.b)
+        r.now = 1
+        before = deepcopy(r.__dict__)
+        r.checkpoint('capture', 'w1', 'B', versions, r.b)
+        self.assertEqual(r.__dict__, before)
+
+    def test_checkpoint_key_cannot_replace_acknowledged_source_or_scope(self):
+        for changed in ('point', 'workspace', 'versions'):
+            with self.subTest(changed=changed):
+                r = Repository()
+                versions = r.workspaces['w1'].versions()
+                args = ['capture', 'w1', 'B', versions, r.b]
+                r.checkpoint(*args)
+                if changed == 'point':
+                    args[-1] = replace(r.b, key='different', source='different-bytes')
+                elif changed == 'workspace':
+                    args[1] = 'other-workspace'
+                else:
+                    args[3] = (1, 0, 0)
+                before = deepcopy(r.__dict__)
+                with self.assertRaisesRegex(Blocked, 'changed request'):
+                    r.checkpoint(*args)
+                self.assertEqual(r.__dict__, before)
+                r.now = 1
+                r.collect()
+                self.assertTrue(r.b.closure() <= r.resident)
+
+    def test_unknown_checkpoint_cannot_acknowledge_protection_or_advance_head(self):
+        r = Repository()
+        before = deepcopy(r.__dict__)
+        with self.assertRaisesRegex(Blocked, 'unknown.*coverage'):
+            r.checkpoint('unknown', 'w1', 'B', r.workspaces['w1'].versions(),
+                         replace(r.b, covered=False))
+        self.assertEqual(r.__dict__, before)
+        self.assertIsNone(r.current_head('w1'))
+
+    def test_capture_and_materialization_cannot_reuse_one_request_key(self):
+        for first in ('checkpoint', 'materialization'):
+            with self.subTest(first=first):
+                r = Repository()
+                p = r.prepare()
+                if first == 'checkpoint':
+                    r.checkpoint(p.key, 'w1', 'B', p.versions, r.b)
+                    before = deepcopy(r.__dict__)
+                    with self.assertRaises(Blocked):
+                        r.begin(p)
+                else:
+                    r.begin(p)
+                    before = deepcopy(r.__dict__)
+                    with self.assertRaises(Blocked):
+                        r.checkpoint(p.key, 'w1', 'B', p.versions, r.b)
+                self.assertEqual(r.__dict__, before)
 
     def test_clean_reference_closure_releases_base_not_capture_receipts(self):
         r = Repository()

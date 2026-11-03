@@ -17,7 +17,7 @@ Run a **short, bounded** comparison for the decisions with highest migration cos
 | Canonical source structure | Compact sorted/hierarchical directory map; path-compressed radix; deterministic chunked B-tree | Incremental edit, cold lookup, clone metadata, directory moves, memory, byte churn, verification |
 | Merge/conflict | Practical versioned three-way driver + typed alternatives; normalized/flattened conflict expressions | Losslessness under repeated rebase/revert, ordinary conflict burden, binary/type/delete cases, resource bounds |
 | Payload store | SQLite-only, or SQLite transactional roots + immutable segments | **Same** crash semantics; ingest, read, compaction, retention, backup, SSD/RAM cost |
-| Snapshot vs changeset authority | Snapshot-root native history versus incremental authored changeset/derived tree model | End-to-end commit/merge/query/clone costs and offline correctness with wide repos, not prestige of an upstream system |
+| Snapshot vs changeset authority | Snapshot-root native history versus incremental authored changesets and a limited causal/commuting-patch prototype | End-to-end commit/merge/query/clone costs and offline correctness with wide repos, not prestige of an upstream system |
 | Clone/Git bridge | Native selective fetch model; Git partial-clone adapter | Time to first usable source; repeated fetches, deepening, missing-object accuracy, interoperability |
 
 Use existing fixtures and research where relevant, but run **new native timings** and inspect data with realistic workloads: small Rust/Python projects, wide directories, deep history, large binary files, repeated edits and merges, and many independent agents. Include cold and warm caches, constrained memory, CPU time, network bytes, system calls, disk use, tail latency, and operational complexity.
@@ -69,12 +69,12 @@ Implement Git branch import and remotes early, after basic native source read/co
 Once the custody and first Git onboarding flows are credible:
 
 1. Stable logical change references; amend, rebase, restack, split/fold and scoped operation-log undo with correct retention of originals.
-2. Multiple independent/stacked draft heads and reproducible **composed source views**; explicit assignment of selected file/hunk edits; visible dependency/conflict graph.
-3. Isolated writable workspaces for multiple concurrent agents, plus checkout-free conditional source edits; reject stale expected bases and unexpected overwrites.
+2. Multiple independent/stacked draft heads and reproducible **composed source views**; explicit assignment of selected file/hunk edits; visible dependency/conflict graph. Qualify an optional `absorb` operation for unambiguous hunk-to-earlier-change assignment, with preview and scoped restack.
+3. Compare isolated writable workspaces, checkout-free conditional source edits, and shared composed workspaces when tasks safely share a runtime. Reject stale expected bases and unexpected overwrites; quantify setup savings versus collisions/hidden dependencies.
 4. Support review of one stack or a composed integration candidate without prematurely committing synthetic merges. Derived composition never silently changes each stack's canonical revision.
 5. Qualify failure recovery, cancellations, repeated rebases, conflicting patches and same-file independent hunks with real agent/editor/CLI workflows.
 
-Usability tests must include common Git tasks (fix and commit, split a mistaken change, switch with dirty work, recover after interruption, rebase, resolve conflict) and agent tasks (several independent changes, same-file collision, sparse read, integration check, share back to Git). Test whether change stack semantics solve more problems than they create before adding automatic attribution.
+Usability tests must include common Git tasks (fix and commit, split a mistaken change, switch with dirty work, recover after interruption, rebase, resolve conflict) and agent tasks (several independent changes, same-file collision, sparse read, integration check, share back to Git). Compare isolated work and disjoint-path shared runtime, including overlapping generated files, and preview whether `absorb` can safely reattribute fixes. Test whether change stack semantics solve more problems than they create before adding automatic attribution.
 
 ## Workstream E — native remote and hosting scale
 

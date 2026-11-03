@@ -120,5 +120,4 @@ mod tests {
         store.remove(&oldest.unwrap());
         assert!(Verifier::check(&store, tip).is_err());
     }
-
 }

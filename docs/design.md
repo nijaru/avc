@@ -419,7 +419,7 @@ Default protected target: **validate before acceptance**. An explicit high-throu
 
 **Qualification before format freeze:** exact golden vectors and parser limits, conflict normalization and text-merge fixtures, filesystem fsync/name portability, and representative resource/layout comparisons. Correct or replace a failing candidate before stable user data exists; after release, changing canonical bytes requires a new format identity and explicit migration. Evidence may revise a selected implementation without reopening product requirements.
 
-**Current implementation:** none of this native engine is implemented. Rust 0.0.1 remains a Git-command/JSON-log prototype with none of the advertised native guarantees. The research fixtures are not release qualification.
+**Current implementation (November 2, 2026):** a Rust library has canonical object encode/decode, deterministic in-memory radix construction, bounded owning-closure verification and streaming BLAKE3 hashing, initially adapted from the independently qualified Rust fixture. No transactional object admission, local SQLite authority, workspace operations, native protocol or Git adapter is implemented. The retired Git-command wrapper remains disabled; the CLI still refuses operational invocations. The current verifier's fixture-era visit/depth budgets are not production large-repository qualification, and the research fixtures are not release qualification.
 
 
 ## 12. Normative v0 field order and canonical expansion rules

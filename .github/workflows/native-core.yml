@@ -2,16 +2,16 @@ name: Native core
 
 on:
   push:
-    branches:
-      - main
-      - implementation/native-core-2026-11-02
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   rust:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Select stable Rust with formatting and lint support
         run: |
           rustup default stable

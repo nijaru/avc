@@ -1,7 +1,8 @@
 //! Bounded canonical owning-closure verification for in-memory objects.
 //! Audit commitments are never owning dependencies.
 //! This first implementation intentionally has fixture-era traversal budgets;
-//! deep history and large repository traversal need an iterative production walker.
+//! owning revision ancestry is iterative; source/conflict recursion and resource
+//! budgets still require larger-workload qualification before durable admission.
 use crate::merkle::{self, FlatMap, Store};
 use crate::objects::{Encode, Entry, Id, Object, Result, decode, name_valid};
 use std::collections::BTreeSet;
@@ -30,6 +31,7 @@ pub struct Verifier<'a> {
     store: &'a Store,
     active: BTreeSet<Id>,
     visits: usize,
+    checked_states: BTreeSet<Id>,
 }
 impl<'a> Verifier<'a> {
     pub fn check(store: &'a Store, root: Id) -> Result<()> {
@@ -37,12 +39,13 @@ impl<'a> Verifier<'a> {
             store,
             active: BTreeSet::new(),
             visits: 0,
+            checked_states: BTreeSet::new(),
         }
         .walk(root, Context::default(), false)
     }
     fn enter(&mut self, id: Id) -> Result<()> {
         self.visits += 1;
-        if self.visits > 30_000 || self.active.len() >= 256 {
+        if self.visits > 1_000_000 || self.active.len() >= 1_000_000 {
             return Err("reference resource budget".into());
         }
         if !self.active.insert(id) {
@@ -67,7 +70,58 @@ impl<'a> Verifier<'a> {
         }
         self.walk(entry.id(), context, require_directory)
     }
+    // Avoid recursion proportional to revision history length. Multiple parents
+    // share already-checked revisions; owning source roots are context independent.
+    fn revisions(&mut self, root: Id) -> Result<()> {
+        let mut pending = vec![(root, false)];
+        let mut done = BTreeSet::new();
+        while let Some((id, leaving)) = pending.pop() {
+            if leaving {
+                self.active.remove(&id);
+                done.insert(id);
+                continue;
+            }
+            if done.contains(&id) {
+                continue;
+            }
+            if id.kind != 5 {
+                return Err("revision parent kind".into());
+            }
+            self.enter(id)?;
+            let (object, _) = self.load(id)?;
+            let Object::Revision {
+                state,
+                parents,
+                provenance,
+                ..
+            } = object else {
+                return Err("revision object kind".into());
+            };
+            if !self.checked_states.contains(&state) {
+                self.walk(state, Context::default(), false)?;
+                self.checked_states.insert(state);
+            }
+            if let Some(provenance) = provenance {
+                let (record, audit) = self.load(provenance)?;
+                match record {
+                    Object::Provenance { result, .. }
+                        if result == state && !audit.contains(&id) => {}
+                    _ => return Err("revision provenance result/output binding".into()),
+                }
+                self.walk(provenance, Context::default(), false)?;
+            }
+            pending.push((id, true));
+            for parent in parents.into_iter().rev() {
+                pending.push((parent, false));
+            }
+        }
+        Ok(())
+    }
+
     fn walk(&mut self, id: Id, context: Context, strict_directory: bool) -> Result<()> {
+        if id.kind == 5 {
+            return self.revisions(id);
+        }
         if matches!(id.kind, 2 | 3) {
             let flat = self.map(id, &[], context)?;
             let rebuilt = merkle::build(&flat, &mut Store::new())?;
@@ -81,26 +135,7 @@ impl<'a> Verifier<'a> {
         match object {
             Object::Blob(_) => (),
             Object::State(entry) => self.entry(&entry, Context::default(), true)?,
-            Object::Revision {
-                state,
-                parents,
-                provenance,
-                ..
-            } => {
-                self.walk(state, Context::default(), false)?;
-                if let Some(provenance) = provenance {
-                    let (record, audit) = self.load(provenance)?;
-                    match record {
-                        Object::Provenance { result, .. }
-                            if result == state && !audit.contains(&id) => {}
-                        _ => return Err("revision provenance result/output binding".into()),
-                    }
-                    self.walk(provenance, Context::default(), false)?;
-                }
-                for parent in parents {
-                    self.walk(parent, Context::default(), false)?;
-                }
-            }
+            Object::Revision { .. } => return Err("revision dispatch invariant".into()),
             Object::Conflict {
                 region,
                 base,

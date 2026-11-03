@@ -35,7 +35,9 @@ impl Id {
         let mut buffer = [0u8; 64 * 1024];
         while remaining != 0 {
             let chunk = remaining.min(buffer.len() as u64) as usize;
-            let n = reader.read(&mut buffer[..chunk]).map_err(|e| e.to_string())?;
+            let n = reader
+                .read(&mut buffer[..chunk])
+                .map_err(|e| e.to_string())?;
             if n == 0 {
                 return Err("truncated object stream".into());
             }

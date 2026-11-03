@@ -2,7 +2,7 @@
 
 **Revised November 3, 2026. Status: design candidate for the next implementation iteration, not a frozen format or a working source-control product.**
 
-This is the **current owner of intended native architecture**. It supersedes the October/November 2 detailed v0 proposal. The older proposal remains in Git history at commit `1927e1a0862029b0b9bfbbc00e795f6553eab0a4`; its exact codec assumptions still describe parts of the experimental Rust library and reference fixtures, **not a production format that must be preserved**. Do not silently use the new document to assert that the existing code implements it. All important source must remain in independent Git/other backups until AVC's custody and crash-recovery gates pass.
+This is the **current owner of intended native architecture**. It supersedes the October/November 2 detailed v0 proposal. The older proposal remains [in Git history](https://github.com/nijaru/avc/blob/1927e1a0862029b0b9bfbbc00e795f6553eab0a4/docs/design.md) at commit `1927e1a0862029b0b9bfbbc00e795f6553eab0a4`; its exact codec assumptions still describe parts of the experimental Rust library and reference fixtures, **not a production format that must be preserved**. Do not silently use the new document to assert that the existing code implements it. All important source must remain in independent Git/other backups until AVC's custody and crash-recovery gates pass.
 
 [Workflows](ux.md) define user-visible behavior. [Roadmap](roadmap.md) defines experiments, qualification, and implementation sequence. [Research](research.md) keeps comparative evidence and rejected alternatives. This is a recommendation intended to survive serious criticism, not a commitment to a specific page size or merge algorithm without data.
 

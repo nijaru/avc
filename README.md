@@ -1,59 +1,41 @@
 # AVC
 
-**Experimental native version control for people and coding agents.**
+**Experimental native source control for developers and coding agents.** AVC is a clean-sheet, local-first VCS intended to combine trustworthy offline source ownership, editable history, fast selective clones, native agent/source APIs, and easy adoption of existing Git repositories.
 
-AVC is designed for everyday source editing on a laptop or VPS, independent agent workspaces, remote cloud development, short-lived containers/microVMs, and large CI/source-query workloads.
+**Status (November 3, 2026): architecture redesign in progress; no usable native repository operations or safe source custody yet.** The previous elaborate v0 contract has been replaced by a shorter working design after re-evaluating Git/Pando, Scion/Mononoke, Jujutsu, GitButler and other systems. Its object format, merge algebra and storage layout are **not frozen**. This is not a released Git alternative.
 
-## Selected architecture (October 2026)
+## Design direction
 
-The v0 design uses **immutable content-addressed source States**, a separate immutable **Revision DAG**, and **stable logical ChangeIds** for editable history. The canonical source namespace uses deterministic persistent Merkle radix directory maps and includes ordinary files, executable mode, symlinks, empty directories, and typed unresolved conflicts.
+- **Native, not Git-backed.** Immutable content-addressed source trees, authored revision history and stable logical change identities. Git import/export and upstream tracking are adoption boundaries, not canonical source authority.
+- **Clone the current useful source first.** Select a remote branch or revision, fetch a bounded amount of history and the needed source, then expand missing history/files explicitly or on demand. Small projects should remain easy to use with normal editors; large monorepos and agents should avoid full downloads and checkouts when possible.
+- **Exact offline and recovery claims.** A complete native repository and backup are independently reconstructible; a thin clone never mistakes missing promised objects for absent source. Separate private checkpoints from authored commits and remote publication, with guarded restore and operation-log undo.
+- **Independent and composed work.** Multiple agent workspaces or checkout-free conditional edits; optional GitButler-like independent and stacked changes in one *derived* view. A shared mutable folder is not required for concurrent agents.
+- **Modern physical optimizations.** BLAKE3 as a logical hashing candidate; compare Zstandard immutable segments and SQLite-only storage, directory layouts, merge representations and transfer batching under real workloads. Codec choice is not itself a clone-speed proof.
+- **Optional native hosting.** Content-addressed object APIs, reusable cacheable transfers, derived history indexes, per-ref conditional updates and full local operation without a server.
 
-The other core decisions fit this source authority:
+## Current source and safety
 
-- Private recovery is separate from deliberate commits and sharing. Explicit recovery includes eligible new files without tracking or authoring them. Ordinary checkpoints expire; work explicitly preserved for return stays protected until verified resume or deliberate discard.
-- Serial work can preserve and resume source in one directory. Concurrent writers use distinct workspaces with independent source selection, recovery heads and materialization outcomes. Shared targets use conditional updates.
-- Safe source reads, diffs, merges and conditional edits work by immutable IDs **without a checkout**; full repositories work offline, with optional native sparse and hosted clients.
-- Conservative three-way merging preserves nested binary conflicts and separate typed provenance. Rebase creates new immutable revisions; undo and content revert are distinct.
-- One SQLite authority owns local objects and roots; large payloads use bounded staged segment rows before short durable root transactions.
-- Hosted publication is a later protocol with exact candidate validation, not an initial-core object or dependency.
-- Git interoperability is a deferred boundary interface, not a required Git backend. Conversion is a likely starting point; the exact adapter shape remains open. Unsupported/lossy conversion must be explicit; native export remains the full-fidelity custody path. Agent runtimes and hosted services are not native requirements.
+The Rust library contains parts of the **older experimental codec**, streaming object hashing, in-memory Merkle map construction and owning-closure verification. Those routines and the Python/Node reference fixtures do **not** implement a durable source-control engine. The executable currently exposes informational flags; operational commands refuse. Previous Git-wrapper operations have been retired.
 
-**The selected architecture and proposed v0 byte format are specified and undergoing independent qualification**, not proven globally optimal or released as stable. The [authoritative specification](docs/design.md) includes typed BLAKE3 IDs, a canonical nibble-radix Merkle source map, conservative bounded merge/conflict semantics, exact revision evolution, guarded workspace recovery, GC-safe staged admission/backup, typed Transform/Merge/Observation claims with separately retained private evidence, and future sparse/publication boundaries. Python, Node and an isolated Rust codec fixture now agree on the pinned examples and bounded differential corpus. Bounded typed-operation checks now exercise replay and evidence separation; the [public-input studies](docs/research.md#20-public-history-and-map-access-costs--october-29-2026) expose layout trade-offs, and a [sparse merge refinement](docs/research.md#21-sparse-ambiguity-without-a-dense-fallback--october-29-2026) reduces sampled refusals and reference allocation without weakening all-optimal confluence. Complete merge/admission, recovery/durability and broader workload qualification remain **before format freeze**. Algorithms and byte constants remain candidates to qualify, not product requirements. Earlier changeset-first and causal graph candidates remain documented as rejected defaults.
+**Do not use AVC to protect important work yet.** Keep existing Git repositories, backups and old `.avc` recovery data intact. There is no automatic migration, clone/import, reliable repository backup or crash-safe restore implemented.
 
-## User experience
+## Maintained documents
 
-The [workflow contract](docs/ux.md) separates private protection from commit selection, addresses unfinished work before its first commit, and proposes same-directory interruption/return with optional concurrent directories. It also covers history-only undo versus file recovery, conflicts, review scope and sharing/backup disclosure. **The interaction model and command spellings are candidates, not an implemented or usability-validated CLI.** The [research review](docs/research.md#15-product-and-user-experience-evidence--october-28-2026) distinguishes user evidence, observed tool behavior and design inferences; the [navigation decision](docs/research.md#29-clean-navigation-without-synthetic-efforts--october-30-2026) separates clean visits within current work from explicit new efforts and work resumption without claiming usability validation. Navigation, edit transfer/stack interactions and the Git adoption journey still need qualification; source-storage feasibility does not settle them.
+- [Architecture](docs/design.md) — current working source/identity, clone, storage, concurrency, Git interoperability and safety design; explicitly unsettled selections.
+- [Workflows](docs/ux.md) — proposed developer/agent interactions, clone policy and safety disclosure; command spellings illustrative.
+- [Implementation and qualification](docs/roadmap.md) — experiments, native vertical slices, Git on-ramp, custody gates and next local session.
+- [Comparative research](docs/research.md#31-fresh-native-vcs-review-git-adoption-selective-clones-and-parallel-changes--november-3-2026) — primary-source evidence and dated previous investigations. Older sections are historical; they no longer lock decisions.
+- [Reference experiments](docs/experiments/) — existing fixtures and bounded studies for the prior draft, not a released format or complete performance validation.
 
-## Current status
+## Building/checking the current experimental crate
 
-**Native implementation has begun; repository operations are not yet available.** The retired Git-command wrapper remains disabled. The Rust library now implements canonical object encoding, deterministic in-memory Merkle-map construction, bounded owning-closure verification and streaming object hashing. These are **not** durable repository admission, persistent storage, recovery or a safe source-control workflow. The executable still exposes only `--help` and `--version`; all operational invocations refuse without touching a repository.
+```sh
+cargo test --workspace --locked --offline
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+```
 
-Existing Git repositories and `.avc` recovery data are left untouched; there is no automatic conversion or cleanup. Keep independent copies of important work and legacy recovery data.
-
-- [Architecture](docs/design.md): **single authoritative v0 specification** for canonical objects, directory representation, conflicts, recovery, durability, APIs and publication.
-- [Research](docs/research.md): evidence, rejected models, and adversarial design audit with counterexamples.
-- [Qualification roadmap](docs/roadmap.md): independent golden-vector, merge, durability, portability and full-workflow verification gates.
-- [Python reference fixtures](docs/experiments/test_codec.py), [independent JavaScript verifier](docs/experiments/codec_crosscheck.mjs), [Rust codec fixture](docs/experiments/codec_rust/main.rs) and [pinned object vectors](docs/experiments/codec_vectors.json): executable partial Milestone-0 qualification, **not** a frozen/production codec.
-- [Source-model oracle](docs/experiments/source_models_oracle.py), [sparse text-merge reference](docs/experiments/text_merge_reference.py), [bounded work-lifecycle model](docs/experiments/work_lifecycle_model.py), [clean-navigation tests](docs/experiments/test_work_navigation.py) and [contract probes](docs/experiments/vcs_contract_probes.py): bounded research/verification artifacts.
-- [Selective-authoring reference](docs/experiments/selective_authoring_reference.py) and [contract tests](docs/experiments/test_selective_authoring.py): canonical-object checks for subset commits, recorded-base recovery and private metadata separation, not a native authoring implementation.
-- [Typed-operation reference](docs/experiments/operation_reference.py) and [contract tests](docs/experiments/test_operations.py): canonical-record replay, protected evidence and observation obligations; [recorded-move cases](docs/experiments/test_move_merges.py) and [composition cases](docs/experiments/test_move_composition.py) qualify bounded Source/History Merge remapping, exact computed-base protection and closed original-value conflict scopes, not native admission.
-- [Revision-evolution reference](docs/experiments/revision_evolution_reference.py) and [contract tests](docs/experiments/test_revision_evolution.py): canonical amend/rebase, selected linear stacks, inverse-content revert/reapply and separate non-owning lineage, not native history commands or filesystem amendment.
-- [Conflict-presentation reference](docs/experiments/conflict_presentation_reference.py) and [contract tests](docs/experiments/test_conflict_presentation.py): exact marker bindings, private pending observations and explicit whole-entry resolution, not filesystem observation, journal ordering or durable materialization.
-- [Agreed-source query reference](docs/experiments/source_query_reference.py) and [contract tests](docs/experiments/test_source_queries.py): read shared descendants through nested conflicts without resolving them; complete protected inputs are required, not a sparse client.
-- [Owning-closure custody model](docs/experiments/closure_custody_model.py), [authority tests](docs/experiments/authority_model.py) and [SQLite boundary probes](docs/experiments/test_sqlite_custody.py): shared-descendant protection, exact-root leases, GC generation restarts and bounded retirement/cleanup, **not** a native store or durability proof.
-- [Map-layout comparison](docs/experiments/map_layout_study.py), [snapshot access study](docs/experiments/map_access_study.py) and [actual merge-history sample](docs/experiments/history_merge_study.py): bounded resource evidence, **not** native engine benchmarks.
-
-The project remains named AVC. Tavi and Delos were exploratory names only.
-
-## Checks
-
-The root crate now uses BLAKE3 for canonical IDs. These checks cover the pure native codec and the informational executable/refusal contract, **not** a durable native engine:
-
-    cargo test --workspace --locked --offline
-    cargo fmt --all -- --check
-    cargo clippy --workspace --all-targets --locked --offline -- -D warnings
-
-See the [qualification roadmap](docs/roadmap.md#milestone-0--independently-verify-the-selected-contracts) for Python, Node and independent Rust codec/reference checks.
+These verify the existing limited crate and tests, not the new architecture or full repository operation. Follow the [roadmap](docs/roadmap.md) for the next changes and release gates.
 
 ## License
 

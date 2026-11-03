@@ -94,7 +94,8 @@ impl<'a> Verifier<'a> {
                 parents,
                 provenance,
                 ..
-            } = object else {
+            } = object
+            else {
                 return Err("revision object kind".into());
             };
             if !self.checked_states.contains(&state) {

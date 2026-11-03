@@ -26,7 +26,7 @@ The [workflow contract](docs/ux.md) separates private protection from commit sel
 
 ## Current status
 
-**The native engine has not been implemented.** The legacy Git-command wrapper has been retired after correctness and recovery auditing; its commands, configuration and JSON operation log are not a basis for the native implementation. The Rust executable now provides only `--help` and `--version`. Every operational invocation fails without reading or modifying a repository or running a child command. The proposed workflows remain design/reference work, not available commands.
+**Native implementation has begun; repository operations are not yet available.** The retired Git-command wrapper remains disabled. The Rust library now implements canonical object encoding, deterministic in-memory Merkle-map construction, bounded owning-closure verification and streaming object hashing. These are **not** durable repository admission, persistent storage, recovery or a safe source-control workflow. The executable still exposes only `--help` and `--version`; all operational invocations refuse without touching a repository.
 
 Existing Git repositories and `.avc` recovery data are left untouched; there is no automatic conversion or cleanup. Keep independent copies of important work and legacy recovery data.
 
@@ -47,7 +47,7 @@ The project remains named AVC. Tavi and Delos were exploratory names only.
 
 ## Checks
 
-The root crate has no external dependencies. These checks cover the informational executable and refusal of operational commands, not a native engine:
+The root crate now uses BLAKE3 for canonical IDs. These checks cover the pure native codec and the informational executable/refusal contract, **not** a durable native engine:
 
     cargo test --workspace --locked --offline
     cargo fmt --all -- --check

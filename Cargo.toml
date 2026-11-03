@@ -3,3 +3,6 @@ name = "avc"
 version = "0.0.1"
 edition = "2024"
 description = "Atomic Version Control system"
+
+[dependencies]
+blake3 = "1.8"

@@ -807,12 +807,20 @@ Missing promised objects must remain **typed unknowns**, not be interpreted as n
 
 [Git reftable](https://git-scm.com/docs/reftable) demonstrates an efficient ref index and associated reflogs at huge ref counts; [Git commit-graph](https://git-scm.com/docs/git-commit-graph) shows graph generation numbers and changed-path Bloom filters. These are better candidates for **derived indexes** than extending a universal canonical provenance graph.
 
+### Additional change-centric alternatives: Sapling/Jujutsu absorb and Pijul
+
+The [Sapling stack guide](https://sapling-scm.com/docs/overview/stacks/) and [Sapling absorb command](https://sapling-scm.com/docs/commands/absorb/) describe distributing a later edit to an **unambiguous earlier commit** that introduced those lines; ambiguous/unowned hunks remain untouched, and users can preview. [Jujutsu's `jj absorb`](https://docs.jj-vcs.dev/latest/cli-reference/) provides similar automatic hunk-to-ancestor placement. Sapling's [mutation tracking](https://sapling-scm.com/docs/dev/internals/visibility-and-mutation/) also provides predecessor/successor relationships for restack and smartlog, without redefining the content itself. This is a high-value convenience candidate for AVC's multi-change UX, not a reason to turn source attribution guesses into canonical facts.
+
+[Pijul's patch model](https://pijul.org/manual/why_pijul.html) claims independent changes can commute and supports partial repository workflows with a different relationship between history, conflicts, and source. **Challenge the snapshot preference here:** if independently movable changes and partial source composition materially outperform full-tree revisions on real monorepos without undermining arbitrary binary/path/tree correctness, AVC should revisit snapshot authority. A limited prototype/counterexample suite is more useful than declaring causal change identity too complex based only on Git's model.
+
+[GitButler's parallel-agent guide](https://docs.gitbutler.com/ai-agents/parallel-agents) explicitly recognizes the tradeoff between shared workspace setup costs and filesystem/runtime conflicts. **Do not universalize either mode.** Support isolated agents by default where interference is unknown, but experimentally test shared composed workspaces for provably disjoint or cooperative work (including generated outputs and service state). Branch attribution alone is not filesystem isolation.
+
 ### Decisions and rejection criteria
 
 | Question | November 3 working judgment | Exact reason to reconsider |
 | --- | --- | --- |
 | Git-native storage? | No; Git adapter for early adoption | Native engine adds unjustified cost without material end-to-end advantage |
-| Canonical history | Snapshot-root + separate Revision and ChangeId | Changeset-first demonstrably wins agent-scale workloads without losing offline correctness |
+| Canonical history | Snapshot-root + separate Revision and ChangeId | Changeset-first **or causal commuting patches** demonstrably win agent-scale workloads without losing offline correctness |
 | Hashing | Typed BLAKE3-256 IDs | Security/portability evidence or measured alternatives |
 | Directory tree | Reopen fixed nibble-radix; trial adaptive sorted/radix/chunked maps | Native representative results and semantic verification |
 | Conflict algebra | Reopen nested binary conflict draft and overly conservative text driver | Repeated-rebase/merge correctness plus real conflict-burden evidence |

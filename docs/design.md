@@ -23,7 +23,7 @@ Not part of AVC's source authority: agent orchestration, process or VM snapshots
 
 ## 2. Identity and canonical source
 
-The preferred logical model is snapshot-first, **subject to measured comparison with changeset-first and causal patch variants before format freeze**:
+The preferred logical model is snapshot-first, **subject to measured comparison with changeset-first and causal patch/commutation variants before format freeze**:
 
 - `BlobId`: exact bytes; no line-ending, text-encoding or compression normalization.
 - `TreeId`: a typed, deterministic source namespace. Unchanged subtrees share immutable objects.
@@ -56,13 +56,13 @@ Ordinary `status`, `show`, `diff` and `log` are read-only: no hidden commit, cap
 
 Preserve affected current work before AVC itself performs potentially destructive materialization, checkout or navigation. Avoid blind overwrites, especially after an interrupted operation or another editor's write. A durable **operation log** tracks local selection/ref/history transformations and gives scoped undo/recovery; it is not a second source-history DAG or an excuse to retain private source forever.
 
-Make change editing comfortable: amend, rebase, restack, split, fold, squash, and undo operate on immutable candidates. Preserve revisions as long as they are actually reachable or pinned; evolution relationships can be metadata, not owning retention edges. Editing already shared history requires explicit policy and guarded publication.
+Make change editing comfortable: amend, rebase, restack, split, fold, squash, and undo operate on immutable candidates. Investigate an optional **absorb** operation: move a later hunk into the earlier editable change that last introduced its lines, previewing the entire restack and refusing ambiguous assignment rather than silently rewriting another change. Preserve revisions as long as they are actually reachable or pinned; evolution relationships can be metadata, not owning retention edges. Editing already shared history requires explicit policy and guarded publication.
 
 ### Concurrent changes and workspace composition
 
 Adopt the most useful GitButler idea: **multiple independent or dependent change stacks can be selected and composed into a view**. A stack has an exact base, candidate revisions, dependencies and an unambiguous destination for edits. Explicit path/hunk attribution is supported; automatic assignment may be a helper but cannot silently change ownership.
 
-The composed view is a **derived, reproducible tree**, not a synthetic canonical merge commit and not proof that all branches commute. Conflicting edits, ordered dependencies and mode/deletion changes remain explicit. Selected stacks can be tested together and published separately. A developer may work in a composed directory; concurrent agents should normally use isolated mutable directories or checkout-free conditional source APIs. Their work need not use one worktree per commit.
+The composed view is a **derived, reproducible tree**, not a synthetic canonical merge commit and not proof that all branches commute. Conflicting edits, ordered dependencies and mode/deletion changes remain explicit. Selected stacks can be tested together and published separately. A developer may work in a composed directory; concurrent agents may use isolated mutable directories, checkout-free conditional source APIs, or **an explicitly shared composed workspace** when files/runtime are safely compatible. Shared-file and generated-output collisions cannot be made safe by virtual branch ownership alone. Measure the shared-workspace setup savings against collision, stale source and hidden dependency risks before choosing a default. Their work need not use one worktree per commit.
 
 Do not burden everyday navigation with a mandatory named effort, capture, preview, index and workspace ID for every action. Durable identities are required only where they disambiguate independent recoverable work. The detailed user interaction is to be validated in task trials, not inferred from the object graph.
 
@@ -138,7 +138,7 @@ Protocol and stored objects must be versioned explicitly. If an experimental for
 
 These are **open engineering selections**, not parallel production implementations:
 
-- Snapshot-root authority versus incremental changeset authority on measured large-agent workloads (working recommendation: snapshot).
+- Snapshot-root authority versus incremental changeset authority **and causally commuting changes** on measured large-agent workloads (working recommendation: snapshot).
 - Persistent directory tree layout and canonical node bounds (no selected size/shape).
 - Normalized conflict algebra and practical text merge driver (no new frozen driver).
 - SQLite-only versus SQLite + immutable segments under equal durability requirements (hybrid is leading candidate).

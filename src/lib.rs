@@ -87,4 +87,38 @@ mod tests {
         store.insert(blob, b"tampered".to_vec());
         assert!(Verifier::check(&store, state).is_err());
     }
+    #[test]
+    fn deep_revision_ancestry_has_no_recursive_history_limit() {
+        let mut store = Store::new();
+        let leaf = merkle::put(&mut store, 2, vec![0; 4]).unwrap();
+        let state = merkle::put(
+            &mut store,
+            4,
+            Object::State(Entry::Directory(leaf)).encoded().unwrap(),
+        )
+        .unwrap();
+        let mut tip = None;
+        let mut oldest = None;
+        for i in 0..600 {
+            let payload = Object::Revision {
+                state,
+                parents: tip.into_iter().collect(),
+                change: [i as u8; 16],
+                author: b"agent".to_vec(),
+                description: Vec::new(),
+                time: i64::from(i),
+                provenance: None,
+            }
+            .encoded()
+            .unwrap();
+            let id = merkle::put(&mut store, 5, payload).unwrap();
+            oldest.get_or_insert(id);
+            tip = Some(id);
+        }
+        let tip = tip.unwrap();
+        Verifier::check(&store, tip).unwrap();
+        store.remove(&oldest.unwrap());
+        assert!(Verifier::check(&store, tip).is_err());
+    }
+
 }

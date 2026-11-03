@@ -85,9 +85,11 @@ avc commit --change docs -m "Document token format"
 avc diff --change api
 ```
 
+An optional `avc absorb` (illustrative) could **preview** moving selected edits into the earlier change that introduced the affected lines, then conditionally restack dependents. If assignment is not unambiguous, leave the edits unchanged; never infer new-file ownership from line ancestry.
+
 If a workspace has several applicable destinations, a commit must request or infer an unambiguous selected change; it must **not guess** from timestamps or claim file/hunk ownership from a generic watcher. Changes touching the same file can be independent if their exact transformations compose; overlapping incompatible transformations and path/type/delete collisions remain explicit conflicts.
 
-One combined workspace is convenient for a human. Agents writing concurrently ordinarily use independent writable directories or immutable conditional source-edit APIs, and can compose/review without copying an entire historical monorepo. AVC cannot promise safe concurrent writes by several external processes to the same file without an actual controlled-writer boundary.
+One combined workspace is convenient for a human and may **also** benefit several agents when edits, generated outputs, dependencies and runtime are compatible. Independent writable directories or immutable conditional source-edit APIs remain safer for competing tasks and unknown write overlap. The product should measure both modes instead of imposing a directory per agent. AVC cannot promise safe concurrent writes by several external processes to the same file without an actual controlled-writer boundary.
 
 ## Checkpoint, switch, and recover
 

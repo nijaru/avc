@@ -1,5 +1,7 @@
 # AVC research — decisions and rejected architectures
 
+**Current design authority:** [design.md](design.md), revised November 3, 2026. Sections 1–30 are dated research and no longer lock architecture or format selections; section 31 records the latest comparative reassessment.
+
 **Decision record updated 2026-10-30.** The [design](design.md) is authoritative; the [verification plan](roadmap.md) defines qualification. This research is an evidence and trade-off record, **not** native AVC performance measurements. Dated audits retain their then-tested assumptions; [section 11](#11-from-scratch-simplification-review--october-27-2026) supersedes the hybrid store, width groups, opaque recipes and initial-core candidate schema. The [private-history review](#12-user-workflows-and-private-history-boundaries--october-27-2026) corrects provenance custody. The [whole-workflow review](#15-product-and-user-experience-evidence--october-28-2026) revisits premature UX selection and separates recovery from authoring. The architecture contract lives in design.md and user interactions in ux.md.
 
 ## 1. What matters most
@@ -768,3 +770,56 @@ A further [whole interrupt/return case](experiments/test_workflow_paths.py) star
 
 **Evidence boundaries:** Review of current specification, reference experiments and primary-source designs, not a new native benchmark or comparative user study. No proof that AVC's binary conflicts are optimal, that 4096-byte leaves are ideal or that SQLite has sufficient performance. Reopen a locked choice on a demonstrated invariant failure, untenable essential workflow or representative, controlled cost evidence; otherwise implement.
 
+
+## 31. Fresh native-VCS review: Git adoption, selective clones, and parallel changes — November 3, 2026
+
+**Status:** Working redesign rationale, **not production measurements or a frozen codec**. The new [design](design.md), [UX](ux.md), and [roadmap](roadmap.md) supersede the November 2 architecture-selection and implementation-plan conclusions. The dated experiments in this research file remain evidence with their original sample bias and scope, not instructions to preserve their implementation choices. User-directed re-review on November 3 explicitly reopened those commitments. Read primary references as of this date.
+
+### Git-backed service versus native source authority
+
+[OpenAI Pando, November 2, 2026](https://openai.com/index/scaling-git-at-openai/) is **not** a novel source-history model: it is a horizontally scalable Git-compatible backend. Its notable mechanisms are per-ref serializable updates with relaxed cross-ref consistency, streaming admission of incoming Git packfiles to immutable storage, tracking pack/ref-version dependencies, serving reusable packs via parallel `packfile-uri` transfers, regional caching, and geometric L0–L4 compaction covers that also accelerate ref-version fetch planning. Pushes advertise only selected refs (typically trunk) as allowed object-negotiation bases, trading some redundant push bytes for reusable reader packs. OpenAI reports almost 5x median push improvement and ~1 PB/day output *against its own former backend*; those are not generic native VCS speedups or AVC benchmarks.
+
+**Decision:** Do **not** make AVC Git-backed or Git-protocol-bound. We would inherit object IDs, commit/tree representations, Git's handling of unresolved conflicts and Git pack/transfer requirements without a clear corresponding benefit for the user-facing native system. Instead, adopt physical principles of reusable immutable transfer artifacts, separate source/ref/derived indexes, incremental storage compaction, per-ref conditional updates, bounded server negotiation, and path-scoped queries. Keep a Git importer/exporter and tracked upstream early for adoption. Reconsider a Git-native backend only if an end-to-end independent comparison shows the native model offers insufficient correctness, usability, or performance upside to warrant its cost.
+
+[Anthropic Scion, October 2026](https://www.anthropic.com/research/redesigning-source-control) opts for server-side changesets and RPC-based diff/rebase/blame/path queries, immutable object caches, sparse/virtualized working trees and derived indexes. It reports orders-of-magnitude CI checkout improvement for its unusual online workload but cautions that it is **not** a broadly suitable Git replacement. [Sapling/Mononoke](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/README.md) uses a canonical Bonsai model with derivations that can serve Git and Sapling forms. **Lesson:** preserve the option to add thin clients and fast remotes without making the *offline* source authority client/server-specific; source-state vs changeset authority remains a benchmarkable trade-off, not a vendor identity choice.
+
+### What "clone fast" actually means
+
+[Git partial clone documentation](https://git-scm.com/docs/partial-clone) distinguishes object filtering and promisor remotes from history truncation, sparse working directories and the selected set of refs. Git can backfill missing blobs, but opportunistic per-object fetch can be inefficient. [GitHub's measured clone study](https://github.blog/open-source/git/git-clone-a-data-driven-study-on-cloning-behaviors/) found shallow clone initially cheap but later fetches unusually expensive for measured cases. This does **not** mean native minimal-history fetch is bad: the performance problem arises from Git's specific shallow boundaries and server negotiation.
+
+Four independent axes must be explicit: `ref/tip`, `history horizon`, `available objects`, and `materialized paths`. Native default should serve the selected current source first, with expandable history and file objects, and a sensible ordinary-project checkout. Large monorepos and short-lived agents need checkout-free source queries, batch prefetch and optional path-scoped or virtualized working copies; agents cannot be assumed to have automatic FUSE/mount privileges. [EdenFS documentation](https://github.com/facebook/sapling/blob/main/eden/fs/docs/Overview.md) is useful virtual checkout prior art but its runtime/mount costs are not a reason to require it.
+
+Missing promised objects must remain **typed unknowns**, not be interpreted as nonexistent source, empty ancestry, verified full closure, or a security authorization. A full offline repository needs explicit complete hydration and verified export, distinct from a fast thin clone. Authentication, restricted-path proofs, remote loss, and local GC require adversarial testing. For a Git upstream, import and historical deepening must report when Git server capabilities limit these semantics.
+
+### Parallel change organization
+
+[GitButler parallel branches](https://docs.gitbutler.com/features/branch-management/virtual-branches) and [CLI](https://docs.gitbutler.com/cli-guides/cli-tutorial/branching-and-commiting) support separate applied independent/stacked branches and explicit file/hunk assignment in one working directory. Its [workspace-branch implementation](https://docs.gitbutler.com/cli-guides/cli-tutorial/initializing-a-repository) uses an ephemeral synthesized merge commit so Git tools can inspect the combined workspace. [Parallel agent documentation](https://docs.gitbutler.com/ai-agents/parallel-agents) allows sharing a directory but cautions about same-file/generated-output interference. This is a useful ergonomics precedent, **not evidence that multiple external agents can safely write the same bytes**.
+
+**Proposed AVC difference:** each logical change/stack owns its exact base and authored candidates, while a combined workspace **view** is a derived, reproducible tree with explicit ordering/dependencies. Users may work on one composed directory and select change attribution; agents typically work in isolated directories or through CAS-based source APIs. Compose for review/testing and publish independent stacks without forcing an ephemeral synthetic merge revision into the native authored DAG. Explicit source conflicts, file/hunk ownership and source versions remain required. The product cost is complexity of change attribution and recomposition; qualify human/agent tasks before making advanced automatic assignment mandatory.
+
+[Jujutsu's working copy](https://docs.jj-vcs.dev/latest/working-copy/) auto-snapshots source through commands and maintains independent workspaces; its [Git-compatibility docs](https://docs.jj-vcs.dev/latest/git-compatibility/) reveal real limits of Git conflict trees and colocation. Carry forward ergonomic history editing and operation log, **not** the requirement to automatically commit and track every observed file. Imported Git conflicts, signed commits, empty directories and path/mode incompatibilities must be reported rather than silently transformed.
+
+### What modern hashing and compression do and do not guarantee
+
+[BLAKE3 specification](https://github.com/BLAKE3-team/BLAKE3-specs) supports a fast, parallel, software-friendly 256-bit hash; use typed domain separation. Hash throughput matters in large files and source verification, but it rarely dominates network round trips and working copy materialization on tiny selective clones.
+
+[Zstandard](https://facebook.github.io/zstd/) offers adjustable compression levels and dictionaries. Its published corpus benchmark shows better single-stream throughput than zlib for the tested setup, **not** a validated win over Git's cross-object delta-compressed packfiles. Compare whole pipelines: `BLAKE3 + canonical objects + zstd segments`, optionally chunked large blobs or dictionary/delta transforms, against Git pack/delta/zlib and an AVC SQLite-only baseline. Separate compressed physical format from logical object hashes. Small-object representation, dictionary startup and random access can dominate apparent codec savings.
+
+[Git reftable](https://git-scm.com/docs/reftable) demonstrates an efficient ref index and associated reflogs at huge ref counts; [Git commit-graph](https://git-scm.com/docs/git-commit-graph) shows graph generation numbers and changed-path Bloom filters. These are better candidates for **derived indexes** than extending a universal canonical provenance graph.
+
+### Decisions and rejection criteria
+
+| Question | November 3 working judgment | Exact reason to reconsider |
+| --- | --- | --- |
+| Git-native storage? | No; Git adapter for early adoption | Native engine adds unjustified cost without material end-to-end advantage |
+| Canonical history | Snapshot-root + separate Revision and ChangeId | Changeset-first demonstrably wins agent-scale workloads without losing offline correctness |
+| Hashing | Typed BLAKE3-256 IDs | Security/portability evidence or measured alternatives |
+| Directory tree | Reopen fixed nibble-radix; trial adaptive sorted/radix/chunked maps | Native representative results and semantic verification |
+| Conflict algebra | Reopen nested binary conflict draft and overly conservative text driver | Repeated-rebase/merge correctness plus real conflict-burden evidence |
+| Local physical store | Compare SQLite-only and SQLite roots + immutable segments | Equal crash-safety/GC/backup qualification and measured costs |
+| Clone default | Tip-first, expandable history, partial content and explicit availability | Poor common workflow latency or unsafe user assumptions |
+| Git interoperability | Early foreign-ID mapper, full Git push only for supported states | Demonstrated need for true colocated Git authority, with race-safe design |
+| Concurrent work | Independent agents; optional GitButler-like composed views | Shared-writer alternative actually solves collisions without worse recovery |
+| Hosted protocol | Optional remote; per-ref CAS, reusable object transfer | Need for consistent global multi-ref snapshot explicitly demonstrated |
+
+**Implementation consequence:** the previous experimental codec/fixtures can be replaced before format freeze; retain only behavior independently required or validated. Existing reference results are evidence, not tests that should be made green by reproducing an obsolete algorithm. The next local implementation should first validate tree, conflict and storage alternatives **with an actual native operation path**, then establish safe local custody and a Git-enabled tip-first workflow before investing in a host or elaborate UI.

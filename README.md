@@ -1,40 +1,41 @@
 # AVC
 
-**Experimental native version control for developers and coding agents.** AVC aims to combine correct local/offline source ownership, efficient checkout-free source APIs, editable history, native partial repositories, and practical Git adoption **without being Git-backed**.
+**A native, local-first version control system designed for developers and coding agents.**
 
-**Status (November 3, 2026): the core design has been selected for implementation, but AVC is not yet a usable or reliable VCS.** No canonical format is frozen. Existing Rust code implements only part of a superseded experimental object codec and in-memory Merkle/verifier; the CLI still rejects all operational commands. Keep independent Git backups of important source and preserve old `.avc` recovery data.
+AVC's planned core combines immutable persistent source trees, editable history, reliable offline custody and recovery, fast selective native clones, conditional source APIs without checkout, and Git interoperability **without storing native history in Git**.
 
-## Architecture
+## Status — November 4, 2026
 
-- **One exact source authority:** immutable BLAKE3-identified, persistent Merkle source trees; authored revisions reference exact source roots. Changed-path descriptions and provenance are derived or checked hints, not another competing history.
-- **Cheap incremental edits:** path-copy affected radix-map nodes, not full-tree construction. Stable logical change identities and a separate durable operation log support amend, rebase, scoped undo and recoverable local work.
-- **Fast source-first clones:** get the current selected tip/source without all old history; native partial clients can fetch additional files and history on demand or ask a full holder to validate conditional edits. Full offline custody is explicit and verifiable.
-- **Honest Git bridge:** normal Git imports hydrate and convert a complete current source snapshot. An enormous filtered Git repository may remain a *foreign partial view* until its source can actually be converted; Git object IDs cannot be translated into native BLAKE3 blob IDs without content.
-- **Independent and composed changes:** optional GitButler-like stacks/derived views, Jujutsu/Sapling-like history editing, and safe independent agent source operations. No mandatory daemon, hosted service, shared writer, FUSE or agent harness.
-- **Modern physical storage:** one SQLite transactional metadata/root authority plus staged immutable payload segments; Zstandard, batch fetch, caching and compaction are physical optimization candidates, not canonical identities. Durability must be tested against a SQLite-only control.
+**Architecture defined; implementation intentionally reset.** No functioning native VCS, safe source custody, stable wire format, clone/import, backup or agent API exists yet. The active repository contains the **implementation-ready design contracts**, not an experimental old codec masquerading as the new system.
 
-## Project documents
+The former Rust prototype, independent Python/Node/Rust fixtures, old format vectors and CI were retired because they implemented a **different unreleased architecture** (4 KiB map leaves, old State/provenance objects, nested conflicts and whole-map rebuilding). Their source, original measurements and reports are preserved in [the pinned pre-cleanup commit](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72). Consult it only as historical evidence, **not** a live test suite or authoritative byte format. Existing user Git repositories and legacy `.avc` recovery data must never be automatically overwritten or discarded.
 
-- [Design](docs/design.md): current authoritative logical/physical architecture and correctness boundaries.
-- [Workflows](docs/ux.md): proposed human/agent tasks and truthful clone/recovery behavior.
-- [Roadmap](docs/roadmap.md): implementation sequence, narrow pre-format-freeze comparisons and custody gates.
-- [Research](docs/research.md): independent steelman, concrete evidence and overturn conditions. Previous chronological research and its original reproduction instructions are [pinned in Git history](https://github.com/nijaru/avc/blob/94dd9921ee8a93b89551cbecf53bb14f16f08b01/docs/research.md).
-- [Historical experiments](docs/experiments/): bounded reference studies of the *older draft*, not native performance or proof of safe custody.
+**Next step:** start a fresh Rust library and CLI on the local machine, implement the selected canonical source engine, then qualify durable local operations before storing important user source. No further general architecture review is required by default.
 
-## Current crate
+## Design ownership and reading order
 
-The present Rust sources are experimental and must be migrated to the new model as a cohesive change. Their `FlatMap` builder reconstructs an entire directory and the verifier walks/reconstructs complete maps; these are not acceptable as the incremental production engine. Do not treat old golden vectors as a stable compatibility contract.
+1. [Architecture](docs/design.md): source ownership, invariants, responsibilities and selected system boundaries.
+2. [Canonical format and merge](docs/format.md): exact BLAKE3 object IDs, binary encoding, persistent radix directory maps, revisions, typed signed conflicts, path/merge semantics.
+3. [Local store and recovery](docs/storage.md): SQLite authority, immutable compressed segments, crash ordering, GC, working-directory observation, guarded materialization, operation log, backup/restore.
+4. [Native synchronization](docs/sync.md): tip-first/partial clones, Merkle proofs, object promises, source APIs, conditional remote publication.
+5. [Git integration](docs/git.md): complete-tip native import, foreign partial views, ancestry mapping, export/push and explicit fidelity boundaries.
+6. [User workflows](docs/ux.md): selected first-implementation commands, source/history editing, checkpoints, workspaces, change stacks and agent use.
+7. [Execution plan](docs/roadmap.md): local implementation stages, qualification and release gates.
+8. [Adversarial decisions and evidence](docs/research.md): why this model was selected over Git-backed, Scion, Pijul, GitButler and earlier AVC alternatives.
 
-The current limited checks are:
+The design is **complete as an implementation contract**, but has not passed independent codec vectors, crash tests or real workload benchmarks. A concrete failed invariant or significant measured cost can justify a coherent revision **before v1 format freeze**. Do not preserve wrong code or unvalidated constants simply because they appeared in an earlier chat or experiment.
 
-```sh
-cargo test --workspace --locked --offline
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked --offline -- -D warnings
-```
+## Primary design choices
 
-These commands were **not run during the November 3 design-only remote review**; they exercise the older prototype, not a functioning VCS. Follow the [roadmap](docs/roadmap.md) for the first safe local vertical slice.
+- **Source model:** typed BLAKE3-identified Merkle roots, path-copy persistent radix maps, immutable revisions and stable logical ChangeIds.
+- **Conflict handling:** normalized signed exact-entry expressions and deterministic three-way merge; unresolved source is represented as data, not clean marker text.
+- **Local custody:** SQLite WAL/FULL metadata plus staged immutable payload segments, independent closure-based backup and recovery.
+- **Clones and agents:** current source first, bounded history horizon, on-demand native objects, optional sparse/no-checkout clients and conditional path proofs.
+- **Git adoption:** native writable import of a complete selected current Git source; separate foreign Git partial mode when unfetched SHA objects cannot be given native BLAKE3 IDs.
+- **History UX:** scoped local operation undo, private checkpoints, separate uncommitted work, optional composed multi-change stacks and `absorb`.
 
-## License
+## Safety and license
+
+AVC is not ready to own irreplaceable data. Keep complete independent Git/other backups until source admission, power-loss recovery, GC, and exported independent restores have been proven on the real native CLI.
 
 MIT. See [LICENSE](LICENSE).

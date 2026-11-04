@@ -86,6 +86,65 @@ The crucial operational failure would be two independently writable repositories
 
 **Falsification:** if Git hosting parity and mixed-client consistency require a materially more complex mapping/retention layer than users value, retain Git remote import/export indefinitely and **defer** the Git-hosting frontend. Do not sacrifice source identity or create a second backend merely to satisfy a speculative hosting milestone.
 
-## 10. How to overturn a decision
+## 10. November 4 competitor steelman after the one-native-backend decision
+
+**Scope:** contemporary official documentation and vendor announcements, reviewed November 4, 2026. This is an **independent competitive assessment, not an AVC benchmark or a release guarantee**. It updates the earlier conclusion that Git interoperability can be long-lived through one native authority plus conversion layers. The normative interface contract remains [git.md](git.md), not this discussion.
+
+### What users can already accomplish without AVC
+
+| Alternative | Strongest product/technical case | Unproven opportunity for AVC |
+| --- | --- | --- |
+| **Git + Jujutsu** | Jujutsu's production-oriented Git backend delivers stable logical changes, first-class conflicts, operation-log recovery, automatic working-copy snapshots and interop with existing Git remotes. Developers can keep all Git tools and hosted workflows today. | A truly integrated **checkout-free conditional source API and native partial-source custody** with lower overhead, fewer foreign-layer compromises, and predictable agent integration. Must benchmark complete tasks against modern `jj`, not old Git alone. |
+| **Sapling + Mononoke + EdenFS** | Source control for very large monorepos, tiny working sets, source indexing, and a single canonical Bonsai authority with derived Git/Sapling/Mercurial formats. Direct empirical precedent for **one engine, multiple VCS protocols**. | Local-first portable deployment without the server/virtual-filesystem infrastructure and a source model optimized for direct immutable tree queries. No proof that AVC's snapshot authority outperforms Mononoke's changesets in high-throughput hosting. |
+| **Pijul / Darcs** | Causal change dependencies and commuting independent changes offer partial clones and repeated independent integration without rebasing away identities; first-class conflicts are part of the history model. | Source trees/opaque files from arbitrary external writers and predictable production-grade indexing/recovery. **Major technical threat:** if Pijul's model yields materially fewer incorrect combinations or repeated merge conflicts in agent workloads, AVC's snapshot-plus-diff representation is the wrong trade-off for those cases. |
+| **GitButler + Graphite** | Applied parallel changes in one workspace, hunk ownership, stacked PRs and existing GitHub workflow; no custom native repository migration required. | Exact immutable composed source values, safe independent agent conditional work, and reliable protected unfinished state. Merely duplicating stack UX is not enough. |
+| **DeltaDB** | Causal character-level deltas, continuous agent-session history, replication and worktree materialization between Git commits; Git remains the shared authored state. | Lower-cost arbitrary-file source custody and capability without mandatory Git or continuous conversation capture. A source-only VCS loses Delta's fine-grained intention/provenance UX; integrations must remain possible. |
+| **Entire** | Git-compatible distributed mirrors aimed explicitly at agent-scale read/push traffic; integrated agent checkpoints, explainable blame and review. Direct competition for "agent Git backend" and remote context services. | Native transactional source work without Git object/partial-clone constraints. **Do not compete on raw Git hosting throughput alone.** Their published performance claims are vendor-specific load tests, not AVC baseline targets. |
+| **OpenAI Pando and GitHub's new infrastructure** | Mature Git and ecosystem compatibility alongside independent per-ref write coordination, immutable reusable pack transfers, compaction, regional caches and elastic Git serving. | New **source semantics**, no-checkout queries and safer multi-agent edit/integration, rather than another faster Git transport layer. Protocol compatibility alone is not differentiation. |
+| **Fossil** | Reliable portable SQLite repository and independently verified atomic source transactions, without dual physical-store complexity. | AVC must justify its SQLite + sealed-segment durability/GC/backup burden against a simpler single-database baseline. Native physical speed alone is not a safety argument. |
+
+**Current primary references:**
+[Jujutsu architecture](https://www.jj-vcs.dev/latest/technical/architecture/),
+[Jujutsu Git backend details](https://www.jj-vcs.dev/latest/technical/architecture/#gitbackend),
+[Mononoke derived data](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/2.3-derived-data.md),
+[Mononoke VCS interoperability](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/README.md),
+[Pijul change theory and partial clones](https://pijul.org/manual/why_pijul.html),
+[GitButler parallel branches](https://docs.gitbutler.com/parallel-branches),
+[Graphite stacked PR workflow](https://www.graphite.com/docs/cli-quick-start),
+[DeltaDB](https://delta.dev/deltadb),
+[Entire distributed Git launch (July 8, 2026)](https://entire.com/news/entire-launches-distributed-git-network-for-the-agent-era),
+[Pando (November 2, 2026)](https://openai.com/index/scaling-git-at-openai/),
+[GitHub agent-scale architecture (October 2026)](https://github.blog/engineering/building-git-infrastructure-for-agent-scale-development/),
+[Fossil SQLite guarantees](https://fossil-scm.org/home/doc/trunk/www/index.wiki).
+
+### Why the new Git frontend is not an immediate feature
+
+Mononoke confirms that a canonical non-Git source model can serve Git through derived objects and mappings. **It does not make this inexpensive.** Git protocol push/fetch semantics, foreign IDs, ancestry mapping, ref leases, signature/tag fidelity, shallow promises, object reachability and long-lived cache retention are substantial additional maintained surface area.
+
+**Decision maintained:** one native authority, enduring Git remote import/export, later optional Git smart frontend. A Git-visible ref is guarded by exportability and a single native ref generation. If allowing native conflicts or empty directories makes common shared branches impossible to update, users must have a clear native-only path and a *deliberate* representable integration candidate; this policy requires UX trials before a Git frontend launches. The strongest alternative remains simply continuing to rely on GitHub/GitLab for collaboration without building an AVC Git server.
+
+A second Git-backed AVC engine would remove some migration friction but create two implementation truth paths and feature differences. That is not justified unless substantial actual adoption demonstrates native conversion is the overwhelming bottleneck and no single-authority bridge can solve it at acceptable cost.
+
+### The four biggest AVC disadvantages
+
+1. **Ecosystem and trust:** Git has decades of interoperability, integrations and production failure testing. The AVC format, conflict algebra and cross-store durability are unimplemented and may contain subtle data-loss cases. No presumed correctness advantage until faults are verified.
+2. **Migration cliff:** a normal Git import needs the complete selected current source to compute native hashes; a filtered Git foreign view retains Git identities but cannot use AVC's full native authored feature set. This can neutralize AVC's biggest value proposition exactly for the largest monorepos.
+3. **Causal composition:** Pijul/DeltaDB retain edit intent unavailable from plain snapshots; AVC's signed conflict expressions preserve source alternatives but cannot guarantee future rebases recover latent intent discarded by a clean merge. This matters when many agents repeatedly restack.
+4. **Scope/maintenance:** source engine, portable safe filesystem operations, hybrid storage, Git conversion, native partial protocol, sophisticated UX and optional Git hosting is a formidable maintenance surface. Pando/Entire/GitHub already invest heavily in scalable Git hosting; AVC should not try to equal all of them before demonstrating one compelling user workflow.
+
+### Falsifiable product wager and benchmark gate
+
+**Proposed first compelling use case:** independently working human/agents on a **very large source tree** can inspect exact source and produce multiple safe candidate changes, review a composed result, recover interrupted work and integrate through Git **with less setup/copying, fewer surprise conflicts and less risk of losing edits** than Git plus Jujutsu/GitButler/agent tooling. This is a *hypothesis*, not a fact.
+
+A credible head-to-head trial needs:
+- A small ordinary Git project (adoption/push/PR), a deep-history monorepo with very large current source, generated outputs and two isolated/cooperating agents, and a binary/path conflict-heavy project.
+- Identical agent actions and comparable isolation/network/CPU/disk resources for `git+jj`, `GitButler`, and AVC; include Git foreign partial mode as its own outcome, not mislabel it fully native.
+- Measure **time to first useful edit**, total wall-clock task completion and p95, downloaded bytes, RAM/SSD churn, recoverable source after failures, manual merge corrections, Git parity and complexity to deploy/maintain.
+- Explicit fault cases: aborted source capture, competing edits to same file, clean but semantically incorrect merge, simultaneous native/Git publication, missing promisor data, failed backup and recover after crash.
+- Evaluate whether AVC wins *more than one complete high-value workflow* rather than only format microbenchmarks. **If Git + jj + current agent tools are comparable while AVC remains harder to adopt or recover, the independent native system is not yet earning its cost.**
+
+This criterion should drive local implementation qualification and prioritization. Avoid optimizing enormous Git hosting throughput before the **local agent-source transaction and Git round-trip** work provides visible differentiation.
+
+## 11. How to overturn a decision
 
 An overturn requires one specific violated invariant, an essential workflow that cannot be supported, or a controlled material end-to-end advantage. State the exact input/conditions, competing contract, data-loss/security implications and migration impact; then update **one authoritative owner** and its dependent implementation. Avoid indefinite algorithm menus, unversioned format changes after release, and marketing claims of globally optimal performance. The [roadmap](roadmap.md) now begins implementation, not further architecture exploration.

@@ -145,7 +145,7 @@ A credible head-to-head trial needs:
 
 This criterion should drive local implementation qualification and prioritization. Avoid optimizing enormous Git hosting throughput before the **local agent-source transaction and Git round-trip** work provides visible differentiation.
 
-### Three concrete corrections to the implementation plan
+### Earlier Stage 1A proposal (superseded by §12 evidence-first disposition)
 
 **Decision after the competitive steelman, November 4, 2026:** Change *priority and validation*, not the one-native-backend decision.
 
@@ -154,6 +154,10 @@ This criterion should drive local implementation qualification and prioritizatio
 - **Move the large-Git conversion cliff into first-stage validation.** The native BLAKE3 model requires full current-source bytes for foreign Git conversion. The foreign partial mode avoids this, but leaves native history and checkout-free AVC semantics unavailable. Use real large filtered Git tasks to quantify whether that limitation blocks adoption. If it does, reconsider foreign overlay/adaptor ergonomics with one canonical authority, not silently insert SHA references into native source identities.
 
 These are actionable tests with **stop/reconsideration conditions**, not claims of observed wins. The selected source/ID architecture, permanent Git import/export, and optional future Git-protocol frontend remain unchanged unless measured results falsify them.
+
+## 11. How to overturn a decision
+
+An overturn requires one specific violated invariant, an essential workflow that cannot be supported, or a controlled material end-to-end advantage. State the exact input/conditions, competing contract, data-loss/security implications and migration impact; then update **one authoritative owner** and its dependent implementation. Avoid indefinite algorithm menus, unversioned format changes after release, and marketing claims of globally optimal performance. The [roadmap](roadmap.md) now begins implementation, not further architecture exploration.
 
 ## 12. Evidence-first resolution of the early AVC validation questions — November 4, 2026
 
@@ -198,7 +202,3 @@ These are actionable tests with **stop/reconsideration conditions**, not claims 
 **Not essential as new tests:** proving that checkout-free source edits exist; replaying hundreds of thousands of existing merges in a new custom harness; implementing Pijul's entire causal algebra only to compare; repeating GitHub's generic shallow/partial clone study; measuring a nonfunctional AVC against feature-complete competitors.
 
 **Remaining uncertainty:** no controlled published study was found that compares **AVC's exact chosen signed-conflict + snapshot-root representation** against Pijul under equal workload, implementation quality and durability. We should not invent such a result. Its *specific* correctness needs independent implementation tests, while broad architectural priority can be decided from existing research.
-
-## 11. How to overturn a decision
-
-An overturn requires one specific violated invariant, an essential workflow that cannot be supported, or a controlled material end-to-end advantage. State the exact input/conditions, competing contract, data-loss/security implications and migration impact; then update **one authoritative owner** and its dependent implementation. Avoid indefinite algorithm menus, unversioned format changes after release, and marketing claims of globally optimal performance. The [roadmap](roadmap.md) now begins implementation, not further architecture exploration.

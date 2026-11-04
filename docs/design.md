@@ -1,150 +1,160 @@
-# AVC native VCS — working architecture
+# AVC — native source control architecture
 
-**Revised November 3, 2026. Status: design candidate for the next implementation iteration, not a frozen format or a working source-control product.**
+**Design decision: November 3, 2026 (independent steelman).** This is the **authoritative design**, sufficiently defined to implement a first native vertical slice, **not** a frozen byte format or verified production engine. Earlier proposals are superseded; the October/November 2 and first November 3 contracts remain available in [Git history](https://github.com/nijaru/avc/blob/94dd9921ee8a93b89551cbecf53bb14f16f08b01/docs/design.md). The existing experimental Rust codec implements the *older* proposal and is not a compatibility constraint. The [workflow contract](ux.md), [qualification plan](roadmap.md), and [research/decisions](research.md) have separate ownership.
 
-This is the **current owner of intended native architecture**. It supersedes the October/November 2 detailed v0 proposal. The older proposal remains [in Git history](https://github.com/nijaru/avc/blob/1927e1a0862029b0b9bfbbc00e795f6553eab0a4/docs/design.md) at commit `1927e1a0862029b0b9bfbbc00e795f6553eab0a4`; its exact codec assumptions still describe parts of the experimental Rust library and reference fixtures, **not a production format that must be preserved**. Do not silently use the new document to assert that the existing code implements it. All important source must remain in independent Git/other backups until AVC's custody and crash-recovery gates pass.
+## Product and decision rule
 
-[Workflows](ux.md) define user-visible behavior. [Roadmap](roadmap.md) defines experiments, qualification, and implementation sequence. [Research](research.md) keeps comparative evidence and rejected alternatives. This is a recommendation intended to survive serious criticism, not a commitment to a specific page size or merge algorithm without data.
+AVC is a **local-first, native, general-purpose VCS** with reliable offline source ownership, cheap source queries without checkout, editable history and recoverable work, scalable selective fetching, and excellent **Git adoption without Git authority**. It serves ordinary local development and terminals, persistent SSH work, CI, ephemeral agents, and optional hosted large repositories.
 
-## 1. Product and engineering goals
+Optimize **complete developer/agent tasks** (clone → inspect → edit → test → preserve → review → integrate) at real resource costs, not theoretical minimum commit size, novel algebra, or a claimed numerical optimum across every workload. Favor correctness, observability, maintainability, and end-to-end performance. Cross-company upstream speedups are not AVC benchmarks. Detailed implementation constants can change before release if tested; do **not** leave core semantics indefinitely undecided waiting for arbitrary research.
 
-Build a standalone, general-purpose, **local-first native VCS** suitable for regular developers, coding agents, large monorepos, short-lived compute, and decentralized or hosted use. It must be compelling on correctness, recovery, speed, UX, and interoperability, not novelty.
+A full local repository needs no server, daemon, mount, or agent harness. A thin repository has explicit completeness limits and may rely on a remote. Git is an adapter, not the canonical object store or synchronization protocol.
 
-The most important desired capabilities are:
+### Non-negotiable invariants
 
-1. **Correct offline source custody.** A complete repository is self-contained. Acknowledged retained source remains reconstructible within its declared durability and retention domain; independent export/backup works without a server.
-2. **Fast useful clones.** Obtain the selected tip and current working set first. Fetch older history, other branches, and additional source on demand, without equating missing promised data with absent source.
-3. **Safe editable history.** Stable logical change references, exact immutable revisions, rebases, amendments, splits, folds, undo, reviewable candidates, and first-class unresolved conflicts.
-4. **Parallel source work.** Independent writable agent workspaces or checkout-free candidates; optional composed views and separate change stacks in one developer workspace. No shared mutable directory is required.
-5. **Source APIs without checkout.** Exact reads, diffs, conditional edits, merges, and source queries by immutable ID, usable through a Rust library and later native protocol.
-6. **Easy Git adoption.** Clone/import from existing Git remotes, follow upstream, exchange representable revisions and refs, and preserve a truthful mapping. Git must not define native object IDs, source semantics, compression, or protocol.
+1. **Exact source:** A complete, admitted source reference reconstructs one exact typed namespace, independent of its author, ancestry, compression, materialization, and caches.
+2. **Single source authority:** The canonical source reference is the persistent Merkle source value. Changed-path descriptions and diffs are optional *authenticated construction hints*, not a second history whose replay might disagree.
+3. **Honest custody:** Acknowledging a protected local root, checkpoint, export, or remote ref requires the entire *promised durability closure* to be present and durable within the declared retention/failure domain. No incomplete promise is advertised as full custody.
+4. **Safe uncertainty:** Unsupported, conflicting, incomplete, inaccessible, or temporarily unavailable input is never silently treated as absent source or a successful clean merge.
+5. **Independent work:** Different workspaces and local change candidates advance independently; advancing a shared ref is conditional. User-visible work is not inferred from filesystem location or equal content.
+6. **No false atomic filesystem snapshot:** External tools may modify normal directories during observation. AVC records the exact bytes it actually captured and uses guards before overwriting paths.
+7. **No implicit execution or disclosure:** Reading/parsing/importing source never runs its hooks or agent tools. Sharing unpublished source, checkpoints, and evidence requires a distinct operation.
+8. **Import honesty:** Git or any foreign repository has a distinct foreign identity. AVC cannot claim a complete native BLAKE3 source root from unfetched foreign blob identifiers.
+9. **Derived indexes:** Rebuilding indexes may be expensive but cannot change source semantics, remove promised data, or turn unverifiable input into a known answer.
 
-Not part of AVC's source authority: agent orchestration, process or VM snapshots, editor CRDTs, CI, builds, code review policy, environment/dependency setup, forge UI, or deployment state. Integrations can use AVC's source contracts.
+## 1. Canonical logical model: choose snapshots, incremental construction
 
-## 2. Identity and canonical source
+**Selected model: content-addressed persistent source trees directly referenced by immutable authored revisions.** A canonical changelog is **not** an additional source authority.
 
-The preferred logical model is snapshot-first, **subject to measured comparison with changeset-first and causal patch/commutation variants before format freeze**:
+The minimal immutable logical objects are:
 
-- `BlobId`: exact bytes; no line-ending, text-encoding or compression normalization.
-- `TreeId`: a typed, deterministic source namespace. Unchanged subtrees share immutable objects.
-- `RevisionId`: exact TreeId, ordered parents, author/message/time and selected immutable authored metadata.
-- `ChangeId`: a stable logical identity that can follow a change through amend/rebase; separate from the revision version. Divergent successors are not silently unified.
+- **Blob**: exact regular-file bytes or symlink-target bytes, identified by typed, domain-separated BLAKE3-256 hash over canonical uncompressed bytes.
+- **Tree nodes**: deterministic, immutable directory bindings over raw filename bytes. Entries are file {BlobId, executable}, symlink {BlobId}, directory {TreeId}, or unresolved typed source value. Empty directories are representable; special files, ACLs, xattrs, case-folding, mtime and inode identity are not silently normalized into source.
+- **Conflict values**: unresolved typed alternatives that preserve the affected source entries/trees and comparison context. Conflicts are source data, not marker text or a completed semantic merge.
+- **Revision**: immutable source root, ordered revision parents (when complete), logical ChangeId, authored metadata. A revision's source root may itself be an unresolved directory-valued source. Revision ancestry is distinct from source identity.
 
-A revision directly names a complete logical source tree; it need not eagerly store an expanded copy of every subtree. Changed-path data, rename/copy hints, blame, path history, graph accelerators and displayed diffs are **derived**, not competing canonical histories. A recorded command may supply move intent, but inferred equality or similarity cannot prove human intent.
+**Do not require the separate v0 State wrapper** merely to hold a directory root. Use a kind-checked root reference; a conflict-valued root is still explicit. A new clean revision can reuse the same exact source root as another author/history.
 
-Canonical entries should initially include regular file bytes plus executable bit, symlink targets, directories (including empty), and a lossless unresolved-conflict value. Paths are exact raw names subject to safe validation; filesystem normalization, case folding, platform limitations, ACLs and unsupported special files must not silently alter source identity. Portable materialization may be refused even when the source tree remains valid.
+**Stable ChangeId** is a random logical handle preserved by a straightforward amend/rebase. New authored changes receive new identities. Rewrites produce new immutable RevisionIds and optional predecessor/successor *metadata*; split/fold and divergent successors have explicit many-to-many mappings, never a guessed unique latest revision. A review or test attestation binds the **exact source/revision plus its relevant comparison/execution scope**, not a floating change name. Detached signatures and optional evidence do not affect source identity and do not make unpublished inputs durable.
 
-Use **typed, domain-separated BLAKE3-256 object IDs** and one canonical binary encoding. Object IDs are hashes of logical uncompressed content, never of a physical compression stream, pack position, remote URL, or local file timestamp. BLAKE3 is a justified current candidate, not a claim that it alone makes clones faster. Authentication, access rights and retention are separate from hash integrity.
+**Ordinary commit construction is incremental.** For a batch of conditional path updates from a verified base tree, path-copy only affected directory-map nodes, reuse verified immutable siblings, and generate a new root. Target cost is proportional to changed paths and directory-tree depth plus touched node bytes; no full source-tree rebuild or full history replay on every edit. Changed-path summaries may be stored alongside a revision to make authoring, history queries and transport cheap, but every claimed result must validate against the actual source root.
 
-### Merkle directory layout is not locked
+This selection rejects canonical causal/commuting patches as a universal authority: arbitrary binary edits, filesystem writers, directory moves, and ambiguous edit intent have no guaranteed causal source operation. Allow **optional** semantically richer change descriptions and composition algorithms when provenance is known; always bind their result to an exact source tree. A canonical changeset-first/derived-manifest system (Scion/Mononoke) could outperform snapshot roots on an unusual write-heavy, seldom-read hosted workload, but does not establish a better general-purpose offline system absent equivalent measurements. See [research](research.md).
 
-Preserve persistent structural sharing, deterministic construction, bounded lookup/update costs, efficient range scans and subtree skipping. Compare at least: (a) compact sorted small-directory nodes with hierarchical sharding, (b) path-compressed radix, (c) deterministic chunked B-tree/prolly-style maps.
+### Canonical directory map choice
 
-Evaluate changed-node counts, encoded bytes, lookup I/O, RAM/allocation, edit locality, renames, full diff and cache behavior on real and adversarial directories. Choose thresholds only after **native** benchmarks, not because the old nibble-radix draft used 4 KiB leaves. Once released, canonical layout changes require explicit migration/versioning.
+**Select a hierarchical, path-compressed radix map with compact, sorted leaves as the implementation baseline.** The earlier bounded study showed materially smaller cold reads and update bytes than flat maps; one-key leaf maps inflated object counts. A radix map offers deterministic prefix-local edits, subtree reuse, exact raw names, efficient path and range queries, and bounded fanout. This is *not* a proof that the previous nibble codec or 4096-byte leaf threshold is optimal.
 
-A full decoder and admission path verifies type, canonical bytes, graph acyclicity, resource bounds and the owning closure. A thin client can hold less data without declaring the full closure locally verified.
+Build a real **persistent update** path, not the prototype's full FlatMap → build() on each change. Use a small sorted leaf when the entire directory fits; split a wide directory deterministically on raw-name prefixes into bounded radix nodes. Canonical construction must be insertion-order independent, including split/collapse thresholds. Compare the production candidate once against a deterministic chunked ordered-map alternative using real edit/move/lookup and memory costs. Freeze actual byte grammar and thresholds **after** that qualification, not before. Prefer an unambiguous codec and simple incremental verifier over marginal theoretical compression.
 
-## 3. Local work and history
+Path rules must protect exact byte names, prohibit NUL, separators, \`.\` and \`..\`, reject ambiguous duplicate/case-colliding materialization, and refuse unsafe traversal or symlink redirection. Logical source may be valid even when a particular filesystem cannot faithfully materialize it. Include bounded depth, encoded-length and input allocation checks.
 
-Keep **three distinct actions**:
+### Verification without whole-tree work on every commit
 
-- **Private checkpoint/recovery:** pin observed bytes and their source base, scope, exclusions and retention. This is not a commit or publication.
-- **Author:** build an immutable candidate from pinned inputs with exact conditional path/hunk selection. Commit it as a new authored Revision; support an uncommitted first effort.
-- **Share/publish:** transfer required objects and conditionally move a named target, with permission checks and exact ref-version preconditions.
+At untrusted admission: validate object envelope/hash, typed canonical decoding, local node ordering/bounds, and authorized dependencies. Newly built nodes are validated against a trusted verified base and exact conditional witnesses. An unchanged previously verified immutable subtree may be reused without walking every descendant. Cache verification status by exact ID, codec version, and required context/bounds; never trust a copied or unauthenticated cache summary. Full-closure audits, import verification, backup/restore qualification and periodic integrity scans are **separate, potentially expensive operations**. Validation cache corruption must not yield false durable claims.
 
-Ordinary `status`, `show`, `diff` and `log` are read-only: no hidden commit, capture, network fetch unless requested, hook execution or ref changes. File monitoring/stat caches are optimization hints, not proof of an atomic filesystem snapshot. Capture admits the **exact bytes observed**, with truthful incomplete/changed-during-scan reporting.
+## 2. History, operations, and working state
 
-Preserve affected current work before AVC itself performs potentially destructive materialization, checkout or navigation. Avoid blind overwrites, especially after an interrupted operation or another editor's write. A durable **operation log** tracks local selection/ref/history transformations and gives scoped undo/recovery; it is not a second source-history DAG or an excuse to retain private source forever.
+Separate immutable authored history from mutable local **repository view**:
 
-Make change editing comfortable: amend, rebase, restack, split, fold, squash, and undo operate on immutable candidates. Investigate an optional **absorb** operation: move a later hunk into the earlier editable change that last introduced its lines, previewing the entire restack and refusing ambiguous assignment rather than silently rewriting another change. Preserve revisions as long as they are actually reachable or pinned; evolution relationships can be metadata, not owning retention edges. Editing already shared history requires explicit policy and guarded publication.
+- **Revision DAG** owns authored parents and source identity.
+- **Local view** owns workspace selections, draft/change-stack heads, native and foreign remote tracking refs, retained checkpoints, and protected object roots.
+- **Durable operation journal** records transactional changes to that local view and its expected generation, with enough before/after information for scoped undo and interrupted-operation recovery; it is **not another canonical source DAG**.
+- **Filesystem observation** supplies checked candidate bytes, not a globally atomic directory truth.
+- **Publication** conditionally updates a remote ref only after required objects are durably available.
 
-### Concurrent changes and workspace composition
+Basic commands remain familiar (\`status\`, \`diff\`, \`show\`, \`commit\`, \`log\`, \`switch\`, \`merge\`, \`rebase\`). Selective file/hunk commit is based on pinned captured bytes, with no mandatory mutable Git staging index. The exact source candidate shown in a preview is the candidate authored; editor writes after preview remain outside it. Initial uncommitted work must be recoverable before the first authored revision; do not manufacture canonical task/effort commits merely to make navigation work.
 
-Adopt the most useful GitButler idea: **multiple independent or dependent change stacks can be selected and composed into a view**. A stack has an exact base, candidate revisions, dependencies and an unambiguous destination for edits. Explicit path/hunk attribution is supported; automatic assignment may be a helper but cannot silently change ownership.
+**Private recovery is a protected source checkpoint** with recorded base, captured tracked/untracked scope, omissions, explicit ignored-file policy, and retention. It does not become a commit, publish or silently disclose new files. AVC must protect observed work before performing a destructive switch/restore and use before-image guards; if a writer changes a file after observation, do not clobber it. A reader-only status is permitted to be a hint and must not imply recovery coverage or atomic observation. Unsaved editor buffers/process/VM state are outside AVC's custody.
 
-The composed view is a **derived, reproducible tree**, not a synthetic canonical merge commit and not proof that all branches commute. Conflicting edits, ordered dependencies and mode/deletion changes remain explicit. Selected stacks can be tested together and published separately. A developer may work in a composed directory; concurrent agents may use isolated mutable directories, checkout-free conditional source APIs, or **an explicitly shared composed workspace** when files/runtime are safely compatible. Shared-file and generated-output collisions cannot be made safe by virtual branch ownership alone. Measure the shared-workspace setup savings against collision, stale source and hidden dependency risks before choosing a default. Their work need not use one worktree per commit.
+Use short transactionally durable view changes and idempotent receipts. History operation undo changes selected metadata and retention; filesystem rollback/recovery is a separately guarded action, so undo must not pretend to revert arbitrary editor writes. Do not keep every old source object alive forever just because an evolution relationship or review metadata names its ID.
 
-Do not burden everyday navigation with a mandatory named effort, capture, preview, index and workspace ID for every action. Durable identities are required only where they disambiguate independent recoverable work. The detailed user interaction is to be validated in task trials, not inferred from the object graph.
+## 3. Merge and change composition
 
-## 4. Clone, checkout, missing objects, and offline guarantees
+**The source merge default is deterministic three-way value merging**, with exact explicit base(s), fast equality checks, recursive directory combination when types permit, and a versioned practical text driver. Refuse incomplete ancestry rather than invent a merge base.
 
-**Default intent: tip-first and expandable**, not an unconditional full-history clone or an unconditional Git-style depth-one clone.
+First-class conflicts preserve alternatives for binary, symlink, executable-mode, file/directory, delete/modify and text cases. Never silently convert unresolved source to clean Git-style marker bytes. A resource/remote/I/O failure yields a **pending/aborted operation retaining inputs**, not a fabricated source conflict.
 
-Separate four independent dimensions:
+**Select a simple lossless, typed, path-local conflict representation to start**; normalize duplicate exact alternatives and bound depth/size, but do not adopt a universal signed-term cancellation law or silently discard original terms without a proof of equivalence. The older nested-conflict prototype and all-optimal-alignment text driver are **not** automatically retained. Before canonical format freeze, qualify a compact flattened expression against the simple representation on repeated rebase, merges of conflicts, revert, delete/rename/type and large-file cases; choose the simpler one that preserves all alternatives. A tree-level merge expression is a real alternative, not a mandatory complexity tax. A merge that cannot safely represent all source alternatives may retain protected pending inputs and refuse a result.
 
-1. **Revision selection:** selected remote default branch or explicit ref/revision, with a known and authenticated ref version.
-2. **History horizon:** minimal current-tip/nearby history by default, deepened on demand; `--history=all` for history completeness. A missing parent is **unknown/promised**, never an empty/root revision.
-3. **Object availability:** native object lookups can request missing reachable blobs/trees/revisions through a declared promisor remote; batch/prefetch related work rather than one round trip per object.
-4. **Working-copy materialization:** full current tree for manageable ordinary repos, scoped/virtual source for huge repos, or `--no-checkout`. Working-copy scope and historical depth are not the same thing.
+Use standard well-tested text-merge strategies as baselines. Measure false-clean combinations and excess conflicts with real histories and adversarial cases; neither most-clean nor most-conservative wins by itself. Do not confuse deterministic results with semantic correctness.
 
-`avc clone URL` should give a usable current project with low startup delay and disclose how much source/history is locally retained. A native server should permit a metadata-first checkout-free clone and fetch only the paths an agent actually uses. For ordinary editor/CLI tools which read local files, either materialize their requested scope or use an optional supported virtual filesystem; do not pretend an absent file is available.
+**Composition is not commutativity.** Rebase, cherry-pick, restack, move, and preview are distinct transformations whose results may depend on ordering and historical base. Retain recorded source provenance where it makes these operations safer, but inferred matching bytes do not prove rename intent. A copied subtree can reuse its ID. A moved subtree also reuses its ID when path/shape constraints permit; context-dependent bounds still require validation or a verified summary.
 
-The client must distinguish: present+verified, promised-but-not-present, unavailable promisor, inaccessible/unauthorized, truly absent, and corrupt object. No authoritative commit, backup, offline-complete claim, or GC step may depend on a missing promised object. A thin client may submit conditional edits and let an authorized full holder complete verification/admission. Offline operations work on retained scope; `avc hydrate --all` (illustrative) deliberately obtains and verifies a full requested closure before making an offline completeness claim.
+## 4. Multiple independent and stacked changes
 
-Native promises must include adequate remote provenance and closure/ref requirements to avoid trusting a server-supplied hash alone. Need-to-know access controls must not leak path names through raw tree proofs.
+**Select GitButler-like change stacks as a local/agent UX feature built on revisions, not another authoritative graph of source edits.** Each stack owns a particular base and ordered change versions; dependencies are explicit. A **composed view** is an exact, reproducible source candidate produced by applying a declared order and merge/rebase rules. It is not automatically an authored merge commit or the permanent tip of every included change. Pin the candidate for review and tests.
 
-**Git remote adaptation:** use Git partial clone/filtering where servers support it and report limitations. Do not blindly force Git `--depth=1` for ongoing developer work: shallow boundaries can penalize later fetches and merge-base queries. The AVC native protocol has no reason to inherit those Git negotiation costs.
+A human may use one composed directory with explicit current edit destination; split/select hunks when assigning edits to separate changes. \`absorb\` may suggest moving later edits to an earlier change when line ancestry is unambiguous, with a before/after preview and full dependent restack; otherwise do nothing. Neither status-watchers nor timestamp guesses confer semantic hunk ownership.
 
-## 5. Merge and conflicts
+Independent agents can use separate writable directories, shared runtime directories under **explicitly accepted coordination risk**, or checkout-free **conditional source APIs**. An immutable candidate prevents source history races, but does not isolate filesystem writers, generated outputs, service ports, caches, databases or credentials. Standard API shape: \`apply(base_root, [{path, expected_old_entry_or_absent, new_entry}, ...]) -> verified new_root | structured stale/conflict/need_data\`. A shared branch update is a separate permissioned CAS. No daemon or agent-runtime-specific protocol is required for the library.
 
-Use deterministic three-way **source value** merging with explicit merge bases and a versioned text driver. Equality/base rules, recursive directory merges, whole-subtree deletion-vs-modification protection, executable/symlink/binary treatment and no-loss cases must be correct before optimizing clean-merge rates.
+## 5. Native clones and source availability
 
-**Reopen the old all-optimal-LCS text merger.** Its public-history reference was conservative but incurred extra conflicts relative to Git/Jujutsu; exact confluence alone did not establish better user outcomes. Benchmark a practical modern line merge with alternative diff algorithms against clean merges, unnecessary conflicts, false-clean outputs and cost.
+Native clone defaults to **tip-first and expandable**: resolve the selected default branch/ref (or explicit revision), transfer enough current source for a usable ordinary directory, and avoid historical blobs that are not needed. Current branch **tip**, history horizon, available objects, and on-disk materialized paths are **four independent policies**.
 
-Represent unresolved alternatives as typed immutable values so repeated rebase/merge can operate without treating marker text as the source authority. **Reopen the nested-conflict encoding** against normalized/flattened merge expressions (including Jujutsu-like signed expressions), testing cancellation, repeated rebase/revert, binary entries, path/type conflicts, provenance and resource bounds. Select the algebra only when losslessness and ordinary editor presentation are demonstrated. Runtime timeout, out-of-memory, unavailable promised input, or I/O failure must **abort/preserve inputs**, never fabricate a semantic conflict.
+- Normal developer clone: selected tip and practical full current checkout, with bounded recent history metadata and historical content fetched when needed. Display completeness. Do not silently omit files for a typical project.
+- Large monorepo/sparse mode: explicit paths, checkout-free \`show\`/\`diff\`/source APIs, batched on-demand fetch, optional virtual filesystem only if available, and no cost of unnecessary current blobs.
+- Ephemeral agent: allow \`--no-checkout\`, path scope, and short-lived draft roots uploaded before compute disappears.
+- Full/offline mode: hydrate the **entire explicitly selected protected closure** (refs, revisions, trees, blobs), verify it, and export/backup independently. A path-only clone is not a full offline repository.
 
-No automatic merge guarantees program correctness. Tests and review evidence attach to an exact candidate and execution scope; they do not become source identity or retention authority.
+A native server can give an authenticated complete root and path-scoped proofs or perform server-side conditional construction while the client holds only selected objects. **A partial client cannot locally certify a full new root merely from unresolved promised children**. Fetch grouped objects and history metadata rather than blindly performing Git-style depth-one shallow operations; unknown ancestry remains a promised frontier, not an empty history.
 
-## 6. Physical storage and durability
+Maintain typed state for \`present+verified\`, \`promised\`, \`unavailable/offline\`, \`unauthorized\`, \`absent proven by source\`, and \`corrupt\`. Requests may *read-through-fetch and fill an immutable local cache* under declared online policy; that does not make a read-only command an authored history mutation. \`status\` is local by default; \`show\`/\`diff\` may fetch missing promised data when online unless \`--offline\` is specified or a privacy policy forbids it. Never execute remote source as part of retrieval.
 
-Logical source identities and immutable objects do not mandate a particular database or physical pack format.
+The object protocol supports exact immutable IDs, bounded batches, byte/range access, verified resumable downloads, prioritized paths, request coalescing, backpressure, and optional reusable transport packs. Keep *logical* BLAKE3 IDs stable when repacking/recoding physical data.
 
-**Leading physical candidate:** SQLite for atomic local roots, pins, receipts, ref versions and indexes; staged, immutable payload segments for large or numerous objects; optional small-object coalescing. Compare to the current SQLite-only prototype on equal crash/recovery and performance gates before selecting. The local engine must run without a daemon, network or filesystem mount.
+### Critical Git partial-import boundary
 
-**Leading codec:** Zstandard for payload/segment compression, benchmarked against zlib and other relevant codecs *after* accounting for Git's cross-object delta compression. Explore dictionaries for tiny objects, optional inter-object deltas and bounded large-object chunking. Chunking, compression level, segment grouping, caches and compaction should be physical policy, **not revisions of logical object IDs**. Choose measured default trade-offs for first checkout, random read, CPU, RAM, disk and transfer; do not embed speculative numbers in the wire format.
+**Native BLAKE3 BlobIds cannot be derived from Git SHA-1/SHA-256 IDs without reading the content.** Therefore an arbitrary blobless/sparse Git checkout **cannot** be silently declared to have a complete native \`TreeId\`.
 
-For every acknowledged retained root: dependencies have been hashed, validated and made durable; a short transactional root change follows; crash recovery can distinguish committed and staged work. Compaction and GC never delete object closure required by any protected root, active reader, export or promised durable receipt. Backups/export have independent verification and a restore probe. The ordinary filesystem is uncontrolled, so materialization needs path- and version-guarded updates and before-image protection.
+Two honest adoption modes:
 
-## 7. Native synchronization and hosted scale
+1. **Native import (initial writable baseline):** fetch and verify the selected Git tip's *complete current source closure*; compute native IDs/trees, bind the exact Git tip as a foreign origin, and permit native edits. Historic Git parents and older blobs can be represented as a **clearly marked, unresolved foreign ancestry frontier** until converted; never treat the boundary as an actual root commit. Native history from this exact anchor remains stable while the adapter resolves earlier Git history.
+2. **Foreign partial view (large Git monorepos):** retain Git IDs and the Git server's filtering/promisor semantics in a **separate adapter view**; read/inspect/prepare conditional Git-relative edits without asserting a native source root. Convert the complete requested source and history closure before authoring a full native revision, or apply an explicitly Git-native change through the adapter with Git's own preconditions and truthfully label it *foreign*, not native AVC history.
 
-A **native object protocol** offers exact objects, bounded batches, resumable transfer and explicit missing-object resolution. Clients and caches may reuse immutable objects by ID. Fetch planning and prefetch should match a client's scope, not force all history or full checkout. Larger transfer bundles and reuse/caching should be measured against per-object access, not presumed.
+This is a deliberate v0 limitation, better than importing Git identifiers as competing canonical native blob IDs and thereby violating equal-source identity. A future universal external-ID or lazy foreign-base source representation needs an explicit design and compatibility evaluation, not implicit dual authority. **Git adoption can still be early and useful** for ordinary repos while the large foreign-Git bridge is investigated. Never claim transparent instant conversion of giant filtered Git repositories before it works.
 
-Remote refs use **per-target compare-and-swap** and guarantee that all objects required by an acknowledged published target are available under the target's retention policy. A set of unrelated refs need not share a global write lock; requests that truly need a multi-ref atomic view must explicitly use a separate transaction/snapshot mechanism. Replication, caching and consistency are specified honestly.
+Git import/export preserves exact representable file bytes, symlinks, modes, authored ancestry and available metadata with persistent foreign/native ID mappings and conditional ref updates. Unsupported empty directories, unresolved conflicts, unusual path/mode metadata, submodules, Git LFS policies, signed commits/tags, rewrites and incomplete history require precise behavior and loss disclosure. Git push is allowed only when the intended exported source is representable and target refs are still expected; never imply that new Git commits preserve old signed commit IDs. Use existing Git interoperability tools at the boundary before rebuilding Git protocol from scratch. Do not permit two independent authorities to race writes to the same local working directory by default.
 
-Pando suggests independent ref coordination, reusable transfer artifacts and LSM-like compaction. Scion suggests tiny clients, RPCs for source queries, derived indexes and tiered caches. Neither prescribes Git packfiles, a centralized server, or server-side commits for AVC. Optional hosted source APIs and bulk index services can scale later without changing the offline core.
+## 6. Physical storage, transactions, and backup
 
-## 8. Git adoption without Git authority
+**Selected local physical design: one SQLite metadata/root authority plus immutable staged payload segments**, both owned by a local Rust engine; no daemon, cloud database, repository-wide lock across read-only operations, or Git packfile requirement. SQLite maintains refs, root/pin generations, object locations, verified provenance of staged payloads, reader/GC epochs, and operation receipts. Immutable segments contain bounded object records, physically Zstandard-compressed or stored raw when compression hurts; larger blobs may be physically chunked and fetched by range. Object identity is over reconstructed *uncompressed logical bytes*, not chunking, dictionary, or compression choices.
 
-Git interoperability is **an early product capability**, not merely a final migration tool, but it is a boundary adapter.
+The critical acknowledgement protocol:
 
-- Clone/import a chosen Git branch into native identity, preserving exact representable bytes, tree structure, commit ancestry and available metadata with explicit foreign-ID mapping.
-- Retain original Git object IDs and refs as **foreign identities**, not new AVC content IDs; unchanged imported Git objects may be reused for round-trip export where valid.
-- Fetch upstream changes incrementally, update remote tracking refs, and compare or merge against native work. Repeated sync must not duplicate history or silently choose rewritten successors.
-- Export/push representable native revisions to GitHub/GitLab/ordinary Git, with explicit Git commit mapping and guarded remote updates.
-- Report nonrepresentable features (typed unresolved conflicts, empty directories, unusual names or metadata, unsupported file modes, signatures, LFS behavior, shallow boundaries) before claiming a lossless round trip. A new Git commit changes Git IDs and invalidates some signatures; never promise universal identity preservation.
-- Git CLI coexistence may be useful, but **do not create a dual writable Git/AVC authority by default**. Evaluate a colocation/mirror mode separately, including external Git mutations, GC, ref races and checkout ownership.
+1. Capture immutable bytes from explicit scope; check typed object hashes, canonical decoding, dependencies and limits.
+2. Write newly needed segment data to staged files; check full segment checksum/contents and durably sync new data. Establish stable immutable names/locations with proper file and directory synchronization.
+3. In a **short SQLite transaction** (WAL, FULL durability where the platform's VFS supports it), install object locations, exact protected root and receipt under a compare-and-swap of the expected local generation.
+4. Report success **only after the durable root transaction succeeds**. Failed/interrupted preparation can leave harmless unreachable staged objects, never a durable acknowledged root referring to missing bytes.
+5. GC and compaction use protected-root closure and reader leases; write new immutable segments before atomically updating locations, and retire old segments only after no reader, backup or retained root can require them.
 
-Use an established Git implementation or subprocess adapter at the boundary before attempting a second fully native Git pack/protocol stack. Avoid making the native engine a disguised wrapper.
+Crash windows, filesystem sync semantics and SQLite WAL behavior must be qualified separately on macOS/Linux (and later other platforms). The old SQLite-only model is the **safety control** in bounded comparison; prefer it if the hybrid cannot match its reliability or performance in representative source custody. This choice is physical, not canonical: future backends may use object storage and distributed metadata while preserving the exact same source objects.
 
-## 9. Derived data, safety and extension boundaries
+**BLAKE3** is the logical ID candidate, with type/version separation and independent codec vectors. **Zstandard** is a physical codec candidate, not a claim of universal advantage over Git's cross-file delta packs; benchmark complete fetch/checkout, random read, compression, CPU, tail latency, and storage amplification. Dictionaries, cross-object deltas and Pando-like LSM compaction are physical optimizations introduced only when measured. Protect against decompression bombs and decompression-dependent canonical identity.
 
-Compute and cache commit generation/ancestry accelerators, path history, blame, copy/rename hints, changed-path Bloom filters, structural diffs, and source-search indexes as **derived data**. Missing or stale indexes must degrade performance, not correctness. Derived data can be eagerly or lazily computed, locally or remotely.
+Backup/export must capture a **stable pinned root and all its owning objects**, not only a SQLite DB file or segment directory snapshot. Verify export closure and an independent restore. Missing, corrupt or promised objects cause refusal rather than successful backup claims.
 
-No checkout, merge, clone, source query, export or import automatically executes source-provided hooks, code, build steps, generators or agent tools. Authenticate remotes, bound untrusted input and decompression, validate path containment and symlink behavior, preserve privacy/authorization, and handle malicious or incomplete closure correctly.
+## 7. Native remote, publication, and derived data
 
-Protocol and stored objects must be versioned explicitly. If an experimental format changes, replace old prototype fixtures with independently verified new vectors; never claim backward compatibility to a never-released draft.
+Separate immutable object transport from mutable **per-ref conditional publication**. A remote may have read caches, shared metadata, and tiered object stores without changing AVC's local source authority. Publication first verifies and retains all new owning dependencies at the target's durability level, then advances the expected ref version; an idempotent receipt makes retries safe. Independent refs need not serialize behind one repository-wide mutex; a multi-ref consistent snapshot, if needed, is an explicitly different transaction capability.
 
-## 10. What must still be decided by evidence
+Build derived ancestry/merge-base accelerators, changed-path/path history, blame, copy/rename hints, source search, Git mappings and cache entries independently. Cache results are tied to exact immutable source or revision identities; invalid or missing derived data can be recomputed but cannot authorize a new source root or publication. Restrict raw Merkle membership/absence proofs under directory-level ACLs to avoid leaking names; scoped principals can request server-validated edits without receiving unauthorized sibling hashes.
 
-These are **open engineering selections**, not parallel production implementations:
+Serve source reads and conditional edits without checkout. Network APIs are an *adapter around the same library semantics*, not a separate canonical data model. Hosting, CI, review tools, Canto/Ion or agent orchestration, editor CRDTs and deployment remain external to AVC's core.
 
-- Snapshot-root authority versus incremental changeset authority **and causally commuting changes** on measured large-agent workloads (working recommendation: snapshot).
-- Persistent directory tree layout and canonical node bounds (no selected size/shape).
-- Normalized conflict algebra and practical text merge driver (no new frozen driver).
-- SQLite-only versus SQLite + immutable segments under equal durability requirements (hybrid is leading candidate).
-- Native tip-first clone protocol, missing-object promises, safe Git partial-import adaptation and virtual filesystem limits.
-- Multi-change composition UX and the earliest slice justified by user task trials.
+## 8. Source-code implementation consequences
 
-**Decision rule:** preserve the correct invariants and essential workflows; change any mechanism when controlled performance, usability or correctness evidence supports a better solution. Do not reselect merely because a newer platform is fashionable, and do not preserve an old mechanism merely because earlier prototypes implemented it.
+The repository currently contains **only experimental pure codec/merkle/verifier** code. In particular the old \`merkle::build\` constructs an entire radix directory map from \`FlatMap\`, and \`Verifier\` rebuilds flat maps to check canonicality. These are useful research fixtures, **not** acceptable O(changed-path) production update or admission paths. No durable store, file recovery, native clone, history editing or operational CLI exists.
 
-The next actionable implementation and qualification sequence is [docs/roadmap.md](roadmap.md).
+Replace or refactor the obsolete, unreleased codec in one cohesive implementation migration; preserve only independently useful tests/reference cases. Remove the old \`State\` wrapper and construction-provenance object complexity unless a concrete invariant still needs them. Build persistent conditional editing and incremental proof validation first, then short durable object/root transactions, before an advanced merge algebra or hosted service. Do not carry forward dead adapter code or create shims to maintain a format nobody has shipped.
+
+## 9. Evidence gates, not permanent design paralysis
+
+These are the **only pre-format-freeze research decisions**:
+
+- Qualify the chosen deterministic path-compressed radix leaf encoding/threshold **against one strong ordered chunked alternative**, with measured native updates and validation.
+- Qualify a simple typed lossless conflict representation against **flattened expressions** for repeated real rebase/merge/revert without false clean results or unbounded growth.
+- Demonstrate that hybrid staged-segment durability, reader leases and independently restorable exports equal the SQLite-only safety baseline. Change physical backend if that fails; do not change canonical IDs.
+
+All other decisions in this document are **selected implementation defaults**, not a request for another whole-system redesign. The current working architecture is sufficiently settled to implement [the first end-to-end native local slice](roadmap.md). When evidence falsifies a material decision, revise the single owner and remove the superseded code/claims. The end-to-end Git sparse-import limitation is a known product boundary, not a reason to delay safe native local work.

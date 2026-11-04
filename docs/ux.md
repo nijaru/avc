@@ -1,123 +1,146 @@
-# AVC — intended source-workflow contract
+# AVC user workflows and command/API contract
 
-**November 3, 2026.** User-facing behavior to implement/qualify, not an existing CLI. The authoritative source model is [design.md](design.md); implementation and release gates are in [roadmap.md](roadmap.md). Commands below are examples, not irrevocable interface commitments.
+**Design baseline 2026-11-04; not implemented.** Commands below are **selected first-implementation spellings**, subject to usability adjustment *before public release*. The [architecture](design.md) owns invariants, [format](format.md) owns immutable data/merge, [storage](storage.md) owns recovery, [sync](sync.md) owns native remote behavior, and [git](git.md) owns the Git adapter. Do not implement duplicate state machines in the CLI.
 
-## Everyday model
+## 1. User mental model
 
-Users have **source work**, **changes**, and **remote sharing**.
+AVC has **source**, **changes**, **unfinished work**, and **sharing**.
 
-- The working directory contains files external processes may change. It is not a trustworthy atomic snapshot.
-- A **change** is an editable unit with a stable logical identity and an immutable revision every time it is authored/revised. A single user need not name every effort in advance.
-- A **checkpoint** protects exact captured bytes and recorded base privately. It does not commit, track, approve, or publish those bytes.
-- A **repository operation** (switch, amend, restack, ref move) alters local selections through a durable transaction with scoped undo. Restoring working files is separate and must be guarded.
-- A **publish** chooses a candidate and conditionally updates a remote target after durable object transfer. Authored does not mean shared.
+- A **source root** is an exact immutable snapshot, with typed unresolved conflicts when necessary.
+- A **change** is an authored unit (stable ChangeId) with an exact immutable RevisionId that changes on amend/rebase. A stack is an ordered group of specific change versions.
+- A **work** is one resumable local effort, including pre-first-commit edits, with a base, a current selection and protected checkpoints. Naming is optional; distinct unfinished work cannot be identified solely by equal file bytes.
+- A **checkpoint** protects captured bytes and exact scope privately; it neither tracks/publishes new files nor creates an authored revision. Explicitly protected unfinished work survives ordinary checkpoint expiry.
+- A **remote ref** points to an exact authored revision. A push conditionally changes it after required object transfer. Tests and reviews bind exact candidate versions, not floating labels.
+- The **filesystem** is mutable by other tools and cannot be assumed to be the same as last captured source; editor unsaved buffers, processes, dependencies and ignored environments are outside this guarantee.
 
-The CLI prioritizes a clear default for ordinary work; expert flags/API expose precise scope and IDs. Do not surface internal tree nodes, operation receipts, GC leases or foreign-ID tables by default.
+By default, `status`/`log` operate locally; `show`/`diff` can read-through-fetch promised immutable data under configured online policy. None of these read-only commands creates commits, checkpoints, moves refs, runs hooks or discloses private source. Use `--offline` to forbid fetches.
 
-## Clone, read, work
-
-Normal source-first behavior:
+## 2. Starting and cloning
 
 ```sh
-avc clone https://github.com/owner/project
-cd project
-avc status
-avc diff
-avc commit -m "Handle escaped input"
+avc init
+avc clone https://github.com/org/repo
+avc clone avc+https://source.example/org/repo --ref main
+avc clone avc+https://source.example/org/mono --paths src/api/,Cargo.toml
+avc clone avc+https://source.example/org/repo --no-checkout
+avc clone URL --full
+avc hydrate src/api/
+avc hydrate --history=all
+avc hydrate --all
 ```
 
-Select the requested remote ref or the server-advertised default branch's **currently resolved tip**. For an ordinary Git source, download the selected tip's complete current source and compute a native source root; historical blobs need not all be local. Clearly mark any **foreign ancestry frontier** rather than claim a fully imported native DAG. For a native AVC remote, use its authenticated root and selectively fetch current objects.
+`init` refuses an occupied or incompatible `.avc` directory; never silently migrate old recovery data. Existing unrelated project files remain untouched and untracked until selected. No fake initial authored commit.
 
-A shallow history does not mean a sparse working directory:
+`clone` pins the selected branch/ref's exact current version. **Native default:** current source fully materialized for normal repos, up to 64 first-parent revision metadata records, older history/blobs fetched when needed. `--paths` and `--no-checkout` use native authenticated sparse promises; missing promised objects are not deletions. `--full` obtains independently verified native closure for the explicitly selected refs, not every remote ref in existence.
 
-- `avc clone URL --ref feature/api`: choose another exact ref.
-- `avc clone URL --full`: request a completely verified, self-contained selected closure and ordinary materialization.
-- `avc clone native-URL --paths src/api/,Cargo.toml`: obtain a path-scoped native thin client rooted at an authenticated full native source.
-- `avc clone URL --no-checkout`: no materialized directory, explicit cached-source APIs.
-- `avc hydrate PATH`, `avc hydrate --history=all`, `avc hydrate --all`: expand exact scope/history/offline custody.
+**Git modes are distinct.** A normal Git URL converts *all current selected-tip source bytes* to native, with a clearly labeled **foreign ancestry frontier** where older Git history is not yet imported. A huge filtered Git checkout uses `avc clone --foreign URL --paths ...` to stay explicitly in **Foreign Git view** and permit Git-relative source operations. It does *not* claim an AVC BLAKE3 root; `avc convert-to-native` requires full selected current-source hydration, warns about scope and may refuse. `--full` on Git must resolve and retain the requested complete supported Git ancestry and native source or report an explicitly incomplete import; it cannot falsely claim full native history. A failed selective fetch never silently becomes a full monorepo download.
 
-**Do not pretend that a filtered Git tree is an already-verified native tree.** For a huge Git source, offer a clearly labeled *foreign partial view* that can inspect and make conditional Git-relative edits through the Git adapter, or ask to hydrate/convert complete current source before native authorship. The bridge remains a useful practical path; it must expose the conversion cost and foreign IDs honestly. Avoid hidden filesystem downloads or implicit fallback to full monorepo checkout when a scoped command fails.
+Default status includes mode, current work/base, modified/new/deleted count and coverage, checkpoint protection, missing/promised objects, and remote sharing *as last known*:
 
-For native thin clients, a missing promised object is not an absent file. `show`/`diff` may fetch missing objects when online, under explicit repository policy, and cache verified data; they are still **read-only in source/history terms**. `--offline` forbids fetches. `status` operates locally by default and may report incomplete coverage. All commands must distinguish absent, not hydrated, offline, unauthorized and corrupt.
+```text
+Mode: Native (Git ancestry frontier at abc1234)
+Work: parser-cleanup   Base: change:7bc, rev:2af
+Files: 3 modified, 1 new (not selected)
+Recovery: none; no background checkpoint policy enabled
+Availability: current source complete, earlier history foreign/pending
+Remote: origin/main last seen at abc1234 (not checked now)
+```
 
-A normal developer should get a usable directory without needing FUSE or a daemon. Agents can query and edit **by immutable source root** without any working copy. Full offline custody must be explicitly hydrated and independently exportable.
+An unknown remote/recovery state is shown as unknown, never as safely synchronized. Unreadable source/changed-during-scan is shown as incomplete, never clean.
 
-## Author exactly selected edits
+## 3. Exact authoring and change editing
 
 ```sh
 avc status
 avc diff
 avc commit -m "Implement parser"
-avc commit --interactive -m "Separate validation fix"
-```
-
-A simple commit includes selected tracked modifications and clearly disclosed deletions; new files and ignored paths are handled by visible inclusion policy, never via accidental past capture. File/hunk selection pins an immutable candidate and its exact base. Confirmation authors the displayed candidate; it must not silently rescan files to include later changes. Unselected edits remain in the normal workspace.
-
-A failed/incomplete scan is **not** deletion evidence. If external writers race a capture, AVC can report what it observed but cannot claim all captured files existed together at one instant. An operation that risks deleting or overwriting source protects the affected observed bytes first, then refuses on stale destination preconditions. No blanket `--force` makes a corrupt/incomplete candidate safe.
-
-Neither source reads nor import/commit/restore executes source-provided hooks, build commands, merge drivers, or agent tools without explicit authorization.
-
-## Editable history and multiple changes
-
-```sh
-avc amend
+avc commit --interactive -m "Split validation"
+avc commit src/ README.md -m "Initial source"
+avc amend --interactive
 avc rebase --onto main
 avc history undo
 ```
 
-Amend/rebase produce new immutable revisions while keeping an appropriate stable ChangeId; divergent versions, revisions with equal trees, and many-to-many split/fold mappings are explicit. Shared/publication status must be checked before moving remote refs or rewriting already published changes. Undoing an authored history operation may restore a local selection without altering working files; source recovery is a different verb.
+Default `commit` selects changed **tracked** files and proven deletions, but requires explicit path/interactive inclusion for **new** files; ignore rules are selection aids, not secret detection. Recursive directory deletion is conspicuously previewed and requires explicit selection. An unreadable path is not proof of deletion. Interactive file/hunk selection constructs and **pins an exact candidate** from captured bytes and recorded expected base; confirmation never rereads the working directory to silently include later edits. Cancellation authors nothing. Unselected edits remain live; unselected observed data may be privately checkpointed under explicit policy but isn't an unbounded permanent commit.
 
-A **change stack** groups exact ordered change versions with a base and dependencies. A developer can select several independent/stacked changes in one *composed* working view:
+History rewrite is an immutable new revision. A stable logical ChangeId can follow amend/rebase but `revision` references are exact. Split/fold creates explicit new identities and mappings. Shared refs never automatically follow a local rewrite. `history undo` conditionally returns the scoped *local history selection*; it does not claim to revert current filesystem files or remote publication.
+
+## 4. Switching, checkpointing and recovering
+
+```sh
+avc checkpoint
+avc work list
+avc work new hotfix --from main
+avc work resume hotfix
+avc switch main
+avc recover --list
+avc recover CHECKPOINT --to ../recovered
+```
+
+Serial work may reuse one directory. `work new` creates an independent effort, not merely an alternate name for an equal base. For simultaneous ordinary filesystem writers use distinct workspaces/destinations; checkout-free agents can skip materialization. A clean `switch` selects an exact authored revision within the current work. A dirty/pending `switch` must capture and pin affected bytes **before** clearing files; refusal is mandatory if coverage, quota or obstacle handling cannot be made safe. Never silently carry dirty edits to another base or discard an untracked/ignored collision.
+
+Explicit `checkpoint` records included tracked/nonignored-new scope, unknown/ignored omissions, exact captured bytes, and current base. Manually pinned checkpoints remain protected until explicit discard. Routine auto-protection (if separately enabled) can expire after **seven days** only with expiry disclosed at acknowledgement; unfinished work deliberately preserved for return stays protected until verified resume or explicit discard. `status` alone is never a recovery checkpoint.
+
+`recover` defaults to a **fresh directory**; in-place restore requires exact before-image/path checks and explicit consent. A crashed or raced restore retains protected old/new values and a pending operation receipt; it does not overwrite a later editor write. Source switching doesn't restore services, dependencies, env, unsaved editor buffers, build outputs or VM state.
+
+## 5. Merge and conflicts
+
+```sh
+avc merge feature
+avc rebase --onto main
+avc resolve
+avc show REV:path
+avc diff REV1 REV2
+```
+
+Only an exact known merge base permits a completed merge; multiple maximal bases use the bounded recursive algorithm in [format](format.md). An unavailable promised/foreign ancestor leads to `NeedObjects`/`Pending`, **not a fabricated root**. Trivial equal/base cases and safe disjoint text/mode/directory edits combine; ambiguous binary/type/delete/overlap cases retain *normalized signed source conflict terms*. The CLI renders conflicts with side/base labels for inspection, but marker text in the ordinary filesystem is a view, not the canonical conflict value. Resolution explicitly binds a selected result to the original conflict version. Git push refuses unresolved native conflicts unless deliberate conversion semantics are selected.
+
+A failed computation due to deadline/memory/I/O is `Pending` and protects inputs, not a semantic conflict. An automatically clean merge is **not** a claim of program correctness; optional test/review evidence binds the exact candidate and environment.
+
+## 6. Parallel changes and composed views
 
 ```sh
 avc change new api
 avc change new docs
+avc change stack ui --on api
 avc view api,docs
-avc commit --change docs -m "Document tokens"
+avc commit --change docs -m "Document token format"
+avc absorb --preview
 ```
 
-The combined view is reproducible and reviewable but not an implicit permanent merge commit. Assignment of pending hunks to separate changes is explicit when ambiguous. Optional `absorb` may propose moving a later hunk into the earlier owned change, showing a **preview of all dependent restacks** and refusing ambiguous ownership. A conflict is not silently hidden by a different application order.
+A stack selects exact revision versions and dependencies. A combined view is a **derived, reproducible candidate source**, not a synthetic authored merge commit or a second source history. Selected hunks belong to the explicitly chosen change when ambiguous; don't assign by timestamp or inferred rename intent. `absorb` may suggest moving a later hunk to an earlier change that unambiguously owns its original lines and previews every dependent restack; ambiguous or collided edits remain where they are.
 
-Human or agent reviewers can pin a combined candidate, run tests against its exact source, and separately publish representable stacks. Test results belong to the exact candidate and environment, not a floating stack name. Shared directories are optional for cooperative agents; concurrent agents with unknown write overlap should have independent writable working copies or checkout-free conditional source edits. AVC does not isolate their process state, package caches or credentials.
+One composed directory is convenient for humans and cooperative agents with known write scope. Other agents should use isolated mutable directories or conditional source APIs. Merely labeling changes as separate stacks does **not** isolate generated files, open descriptors, ports, databases or service state.
 
-## Checkpoint, interrupt, restore
+## 7. Native source API and agent outputs
 
-```sh
-avc checkpoint
-avc recover --list
-avc recover CHECKPOINT --to ../recovered-work
-```
-
-An acknowledged checkpoint records exact captured bytes, base, included and omitted paths (including untracked), retention, and any observation limits. It is private, not a way to track or publish untracked files. Preserving an unfinished effort across a switch must retain its selected source until deliberate resumption/discard. Normal old checkpoints can expire under visible policy; neither operation may silently retire the only protected copy of stated work.
-
-Recover into a new directory by default. In-place restore requires matching the recorded before-image/path preconditions. A failed or interrupted materialization retains both protected source and a recoverable operation receipt; stale editor writes are never blindly rolled back.
-
-No command can promise unsaved editor buffer, running database, process, VM, ignored secret or environment recovery without an additional explicitly scoped integration.
-
-## Typed conflict and conditional source edits
-
-A merge has explicit inputs/base, returns either a clean exact source, a source with **typed unresolved conflicts**, or a pending/aborted result when data/resource checks fail. Text markers are only one possible editor presentation. Resolve selected binary/type/rename/delete cases as full source values, with source alternatives preserved until resolution is authored. A successful merge is not proof of semantic correctness.
-
-Native structured API (illustrative):
+Minimum typed library/API behavior:
 
 ```text
-read(root, path, fetch_policy) -> exact value | promised | absent | denied
-apply(base_root, [put(path, expected=BlobId, new=BlobId), ...])
-     -> new_root | stale | conflict | need_data
-publish(target, expected_ref_version, new_revision)
-     -> committed | stale | unauthorized | need_objects
+read(root,path,fetch_policy) -> Value | AbsentProven | Promised | Denied | Corrupt
+apply(root, [Put/Remove/Move with exact expected prior value])
+      -> CandidateRoot | Stale | Conflict | NeedObjects | Refused
+merge(base,left,right,driver_version)
+      -> CleanRoot | UnresolvedRoot | Pending
+publish(ref,expected_ref_version,revision,request_id)
+      -> Accepted | StaleRef | Unauthorized | NeedObjects
 ```
 
-The agent does not need to open a shell, use a working copy or fetch all of a monorepo. An incomplete thin client may ask an **authorized full holder** to verify and construct the new source; it cannot announce a complete root from unresolved sibling promises. Concurrent updates to the same remote ref use CAS rather than implicit last-writer-wins.
+Agents can operate without Git, checkout, shell, or local file copy. An authenticated native path-proof-derived source candidate may be **conditionally valid** despite missing untouched sibling bytes; only a full holder may acknowledge complete source custody/publication. A foreign filtered Git view does **not** have native IDs for its missing blobs and must stay in the Git adapter. Explicit caller permissions and path-scoped disclosure still apply.
 
-## Git remote workflow
+## 8. Fetch, push, verify, export
 
-A native project with Git upstream supports import/current branch tracking, fetch/update, revision mapping and export/push of representable states. Foreign Git IDs remain distinct from native BLAKE3 objects. Unsupported first-class conflicts, empty directories, modes, incomplete ancestry, LFS/submodules and signatures must be explicitly understood before claiming lossless conversion. Git server partial-clone features may constrain availability or fetch performance; don't pretend they have AVC's native promises.
+```sh
+avc fetch origin
+avc push origin main
+avc verify --full
+avc export --full --output backup.avc
+```
 
-A Git mirror/colocated writable Git repository is an **optional separately qualified compatibility mode**; two writers must not race control of the same checkout or refs. Normal native users should be able to keep GitHub/GitLab for collaboration without living in a Git object store.
+`fetch` updates explicit remote tracking refs, not automatically the current work/files. `push` uses exact expected remote version/lease and rejects concurrent movement, incomplete source, unauthorized refs or lossy Git conversion; a lost result is reconciled by operation ID/actual remote state, not assumed failed. `verify` distinguishes complete, promised, unexpectedly missing and corrupt; `export --full` must pin an exact closure and independently restore without remote. A foreign Git partial view cannot claim native full export.
 
-## UX validation cases
+## 9. User and safety acceptance
 
-Exercise with the real CLI, not just model tests: clone→edit→push of a normal Git project; native full/offline recovery; sparse native agent read→edit without checkout; huge foreign Git source with incomplete current blobs; two independent and one dependent change; same-file hunk attribution; repeated rebase of unresolved conflict; stale path CAS; competing agent publication; crash while writing objects, switching files, and exporting/backup.
+Test the actual CLI (not just isolated model scripts): standard small Git import/edit/push; native offline work/backup; native path-scoped query/edit under a remote authorized holder; incomplete foreign Git partial fetch; multiple independent/stacked edits; repeated rebase of unresolved conflict; competing agent writes; a changed source during scan; a crashed multistep switch; retention/GC race; and stale publication retry.
 
-A successful task is a safer, faster, clearer **entire task**, not the fewest commands or the smallest download in isolation.
+**Command failures must preserve already acknowledged source and report concrete next action.** No `--force` suppresses hash/closure/path safety requirements, and no import/checkout silently runs untrusted repository hooks.

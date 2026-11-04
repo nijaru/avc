@@ -1,20 +1,26 @@
-# Rust
+# Build output
 /target/
-Cargo.lock
 
-# IDE
+# AVC local repositories and test data (not the source tree)
+/.avc/
+/tmp/
+/scratch/
+
+# Editor and OS
 .idea/
 .vscode/
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Project
+# Runtime database and transaction artifacts
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
-.pi/
+*.db-wal
+*.db-shm
+
+# Cargo.lock is intentionally NOT ignored: the future CLI binary must
+# commit its lockfile once the Rust workspace is created.

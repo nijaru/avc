@@ -47,7 +47,7 @@ This selection rejects canonical causal/commuting patches as a universal authori
 
 Build a real **persistent update** path, not the prototype's full FlatMap → build() on each change. Use a small sorted leaf when the entire directory fits; split a wide directory deterministically on raw-name prefixes into bounded radix nodes. Canonical construction must be insertion-order independent, including split/collapse thresholds. Compare the production candidate once against a deterministic chunked ordered-map alternative using real edit/move/lookup and memory costs. Freeze actual byte grammar and thresholds **after** that qualification, not before. Prefer an unambiguous codec and simple incremental verifier over marginal theoretical compression.
 
-Path rules must protect exact byte names, prohibit NUL, separators, \`.\` and \`..\`, reject ambiguous duplicate/case-colliding materialization, and refuse unsafe traversal or symlink redirection. Logical source may be valid even when a particular filesystem cannot faithfully materialize it. Include bounded depth, encoded-length and input allocation checks.
+Path rules must protect exact byte names, prohibit NUL, separators, `.` and `..`, reject ambiguous duplicate/case-colliding materialization, and refuse unsafe traversal or symlink redirection. Logical source may be valid even when a particular filesystem cannot faithfully materialize it. Include bounded depth, encoded-length and input allocation checks.
 
 ### Verification without whole-tree work on every commit
 
@@ -63,7 +63,7 @@ Separate immutable authored history from mutable local **repository view**:
 - **Filesystem observation** supplies checked candidate bytes, not a globally atomic directory truth.
 - **Publication** conditionally updates a remote ref only after required objects are durably available.
 
-Basic commands remain familiar (\`status\`, \`diff\`, \`show\`, \`commit\`, \`log\`, \`switch\`, \`merge\`, \`rebase\`). Selective file/hunk commit is based on pinned captured bytes, with no mandatory mutable Git staging index. The exact source candidate shown in a preview is the candidate authored; editor writes after preview remain outside it. Initial uncommitted work must be recoverable before the first authored revision; do not manufacture canonical task/effort commits merely to make navigation work.
+Basic commands remain familiar (`status`, `diff`, `show`, `commit`, `log`, `switch`, `merge`, `rebase`). Selective file/hunk commit is based on pinned captured bytes, with no mandatory mutable Git staging index. The exact source candidate shown in a preview is the candidate authored; editor writes after preview remain outside it. Initial uncommitted work must be recoverable before the first authored revision; do not manufacture canonical task/effort commits merely to make navigation work.
 
 **Private recovery is a protected source checkpoint** with recorded base, captured tracked/untracked scope, omissions, explicit ignored-file policy, and retention. It does not become a commit, publish or silently disclose new files. AVC must protect observed work before performing a destructive switch/restore and use before-image guards; if a writer changes a file after observation, do not clobber it. A reader-only status is permitted to be a hint and must not imply recovery coverage or atomic observation. Unsaved editor buffers/process/VM state are outside AVC's custody.
 
@@ -85,28 +85,28 @@ Use standard well-tested text-merge strategies as baselines. Measure false-clean
 
 **Select GitButler-like change stacks as a local/agent UX feature built on revisions, not another authoritative graph of source edits.** Each stack owns a particular base and ordered change versions; dependencies are explicit. A **composed view** is an exact, reproducible source candidate produced by applying a declared order and merge/rebase rules. It is not automatically an authored merge commit or the permanent tip of every included change. Pin the candidate for review and tests.
 
-A human may use one composed directory with explicit current edit destination; split/select hunks when assigning edits to separate changes. \`absorb\` may suggest moving later edits to an earlier change when line ancestry is unambiguous, with a before/after preview and full dependent restack; otherwise do nothing. Neither status-watchers nor timestamp guesses confer semantic hunk ownership.
+A human may use one composed directory with explicit current edit destination; split/select hunks when assigning edits to separate changes. `absorb` may suggest moving later edits to an earlier change when line ancestry is unambiguous, with a before/after preview and full dependent restack; otherwise do nothing. Neither status-watchers nor timestamp guesses confer semantic hunk ownership.
 
-Independent agents can use separate writable directories, shared runtime directories under **explicitly accepted coordination risk**, or checkout-free **conditional source APIs**. An immutable candidate prevents source history races, but does not isolate filesystem writers, generated outputs, service ports, caches, databases or credentials. Standard API shape: \`apply(base_root, [{path, expected_old_entry_or_absent, new_entry}, ...]) -> verified new_root | structured stale/conflict/need_data\`. A shared branch update is a separate permissioned CAS. No daemon or agent-runtime-specific protocol is required for the library.
+Independent agents can use separate writable directories, shared runtime directories under **explicitly accepted coordination risk**, or checkout-free **conditional source APIs**. An immutable candidate prevents source history races, but does not isolate filesystem writers, generated outputs, service ports, caches, databases or credentials. Standard API shape: `apply(base_root, [{path, expected_old_entry_or_absent, new_entry}, ...]) -> verified new_root | structured stale/conflict/need_data`. A shared branch update is a separate permissioned CAS. No daemon or agent-runtime-specific protocol is required for the library.
 
 ## 5. Native clones and source availability
 
 Native clone defaults to **tip-first and expandable**: resolve the selected default branch/ref (or explicit revision), transfer enough current source for a usable ordinary directory, and avoid historical blobs that are not needed. Current branch **tip**, history horizon, available objects, and on-disk materialized paths are **four independent policies**.
 
 - Normal developer clone: selected tip and practical full current checkout, with bounded recent history metadata and historical content fetched when needed. Display completeness. Do not silently omit files for a typical project.
-- Large monorepo/sparse mode: explicit paths, checkout-free \`show\`/\`diff\`/source APIs, batched on-demand fetch, optional virtual filesystem only if available, and no cost of unnecessary current blobs.
-- Ephemeral agent: allow \`--no-checkout\`, path scope, and short-lived draft roots uploaded before compute disappears.
+- Large monorepo/sparse mode: explicit paths, checkout-free `show`/`diff`/source APIs, batched on-demand fetch, optional virtual filesystem only if available, and no cost of unnecessary current blobs.
+- Ephemeral agent: allow `--no-checkout`, path scope, and short-lived draft roots uploaded before compute disappears.
 - Full/offline mode: hydrate the **entire explicitly selected protected closure** (refs, revisions, trees, blobs), verify it, and export/backup independently. A path-only clone is not a full offline repository.
 
 A native server can give an authenticated complete root and path-scoped proofs or perform server-side conditional construction while the client holds only selected objects. **A partial client cannot locally certify a full new root merely from unresolved promised children**. Fetch grouped objects and history metadata rather than blindly performing Git-style depth-one shallow operations; unknown ancestry remains a promised frontier, not an empty history.
 
-Maintain typed state for \`present+verified\`, \`promised\`, \`unavailable/offline\`, \`unauthorized\`, \`absent proven by source\`, and \`corrupt\`. Requests may *read-through-fetch and fill an immutable local cache* under declared online policy; that does not make a read-only command an authored history mutation. \`status\` is local by default; \`show\`/\`diff\` may fetch missing promised data when online unless \`--offline\` is specified or a privacy policy forbids it. Never execute remote source as part of retrieval.
+Maintain typed state for `present+verified`, `promised`, `unavailable/offline`, `unauthorized`, `absent proven by source`, and `corrupt`. Requests may *read-through-fetch and fill an immutable local cache* under declared online policy; that does not make a read-only command an authored history mutation. `status` is local by default; `show`/`diff` may fetch missing promised data when online unless `--offline` is specified or a privacy policy forbids it. Never execute remote source as part of retrieval.
 
 The object protocol supports exact immutable IDs, bounded batches, byte/range access, verified resumable downloads, prioritized paths, request coalescing, backpressure, and optional reusable transport packs. Keep *logical* BLAKE3 IDs stable when repacking/recoding physical data.
 
 ### Critical Git partial-import boundary
 
-**Native BLAKE3 BlobIds cannot be derived from Git SHA-1/SHA-256 IDs without reading the content.** Therefore an arbitrary blobless/sparse Git checkout **cannot** be silently declared to have a complete native \`TreeId\`.
+**Native BLAKE3 BlobIds cannot be derived from Git SHA-1/SHA-256 IDs without reading the content.** Therefore an arbitrary blobless/sparse Git checkout **cannot** be silently declared to have a complete native `TreeId`.
 
 Two honest adoption modes:
 
@@ -145,9 +145,9 @@ Serve source reads and conditional edits without checkout. Network APIs are an *
 
 ## 8. Source-code implementation consequences
 
-The repository currently contains **only experimental pure codec/merkle/verifier** code. In particular the old \`merkle::build\` constructs an entire radix directory map from \`FlatMap\`, and \`Verifier\` rebuilds flat maps to check canonicality. These are useful research fixtures, **not** acceptable O(changed-path) production update or admission paths. No durable store, file recovery, native clone, history editing or operational CLI exists.
+The repository currently contains **only experimental pure codec/merkle/verifier** code. In particular the old `merkle::build` constructs an entire radix directory map from `FlatMap`, and `Verifier` rebuilds flat maps to check canonicality. These are useful research fixtures, **not** acceptable O(changed-path) production update or admission paths. No durable store, file recovery, native clone, history editing or operational CLI exists.
 
-Replace or refactor the obsolete, unreleased codec in one cohesive implementation migration; preserve only independently useful tests/reference cases. Remove the old \`State\` wrapper and construction-provenance object complexity unless a concrete invariant still needs them. Build persistent conditional editing and incremental proof validation first, then short durable object/root transactions, before an advanced merge algebra or hosted service. Do not carry forward dead adapter code or create shims to maintain a format nobody has shipped.
+Replace or refactor the obsolete, unreleased codec in one cohesive implementation migration; preserve only independently useful tests/reference cases. Remove the old `State` wrapper and construction-provenance object complexity unless a concrete invariant still needs them. Build persistent conditional editing and incremental proof validation first, then short durable object/root transactions, before an advanced merge algebra or hosted service. Do not carry forward dead adapter code or create shims to maintain a format nobody has shipped.
 
 ## 9. Evidence gates, not permanent design paralysis
 

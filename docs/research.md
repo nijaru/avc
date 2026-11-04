@@ -78,6 +78,14 @@ The former `src/objects.rs`, `src/merkle.rs`, `src/verify.rs` and `src/lib.rs` i
 
 The code reset is intentional, authorized and not a claim that no earlier research was useful. The next local session must implement from **current contracts**, with fresh golden vectors and real failure-path checks.
 
+## Git backend decision: preserve adoption without two source authorities
+
+**November 4, 2026 choice:** permanent Git import/export plus eventual Git smart-protocol serving from native hosting, **not** a separately maintained Git-backed AVC engine. The strongest alternative is Jujutsu's existing Git backend: immediate mature Git transport/storage and unmodified ecosystem workflows, at the cost of foreign metadata/identity constraints. Mononoke demonstrates a canonical non-Git backend with derived Git-facing representations, but it is a high-complexity system, **not** a ready-to-copy template for a small local-first VCS.
+
+The crucial operational failure would be two independently writable repositories claiming the same branch. The chosen policy makes the Git-visible ref **one guarded native ref** whose exact current tip is exportable. The frontend derives Git object OIDs/packfiles and conditionally translates Git pushes, but never mutates a shadow Git history as an alternate authority. Native-only refs may contain unexportable source and must remain distinct. **This is a costly compatibility service**, so implement it only after native hosting and ordinary Git remote bridge demonstrate adoption needs. The user can still collaborate through external GitHub/GitLab without this service.
+
+**Falsification:** if Git hosting parity and mixed-client consistency require a materially more complex mapping/retention layer than users value, retain Git remote import/export indefinitely and **defer** the Git-hosting frontend. Do not sacrifice source identity or create a second backend merely to satisfy a speculative hosting milestone.
+
 ## 10. How to overturn a decision
 
 An overturn requires one specific violated invariant, an essential workflow that cannot be supported, or a controlled material end-to-end advantage. State the exact input/conditions, competing contract, data-loss/security implications and migration impact; then update **one authoritative owner** and its dependent implementation. Avoid indefinite algorithm menus, unversioned format changes after release, and marketing claims of globally optimal performance. The [roadmap](roadmap.md) now begins implementation, not further architecture exploration.

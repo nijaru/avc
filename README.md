@@ -31,7 +31,7 @@ The design is **complete as an implementation contract**, but has not passed ind
 - **Conflict handling:** normalized signed exact-entry expressions and deterministic three-way merge; unresolved source is represented as data, not clean marker text.
 - **Local custody:** SQLite WAL/FULL metadata plus staged immutable payload segments, independent closure-based backup and recovery.
 - **Clones and agents:** current source first, bounded history horizon, on-demand native objects, optional sparse/no-checkout clients and conditional path proofs.
-- **Git adoption:** native writable import of a complete selected current Git source; separate foreign Git partial mode when unfetched SHA objects cannot be given native BLAKE3 IDs.
+- **Git adoption:** permanent native import/export and remote synchronization, with a separate foreign Git partial mode for unfetched objects. **Later Git smart-protocol serving is planned from the same native store and authoritative refs**, not through a second Git-backed AVC engine.
 - **History UX:** scoped local operation undo, private checkpoints, separate uncommitted work, optional composed multi-change stacks and `absorb`.
 
 ## Safety and license

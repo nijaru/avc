@@ -59,6 +59,17 @@ Add optional GitButler-style independent/dependent local stacks and reproducible
 
 Only then profile hosting throughput and implement derived path history, blame, rename hints, cache tiers, reusable transfer packs, Zstandard dictionaries and physical compaction policy where justified. None of these changes source IDs. Hosted features, Canto integration, CIs and forges are separate products/clients.
 
+## Stage 7 — optional Git protocol frontend on native hosting
+
+**Only after** native local custody, basic Git remote bridge and native hosted CAS are reliable. This is a *compatibility interface*, **not** another Git-backed AVC storage engine.
+
+1. Implement deterministic derived Git blob/tree/commit projection and a versioned mapping/cache for Git-visible **representable** native revision closures; refuse conflict/empty-directory/unrepresentable/incomplete histories unless the user explicitly selects a separate projection.
+2. Implement Git protocol v2 fetch and ref advertisement backed by the **same authoritative native ref generation**, not an independently advancing shadow Git ref. Validate with stock Git clients and standard pack-object/reachable-object rules.
+3. Implement Git receive/push translation: validate received Git OIDs/pack/commit ancestry and permissions, convert complete supported inputs to native revisions, enforce native CAS plus Git old-OID/fast-forward or explicit force-lease conditions, then durably acknowledge. Test races between Git and native publishers and response loss after commit.
+4. Add shallow/deepen, partial-clone filtering, tags and physical cache improvements only when compatibility demand justifies maintaining each capability.
+
+**Gate:** native and Git readers see the same representable shared ref; concurrent Git/native pushes cannot lose a committed update; native-only states never masquerade as clean Git history. A Git client can fetch/push supported source without AVC storage becoming Git-backed. Unsupported source or missing history produces clear refusal and recovery guidance.
+
 ## Release standards and evidence
 
 Before public stable bytes or important-source custody, require:

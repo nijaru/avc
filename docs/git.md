@@ -60,6 +60,31 @@ A native AVC repo and a colocated writable Git index/ref database must not indep
 
 The bridge may use `git` subprocesses because that delegates object/pack/negotiation complexity to mature software. Disable hooks, replacement/graft surprises, unsafe custom filters and automatic external command execution for untrusted remotes. Treat Git config/env as untrusted at source boundaries and explicitly select safe settings for each subprocess.
 
+## Long-term Git compatibility: one engine, multiple protocols
+
+**Permanent product direction:** Retain Git import/export and remote synchronization for as long as AVC supports existing Git-hosted users. When AVC hosts its own native repositories, add an **optional Git smart-protocol frontend** that serves ordinary Git clients from **the same native source and ref authority**. **Do not build or maintain a second Git-backed AVC storage/revision/working-copy backend.** This hosting frontend is a future capability; it is not part of the current unimplemented core.
+
+### Trust and representation boundaries
+
+- The canonical source, parent DAG, ChangeIds, conflicts, mutable refs and retention live in AVC. Generated Git blobs/trees/commits/packs and native↔Git mappings form a **derived, rebuildable, versioned compatibility index**, pinned for readers during transfer. Cache invalidation follows exact source revision, export policy and Git hash algorithm.
+- A Git-visible native ref is one **logical ref with one versioned authority**, not two branches synchronized eventually. Publication through either native API or Git frontend checks the same native expected generation. Its advertised Git OID must correspond to the **current representable native revision**. If conversion fails, the ref update is **not accepted** as Git-visible; a user may instead publish an explicitly native-only ref.
+- For refs offered to both native and Git clients, every accepted tip and the ancestry visible to Git must be representable. Source conflicts, native empty directories, unsupported metadata, missing ancestors, or lossy conversion require a documented refusal or an explicit separately named projection; a silently projected Git tip is forbidden. An annotated/signed Git tag or signature cannot be fabricated merely because native source bytes match.
+- The Git-facing object format (SHA-1 or SHA-256) is negotiated/declared per repository. Deterministic canonical translation must produce identical Git OIDs for the same native revision and same conversion policy; preserve genuine original Git objects when they remain exactly valid. Native ChangeIds and revisions are **not** Git OIDs.
+- The frontend implements Git protocol authentication/authorization, old-OID ref validation, object/pack negotiation, reachable-object access rules, upload/receive limits and replay safety. Git push becomes **validate Git objects → map/verify all supported source/history → prepare native candidate → CAS authoritative native ref → acknowledge**. If accepted but client loses the reply, reconcile exact request and ref state before retry. Do not automatically execute remote hooks, filters or repository-provided programs.
+- Derived pack caches may use Git-format objects because **Git clients require them**, but that cache is not a writable second VCS engine. The native store may be BLAKE3/Zstandard; it need not adopt Git's physical packfiles, ref layout or SHA identity internally.
+
+**Git visibility is a policy on refs, not a weaker definition of AVC source.** A native-only ref may intentionally contain conflicts or source constructs that Git cannot express. The user can resolve/transform them into a new representable candidate for the Git-visible ref. Advancing that shared ref must never silently strip native data or claim fidelity it lacks. This costs an extra qualification boundary and sometimes restricts the shared branch; the alternative is divergent, misleading parallel histories.
+
+### Delivery sequence
+
+1. **Local Git remote bridge (early):** clone/import verified current Git tips, track foreign ancestry, author native revisions, export/push representable commits and reconcile remote changes. Support foreign Git partial views for huge Git sources without claiming a native root.
+2. **Native hosting foundation:** native object/proof API, authenticated refs, durable owning closure and exact CAS. No Git smart protocol is required for native-only users.
+3. **Git fetch frontend (later):** implement the necessary Git smart HTTP protocol v2 fetch/ls-refs, deterministic Git objects/pack production, stable mappings, ref visibility rules and cache correctness. Validate with unmodified Git clients and a range of repository shapes.
+4. **Git push frontend (after fetch qualification):** parse/verify received Git objects, convert representable ancestry/source to native revisions, enforce single-ref native CAS and Git fast-forward/force-lease authorization. Cover concurrent native/Git pushes, rewrites, lost acknowledgements and GC.
+5. **Optimize adoption-sensitive features:** partial clone filters, shallow/deepen behavior, multiple hash-algorithm repositories, annotated tags and caching only as demand justifies. Do not conflate limited interoperability with full parity across Git's entire object/protocol ecosystem.
+
+**Compatibility statement:** Users should eventually be able to collaborate with Git clients and Git hosts around representable history, not assume `git` commands can directly manipulate a local `.avc` database. GitHub/GitLab PRs and CI continue to operate on **exported Git commits**, not native-only objects. A Git frontend on AVC hosting does not automatically make AVC-hosted native-only revisions meaningful to ordinary Git tooling.
+
 ## Testable adoption contract
 
 - Clone a small normal Git repository, verify exact current source, amend/rebase natively, export and push, and independently verify the resulting source and Git ancestry.

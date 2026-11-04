@@ -70,6 +70,10 @@ Nothing requires a checkout or shell. A remote may compute a derived path query,
 
 **Failure checks:** disconnect mid-upload, lost response after successful CAS, remote object promised but unavailable, stale expected path while editing, two agents racing a ref, corrupted compressed object, path-scope access denial, and signed/proven source no longer available offline. Each has a typed outcome and retains any already acknowledged input protection.
 
+### Git smart protocol is a future frontend, not a native storage mode
+
+Once native hosting and conditional ref publication are qualified, an optional Git smart HTTP frontend may share the same **authoritative native refs and objects** through deterministic Git projections and guarded Git push conversion. It does **not** create an independent mutable Git repository, and the native object API remains the preferred feature-complete interface. Native-only refs may contain source/metadata that cannot be exported; a Git-visible ref must enforce exportability **before** any accepted update. See [Git contract](git.md#long-term-git-compatibility-one-engine-multiple-protocols). Derived Git pack/object caches are physical compatibility artifacts, not native source authority.
+
 ## 6. Adoption boundary
 
 Git is **not** a native promisor. A Git partial clone may know foreign Git IDs for blobs whose native BLAKE3 hashes cannot be computed without content. The two supported integration modes, import-anchor semantics, foreign ancestry, Git-native partial edits and safe representable export are specified in [git.md](git.md). Do not introduce Git OIDs as hidden native Map IDs.

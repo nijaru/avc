@@ -35,7 +35,7 @@ Implement exact scoped filesystem capture with pinned selected bytes; preflight 
 
 Implement immutable Revision DAG, random stable ChangeId, selection/ref CAS, amend/rebase/restack, exact lineage and scoped local operation-log undo. Implement recursive known-base merge and the selected normalized signed conflict objects, with lossless alternate binary/path/type/source values, bounded deterministic text driver, resolution, revert and repeated conflict rebase.
 
-Test incomplete/promised ancestry, multiple maximal merge bases, partial path edits, overlapping same-file hunks, symlink and directory transitions, merge of conflict-valued source, `absorb` suggestions on clearly attributable versus ambiguous hunks, and resource-failure-as-pending (not fabricated conflict).
+Test incomplete/promised ancestry, **typed `AmbiguousMergeBase` refusal and explicit verified base selection** on multiple maximal bases, simultaneous conditional subtree moves and path-witness collisions, partial path edits, overlapping same-file hunks, symlink and directory transitions, merge of conflict-valued source, `absorb` suggestions on clearly attributable versus ambiguous hunks, and resource-failure-as-pending (not fabricated conflict).
 
 **Gate:** repeated history rewrite and merge cannot silently discard source alternatives or invent parents; exact revision selection remains recoverable across crash and GC.
 

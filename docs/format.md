@@ -100,7 +100,7 @@ A conflict is a genuine value: it can appear in an authored revision. Materializ
 
 ## E. Deterministic merge and evolution
 
-Inputs are **exact immutable revisions/source roots with a complete, provable merge base**, not guessed shallow history. If there are multiple maximal common ancestors, calculate their recursive merge base with bounded work and protect all original bases; if ancestry is incomplete or the computation cannot finish safely, return pending. Automatic merge never establishes program correctness.
+Inputs are **exact immutable revisions/source roots with provably complete ancestry**, not guessed shallow history. When there is exactly one maximal common ancestor, it is the automatic three-way base. **v1 does not fabricate a recursive virtual base** when there are two or more maximal common ancestors: return `AmbiguousMergeBase(base_ids)`, protect the inputs, and offer an explicit `--base REV` chosen from verified common ancestors (with an exact preview and warning that base choice can change the result). Unknown ancestry yields `NeedObjects` rather than an empty root. Future recursive-base automation needs its own versioned algorithm and qualification. Automatic merge never establishes program correctness.
 
 For a fixed base B, left L, right R:
 
@@ -151,6 +151,18 @@ A complete local authority verifies the required owning closure before acknowled
 
 Unsupported operating systems must refuse to materialize names/metadata they cannot preserve. Hash validity is distinct from origin authenticity, access authorization, local availability, consistency across multiple refs and executing source safely.
 
-## H. Format qualification before accepting source
+## H. Conditional edits and structural operations
+
+All edit APIs operate on an **exact immutable base root** plus typed expected values, not live filesystem paths. Every action is explicitly `Put(path, expected Entry-or-Absent, new Entry)`, `Remove(path, expected Entry)`, `CopySubtree(source EntryRef, destination, expected_destination)`, or `MoveSubtree(source_path, destination, expected_source, expected_destination)`. An expected value is checked against the pinned source value, not an approximate mtime or rename heuristic. A failed witness refuses the *entire* candidate. Path components must pass the source and platform/security constraints independently.
+
+**Structural phase:** resolve every move/copy source from the **original base**, validate its immutable value and all destination preconditions, and stage the resulting assignments. Treat moves as simultaneous: remove all move sources first, then install staged destinations; a sibling swap `a→b, b→a` can succeed with exact witnesses. Reject duplicate sources, duplicate destinations, destination/source aliasing that has no unambiguous simultaneous meaning, move-into-own-descendant, ancestor/descendant overlapping structural requests, and implicit overwrites of a changed destination. A nonempty target may be replaced only with its exact expected prior value and an explicit overwrite policy. No result of one structural operation becomes an *implicit* source for another.
+
+**Leaf phase:** optional file/entry edits may target the **post-structural** candidate using explicit expected values against that computed view. Apply disjoint leaf edits as one unordered batch. Reject overlapping path updates, edit-under-deleted-directory, conflicting directory ancestry and any ambiguous ordering; if a caller wants sequential transformations, submit two separately verified candidates with exact intermediate roots. A recorded move may explain later merge/rebase path mapping, but raw matching bytes do not prove move intent.
+
+Validate all changed/nested path lengths, directory cycle/alias constraints and owning closure before emitting the new source root. A reused subtree's depth/maximum relative path summaries may prove relocation bounds **only when verified for that exact referenced subtree**. Otherwise visit its descendants, or return `NeedObjects`/`Pending`; never claim O(1) relocation or silently truncate deep names. No failed stage publishes a partial tree root.
+
+A native thin client can prepare the same transformation from authenticated path membership/absence proofs and untouched sibling commitments, but the result remains **conditionally rooted** until a complete holder validates and protects dependencies. An ordinary uncontrolled filesystem scan is **not** a source-level expected-value witness without pinned bytes and explicit observation scope.
+
+## I. Format qualification before accepting source
 
 Before this v1 encoding can be frozen: implement an independent reference encoder/decoder; pin empty map, one file, wide directory, split/collapse, symlink, conflict, revision and long-name byte vectors; compare against the Rust engine; run randomized insertion orders and independent flat-tree oracles; fuzz bounded invalid lengths/tags/path and hash collisions; verify integrity after simulated crashes, GC and export/restore. Only then label an immutable format stable. A demonstrated defect in this unreleased grammar should be corrected explicitly rather than hidden behind reader fallbacks.

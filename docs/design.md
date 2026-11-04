@@ -20,6 +20,12 @@ Core user journeys:
 
 **Optimization target:** correctness and the end-to-end cost of useful tasks under actual CPU, SSD, network, memory and concurrency conditions, rather than optimizing an isolated hash or claiming universal superiority over Git/Scion/Jujutsu.
 
+### First differentiation test, before hosting or advanced UI
+
+**Implementation priority:** prove the **checkout-free source transaction + independent candidate composition** workflow early with the pure persistent source library, before building a hosted native protocol or full multi-stack UI. Two agents should be able to read an exact source root, submit witnessed edits, receive immutable candidates, compose disjoint changes and receive unambiguous stale/conflict outcomes without copying a repository into separate directories. That tests the feature Git+Jujutsu+GitButler combinations may not expose as one source API. The library's derived composition does not become a second canonical patch history.
+
+Before declaring the selected conflict format stable, compare repeated rebase/revert and independent edit order against a bounded causal-patch alternative and current Git/Jujutsu behavior. AVC **does not claim** Pijul-style commutation or complete latent-intent preservation from its snapshot representation. The test is a **release-gate falsification of the chosen model**, not permission to silently change released source objects or to restart open-ended research. See [Stage 1A](roadmap.md#stage-1a--prove-the-differentiated-workflow-before-hardening-the-store).
+
 ## 2. Logical model and one source authority
 
 **Selected:** immutable **snapshot-root persistent Merkle source trees** with incremental path-copy updates, plus immutable authored revisions and distinct stable logical ChangeIds. This is not a full copy of a repository per revision. A changed path rewrites only touched directory-map nodes and parent links; unchanged blob/tree IDs are reused.

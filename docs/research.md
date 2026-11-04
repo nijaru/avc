@@ -145,6 +145,16 @@ A credible head-to-head trial needs:
 
 This criterion should drive local implementation qualification and prioritization. Avoid optimizing enormous Git hosting throughput before the **local agent-source transaction and Git round-trip** work provides visible differentiation.
 
+### Three concrete corrections to the implementation plan
+
+**Decision after the competitive steelman, November 4, 2026:** Change *priority and validation*, not the one-native-backend decision.
+
+- **Test the intended product advantage before building hosting.** The previous plan implemented full durable storage and Git onboarding before checkout-free source transactions, and postponed derived multi-change composition until Stage 6. That risks finishing an expensive new VCS before testing its purported advantage. [Stage 1A](roadmap.md#stage-1a--prove-the-differentiated-workflow-before-hardening-the-store) now adds a bounded, disposable, pure-engine two-agent conditional-edit/composition test immediately after persistent source editing. The full UI and hosted protocol remain later.
+- **Make causal-change failure a pre-freeze counterexample.** Snapshot-root plus signed conflicts is not necessarily as useful as Pijul's commuting changes in repeated independent agent restacks, especially when a clean merge drops latent edit intent. Test overlapping changes, move/delete/rename, conflict resolution followed by rebase and change-order independence **before** treating v1 conflict bytes as committed. No automatic switch to Pijul or dual canonical patch store.
+- **Move the large-Git conversion cliff into first-stage validation.** The native BLAKE3 model requires full current-source bytes for foreign Git conversion. The foreign partial mode avoids this, but leaves native history and checkout-free AVC semantics unavailable. Use real large filtered Git tasks to quantify whether that limitation blocks adoption. If it does, reconsider foreign overlay/adaptor ergonomics with one canonical authority, not silently insert SHA references into native source identities.
+
+These are actionable tests with **stop/reconsideration conditions**, not claims of observed wins. The selected source/ID architecture, permanent Git import/export, and optional future Git-protocol frontend remain unchanged unless measured results falsify them.
+
 ## 11. How to overturn a decision
 
 An overturn requires one specific violated invariant, an essential workflow that cannot be supported, or a controlled material end-to-end advantage. State the exact input/conditions, competing contract, data-loss/security implications and migration impact; then update **one authoritative owner** and its dependent implementation. Avoid indefinite algorithm menus, unversioned format changes after release, and marketing claims of globally optimal performance. The [roadmap](roadmap.md) now begins implementation, not further architecture exploration.

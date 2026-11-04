@@ -21,6 +21,17 @@ Use the **selected radix/32-leaf format**. No whole-system A/B architecture vote
 
 **Gate:** exact source equivalence to an independent flat-path oracle across randomized operation sequences; order-independent canonical roots; typed invalid input rejection; no need for full-tree walks on a normal one-file edit.
 
+## Stage 1A — prove the differentiated workflow before hardening the store
+
+**This is the next decision gate immediately after Stage 1.** Use an in-memory/disposable source engine, not a fake production custody service. The latest competitive review found that Git+Jujutsu, GitButler and Pijul already address much of the history/parallel-change experience; AVC cannot justify independent storage by promising those features several stages later.
+
+1. **Checkout-free local agent slice:** two independent clients start from an identical immutable tree, read and apply exact conditional path updates without a filesystem checkout, construct separately verified candidates, compose disjoint changes in a specified order, and return typed conflict/stale outcomes for overlapping edits. Implement only the **minimal derived composition operation**, not the full change-stack UI or a hosted server.
+2. **History/change-model falsification:** compare snapshot-root + signed path-conflict semantics against real `jj`/Git workflows and Pijul's documented causal/commuting changes on a bounded fixed corpus: disjoint same-file edits, opposite edit order, move+edit, rename/delete, repeated rebase/revert, edited conflict resolution, and edits which become empty when rebased. If AVC loses latent intent or repeatedly produces unnecessary manual conflicts, **revise the still-unreleased conflict/change representation before freezing bytes**. Do not implement an entire second Pijul backend as an experiment.
+3. **Git migration feasibility spike:** for one normal project and one large filtered Git repository, compare (a) full selected-tip conversion to native BLAKE3 identities and (b) staying in a genuinely foreign Git partial view while reading/editing scoped paths. Measure transferred bytes, first useful edit, subsequent updates, CPU/RAM, what native features become unavailable, and Git publish fidelity. Test that an agent can make useful **foreign Git-relative** source changes without pretending to have a native root.
+4. **Compare whole tasks, not storage microbenchmarks:** run a reproducible lightweight task against current Git+Jujutsu and GitButler where workflows overlap. Record setup, candidate composition, conflict correctness, interrupted-work behavior, and total time. Do not claim AVC wins when the baseline is incomparable or a tested feature is absent.
+
+**Exit:** one exact, reproducible advantage or compelling technical hypothesis for AVC's **source transaction** model, and no demonstrated fatal conflict or adoption boundary. If existing tools match AVC's complete user outcome with much less complexity, explicitly **reassess whether a native VCS is warranted** before investing heavily in a durable new store. This gate is a bounded falsification step, **not** a return to indefinite architecture research. Preserve candidate format freedom until its codec/merge semantics pass; do not create lasting user data in this slice.
+
 ## Stage 2 — durable local repository and safe source custody
 
 Implement [storage.md](storage.md): SQLite WAL/FULL metadata authority, staged immutable object segments, bounded streaming, transactionally installed roots and work refs, reader/GC protection, idempotent receipts, object verify/export/restore. Add the actual CLI `init`, `status` (read-only), `show`, `diff`, `commit`, `log`, `verify`, and `export` on **one** source engine. Use no Git backend, daemon or mandatory service.
@@ -33,7 +44,7 @@ Implement exact scoped filesystem capture with pinned selected bytes; preflight 
 
 ## Stage 3 — authoring, history and first-class conflicts
 
-Implement immutable Revision DAG, random stable ChangeId, selection/ref CAS, amend/rebase/restack, exact lineage and scoped local operation-log undo. Implement recursive known-base merge and the selected normalized signed conflict objects, with lossless alternate binary/path/type/source values, bounded deterministic text driver, resolution, revert and repeated conflict rebase.
+Use the Stage 1A change/merge counterexamples as input. Implement immutable Revision DAG, random stable ChangeId, selection/ref CAS, amend/rebase/restack, exact lineage and scoped local operation-log undo. Implement recursive known-base merge and the selected normalized signed conflict objects, with lossless alternate binary/path/type/source values, bounded deterministic text driver, resolution, revert and repeated conflict rebase.
 
 Test incomplete/promised ancestry, **typed `AmbiguousMergeBase` refusal and explicit verified base selection** on multiple maximal bases, simultaneous conditional subtree moves and path-witness collisions, partial path edits, overlapping same-file hunks, symlink and directory transitions, merge of conflict-valued source, `absorb` suggestions on clearly attributable versus ambiguous hunks, and resource-failure-as-pending (not fabricated conflict).
 
@@ -41,7 +52,7 @@ Test incomplete/promised ancestry, **typed `AmbiguousMergeBase` refusal and expl
 
 ## Stage 4 — Git onboarding early
 
-Implement [git.md](git.md) against mature Git client/library code, not a new Git pack protocol: exact selected-tip source conversion to native, **deterministic import anchor identical across two clients given the same Git commit/source**, foreign ancestry frontier, remote tracking, safe Git commit/tree export, push with lease and lost-response reconciliation. Validate with *actual Git* on a real small repository, not just AVC oracles.
+Build on the early Stage 1A foreign-Git feasibility results. Implement [git.md](git.md) against mature Git client/library code, not a new Git pack protocol: exact selected-tip source conversion to native, **deterministic import anchor identical across two clients given the same Git commit/source**, foreign ancestry frontier, remote tracking, safe Git commit/tree export, push with lease and lost-response reconciliation. Validate with *actual Git* on a real small repository, not just AVC oracles.
 
 Provide an **explicit** foreign partial view for massive filtered Git repos, including Git-relative path queries and conditional Git-native commits/push that reuse unchanged Git object IDs without full native import. Do not claim source-specific BLAKE3 IDs for unfetched blobs. Full native import from foreign view is a separately invoked hydrate/convert action.
 
@@ -55,7 +66,7 @@ Implement [sync.md](sync.md): exact ref resolution, explicit object availability
 
 ## Stage 6 — composed changes and hosted scale
 
-Add optional GitButler-style independent/dependent local stacks and reproducible composed source view, explicit hunk assignment, safe `absorb` preview and candidate review/test references. Verify isolation modes: distinct directories, shared directory under cooperative use, and checkout-free conditional agents; measure setup versus collisions and hidden dependency effects.
+Extend the Stage 1A **minimal derived composition API** into optional GitButler-style independent/dependent local stacks and reproducible composed source views, explicit hunk assignment, safe `absorb` preview and candidate review/test references. Verify isolation modes: distinct directories, shared directory under cooperative use, and checkout-free conditional agents; measure setup versus collisions and hidden dependency effects.
 
 Only then profile hosting throughput and implement derived path history, blame, rename hints, cache tiers, reusable transfer packs, Zstandard dictionaries and physical compaction policy where justified. None of these changes source IDs. Hosted features, Canto integration, CIs and forges are separate products/clients.
 
@@ -82,4 +93,4 @@ Before public stable bytes or important-source custody, require:
 - Git interoperability with documented supported subset and exact refusal of lossy states; no silent move of foreign or public refs.
 - No implicit execution of untrusted source hooks or unsafe symlink/path traversal.
 
-**The design phase is complete enough to begin.** There are no unresolved architecture choices requiring user input. Any future design change must cite a concrete failed invariant, uncovered essential workflow, or controlled material performance advantage. Revise one authoritative contract and dependent code, not a new parallel proposal. Do not start another broad research phase by default.
+**The core architecture is selected; the early Stage 1A experiment is a targeted product/semantic falsification gate, not a second architecture project.** There are no unresolved architecture choices requiring user input. Any future design change must cite a concrete failed invariant, uncovered essential workflow, or controlled material performance advantage. Revise one authoritative contract and dependent code, not a new parallel proposal. Do not start another broad research phase by default.

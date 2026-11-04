@@ -41,7 +41,7 @@ Test incomplete/promised ancestry, **typed `AmbiguousMergeBase` refusal and expl
 
 ## Stage 4 — Git onboarding early
 
-Implement [git.md](git.md) against mature Git client/library code, not a new Git pack protocol: exact selected-tip source conversion to native, foreign ancestry frontier, remote tracking, safe Git commit/tree export, push with lease and lost-response reconciliation. Validate with *actual Git* on a real small repository, not just AVC oracles.
+Implement [git.md](git.md) against mature Git client/library code, not a new Git pack protocol: exact selected-tip source conversion to native, **deterministic import anchor identical across two clients given the same Git commit/source**, foreign ancestry frontier, remote tracking, safe Git commit/tree export, push with lease and lost-response reconciliation. Validate with *actual Git* on a real small repository, not just AVC oracles.
 
 Provide an **explicit** foreign partial view for massive filtered Git repos, including Git-relative path queries and conditional Git-native commits/push that reuse unchanged Git object IDs without full native import. Do not claim source-specific BLAKE3 IDs for unfetched blobs. Full native import from foreign view is a separately invoked hydrate/convert action.
 

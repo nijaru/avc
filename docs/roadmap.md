@@ -1,101 +1,73 @@
-# AVC — build and qualification plan
+# AVC implementation plan and release gates
 
-**November 3, 2026.** This is the **single active implementation plan** for the selected [architecture](design.md) and [workflows](ux.md). The November 2/early November 3 research-first roadmaps are superseded, not parallel action lists. The previous state is retained in [Git history](https://github.com/nijaru/avc/blob/94dd9921ee8a93b89551cbecf53bb14f16f08b01/docs/roadmap.md).
+**2026-11-04.** The architecture has been **selected and written as implementation contracts**. This is the single actionable plan for the upcoming **local device** session. There is no parallel research-first redesign track. Architecture [design](design.md); canonical bytes/conflicts [format](format.md); local custody [storage](storage.md); native sync [sync](sync.md); Git adapter [git](git.md); CLI [UX](ux.md); rationale [research](research.md).
 
-**Decision:** begin implementing the native vertical slice. Do not wait for a new wholesale design review. Do not freeze canonical bytes, migrate irreplaceable source, or claim safe custody until focused pre-freeze and crash-recovery gates pass.
+**Present state:** design-only active tree after deliberate retirement of the obsolete native codec, old format tests, independent old-format experiments and their CI. They are available intact in [the pinned previous repository revision](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72). Do not treat their exact IDs, old State/provenance kinds, 4 KiB nibble leaves, old text driver or 151-test reference suite as current normative behavior. No native repository commands or source custody currently exist. The next phase starts a **new Rust implementation**, not a migration of a published format.
 
-## Verified current implementation boundary
+## Stage 0 — inspect local checkout and create the new crate
 
-On public `main` at the November 3 review, the crate has pure experimental BLAKE3 object encoding, `merkle::build` from an entire `FlatMap`, an in-memory object map, and `Verifier` that reconstructs directory maps and walks complete closures. The CLI only accepts informational flags; real operations refuse. It has **no durable repository engine, incremental persistent tree edit path, native Git bridge, checkout, recovery, remote, or usable CLI**. These pieces exercise an older, now-superseded byte format. Existing tests/research fixtures do not justify the claims of a native VCS.
+1. Work in `~/github/nijaru/avc` on the actual machine; read the global `nijaru/dotfiles/instructions/AGENTS.md`, inspect `git status`/branch/remotes, verify docs and preserve local uncommitted work. Never discard existing `.avc`/Git data; unsupported legacy `.avc` is refused.
+2. Start one Rust workspace with a reusable core library and thin `avc` CLI. Organize by canonical objects/source trees, repository storage, working directory, sync, Git bridge and presentation **only as needed by implemented operations**. Avoid speculative provider traits for a hosted product that does not exist yet.
+3. Restore focused Rust formatting/clippy/build/test CI *for the new implementation*; do not reinstate old codec checks. Use versions governed by shared project instructions; no invented release milestone or autonomous PR.
+4. Construct an **independent format reference checker** (small separate language implementation or strict reference vectors) for v1 canonical ID, map, conflict and revision payloads. Independently pin vectors for empty map, regular file, symlink, wide map split/collapse, signed conflict, authored revision and malformed inputs. Check the normative grammar in [format.md](format.md) before saving first durable source.
 
-This was verified by **source inspection**, not by running the crate: the connected GitHub source is available, but the current device checkout and Rust toolchain are not accessible from this chat session. Do not discard unrelated work in a local checkout when continuing.
+**Gate:** two independent decoders agree on exact bytes/IDs and reject noncanonical input. Correct the unreleased format document and all fixtures together if a genuine defect is discovered.
 
-## Milestone 1 — finalize narrow core bytes and perform actual persistent edits
+## Stage 1 — real persistent source engine
 
-**Implement** in the Rust library; avoid extending disconnected reference-only scaffolding.
+Build immutable content objects and path-copy tree edits, not in-memory `FlatMap` reconstruction. Required Rust library operations: typed hash/encode/decode, `map.get`, `map.put(expected)`, `map.remove(expected)`, `map.copy/move(witness)`, `source.read`, and Merkle diff that skips equal subtrees. Include exact path/symlink validation, case/OS representation failure, and resource-bounded full verification independent of incremental trusted-subtree verification.
 
-1. Adopt the minimal [logical object model](design.md#1-canonical-logical-model-choose-snapshots-incremental-construction): exact blobs, typed deterministic Merkle directory nodes, first-class lossless source conflicts, authored revision roots/parents/ChangeIds. Remove obsolete experimental `State` wrapping and universal `Provenance` constructors unless a named invariant demonstrably needs them. No compatibility shims for unreleased prototype objects.
-2. Implement persistent path-copy `get`, `put(expected)`, `remove(expected)`, subtree copy/move with explicit witnesses and limits, and Merkle `diff` that skips equal immutable subtrees. Do **not** reconstruct full directories for a one-path edit. Distinguish stored canonical objects from derived diff/changed-path hints.
-3. Use deterministic path-compressed radix branching and compact sorted leaves provisionally. **One bounded native comparison** against deterministic chunked sorted pages must include: cold/warm path lookup, 1-path edit, batched edits, very wide flat directories, shared-prefix names, nested dirs, move, memory/allocation and encoded bytes. Previously published Python surrogates are useful priors, not native timings. Select precise canonical encoding/thresholds using these measurements and security checks. Document the winner and drop the losing implementation.
-4. Validate exact typed, versioned BLAKE3 IDs with independent byte vectors, malformed/oversized records, duplicate names, kind confusion, symlink/path violations, and incremental validation from trusted verified roots. Full-tree verifier remains available **for audits**, not mandatory on every small edit.
+Use the **selected radix/32-leaf format**. No whole-system A/B architecture vote remains. Benchmark wide and shared-prefix directory edits, random insertion orders, empty directory retention, moves with/without trusted cached bound summary, cold lookups, Rust allocation, and incremental edit bytes. If real results expose an unacceptable failure, **change the unreleased format coherently**, not preserve a flawed threshold to match this plan.
 
-**Gate:** order-independent canonical construction; correct O(touched paths and visited nodes) incremental edits on real structures; no missing source despite untrusted bytes; independent encoder/decoder validation. The exact format is still experimental before durable admission.
+**Gate:** exact source equivalence to an independent flat-path oracle across randomized operation sequences; order-independent canonical roots; typed invalid input rejection; no need for full-tree walks on a normal one-file edit.
 
-## Milestone 2 — single-machine durable source custody
+## Stage 2 — durable local repository and safe source custody
 
-**Physical implementation choice:** SQLite metadata authority plus immutable staged payload segments, with SQLite-only control in a narrow durability-equivalent experiment.
+Implement [storage.md](storage.md): SQLite WAL/FULL metadata authority, staged immutable object segments, bounded streaming, transactionally installed roots and work refs, reader/GC protection, idempotent receipts, object verify/export/restore. Add the actual CLI `init`, `status` (read-only), `show`, `diff`, `commit`, `log`, `verify`, and `export` on **one** source engine. Use no Git backend, daemon or mandatory service.
 
-1. Add local object and root store with durable staged segment install, exact object verification and a **short root/pin/view CAS transaction** (WAL/FULL where supported). No unrelated directory writes. Root acknowledgement requires complete, durably installed owning closure; staged extras may remain unreachable after failure.
-2. Add stable local reader/GC leases; pin ownership for active work, protected checkpoints, exports, and concurrent operations. Compaction must install replacement segments before metadata location updates and cannot retire a segment until all readers release it.
-3. Add streaming file observation with complete disclosure of scope, explicit new-file/ignore policy, pinned candidate bytes and stale-result guards. `init`, `status` (read-only), `show`, `diff`, `commit`, `log`, and `verify` exercise one library path, not separate helper-only demonstrations.
-4. Add stable self-contained native export/backup + independent restore. Backup pins an exact root and follows all owning dependencies; copying only the DB or only the segment directory is **not** a backup.
-5. Add guarded source materialization with before-image protection and recovery of partially applied filesystem writes. Operation log records exact local view transactions and permits scoped metadata undo without silently altering external writer bytes.
+Implement exact scoped filesystem capture with pinned selected bytes; preflight path/symlink and stale-write guards; guard non-atomic filesystem materialization with before-image protection and recoverable operation receipts. Default recovery into a new directory. Add explicit checkpoint with truthful scope/retention and private work handles before history convenience.
 
-**Gate:** inject failure after every staged write, sync, transaction, rename, ref CAS, compaction and cleanup boundary; restore acknowledged roots after process termination/power-loss simulation; demonstrate corrupt/truncated/missing object detection; refusal on stale filesystem writes. Demonstrate recovery with existing plain filesystem editors and concurrent read operations. Compare equivalent SQLite-only baseline for complexity, durability, read and ingest cost. **Switch to SQLite-only if hybrid cannot justify the extra failure surfaces.**
+**Mandatory fault matrix:** fail at each file write, file/directory sync, stage install, SQLite begin/commit, ref CAS, reader lease, compaction location flip, GC retirement, backup, and materialization rename/removal. For every acknowledged root verify byte-perfect restore after crash. Test corrupt/unexpectedly missing blobs, quota exhaustion, concurrent reader/writer, and case/symlink escape. Compare a SQLite-only control **for identical safety tests**; retain the selected hybrid backend only if it passes and justifies its extra physical complexity.
 
-No user important-source custody until this is satisfied. Keep independent copies in Git.
+**Gate:** full native offline recovery independent of any server. Until this passes, operational commands must be labeled experimental or refuse important-source custody; the repository has no claim to protect irreplaceable work.
 
-## Milestone 3 — useful Git adoption end to end
+## Stage 3 — authoring, history and first-class conflicts
 
-Do this **before hosting or elaborate change-stack UI**. Implement an adapter using an established Git tool/library first; do not write a new Git protocol/packfile engine merely to demonstrate native semantics.
+Implement immutable Revision DAG, random stable ChangeId, selection/ref CAS, amend/rebase/restack, exact lineage and scoped local operation-log undo. Implement recursive known-base merge and the selected normalized signed conflict objects, with lossless alternate binary/path/type/source values, bounded deterministic text driver, resolution, revert and repeated conflict rebase.
 
-1. `avc clone git-url`: select exact Git default/explicit ref, retrieve **complete current tip source** for native conversion, hash into native roots and retain the exact Git foreign origin. Historical Git parents can be an explicit **unresolved foreign frontier**, never fabricated empty ancestry. User-visible history distinguishes verified native revision from foreign history not yet converted.
-2. Edit/author native changes and export representable changes back to Git with stable foreign/native mappings, conservative ref compare-and-swap, and repeated fetch/push/rewritten-ref reconciliation. Verify the resulting files and ancestry with ordinary Git, not only an AVC reference model.
-3. Perform a separate **filtered Git source** workflow on a large repo: use the adapter's read-only/conditional foreign view without claiming a native BLAKE3 root. Test that unsupported complete native authoring asks for hydration/translation rather than silently forcing a giant download. Record actual Git server filtering/partial-clone limitations and later-fetch costs.
-4. Explicitly test submodules, LFS pointer vs payload, executable bits, symlinks, names/encoding, empty directories, merge parents, shallow Git boundaries, commit signing, unsupported typed conflicts and reimported rewriting. Only promise lossless conversion for a documented subset.
+Test incomplete/promised ancestry, multiple maximal merge bases, partial path edits, overlapping same-file hunks, symlink and directory transitions, merge of conflict-valued source, `absorb` suggestions on clearly attributable versus ambiguous hunks, and resource-failure-as-pending (not fabricated conflict).
 
-**Gate:** normal Git repo clone → native commit → Git remote push → independently verified Git content → upstream update → native merge/rebase or explicit incomplete-history error. No hidden dual writable authority over one checkout.
+**Gate:** repeated history rewrite and merge cannot silently discard source alternatives or invent parents; exact revision selection remains recoverable across crash and GC.
 
-## Milestone 4 — history editing and conflicts
+## Stage 4 — Git onboarding early
 
-1. Implement correct merge bases for complete known ancestry; preserve unknown promised/foreign ancestry as **unknown**, not a root. Build deterministic merge from exact source inputs, versioned practical text driver and safe binary/tree/type/deletion cases.
-2. Encode typed lossless source conflicts and test repeated rebase, compose, resolve, revert, conflicts of conflicts, staged file changes and resource-bounded refusal. **Narrow pre-freeze comparison:** simple typed alternatives versus normalized flattened expressions. Choose one with bounded complexity and no silently discarded terms. The old all-optimal-LCS algorithm is not the default unless controlled comparison clearly justifies it.
-3. Implement stable ChangeId evolution across amend, rebase and scoped restack, and exact metadata operation-log undo; preserve old revisions under actual roots/pins, not forever through non-owning audit metadata.
-4. Add selective path/hunk authoring with an immutable preview, no implicit staging-index model.
+Implement [git.md](git.md) against mature Git client/library code, not a new Git pack protocol: exact selected-tip source conversion to native, foreign ancestry frontier, remote tracking, safe Git commit/tree export, push with lease and lost-response reconciliation. Validate with *actual Git* on a real small repository, not just AVC oracles.
 
-**Gate:** source and history semantics survive randomized bounded edit sequences, history rewrites, multiple merge bases, binary/path conflicts, and real representative repositories. No false-clean merge accepted merely for a high merge-success count.
+Provide an **explicit** foreign partial view for massive filtered Git repos, including Git-relative path queries and conditional Git-native commits/push that reuse unchanged Git object IDs without full native import. Do not claim source-specific BLAKE3 IDs for unfetched blobs. Full native import from foreign view is a separately invoked hydrate/convert action.
 
-## Milestone 5 — native partial clients and structured agent source APIs
+**Gate:** Git clone→native edit→native commit→Git push→independent Git byte/parent verification→upstream change→safe fetch/rebase/push; a blobless foreign agent can do Git-relative work without a false native root.
 
-1. Define authenticated root/ref resolution, typed object promise state, bounded/parallel batches, deferred fetch, idempotent resume and optional source query without working copy.
-2. Separate history horizon, available current blobs/trees and materialized paths. Native clients can fetch selected current source and add files/history on demand. Full offline `hydrate --all` must verify complete requested custody.
-3. Provide conditional source reads/writes against exact immutable source IDs; incomplete clients can ask an authorized full holder to validate a complete root. Avoid leaking unauthorized neighbor names via raw Merkle proofs.
-4. Native remote publication uses full-closure durable availability followed by per-ref expected-version CAS and idempotent receipt. Read-only clients may populate local cache from remote, but source/history edits remain explicit.
+## Stage 5 — native partial-clone and checkout-free agent API
 
-**Gate:** large repository scoped clone → read a missing file → prepare a conditional update without checkout → concurrent competing agent updates → one clear success and one structured stale/ref conflict; retry safely and rehydrate. An offline partial client refuses any unknown dependency that prevents proving its result.
+Implement [sync.md](sync.md): exact ref resolution, explicit object availability/promisor states, authenticated Merkle path proofs, path-scoped conditional root edits, grouped/resumable native transport, offline/full hydration, and remote ref CAS with durable object closure and idempotent retries. The remote service uses the same canonical library operations; do not add a second server-side source authority.
 
-## Milestone 6 — composed changes and optional hosting scale
+**Gate:** large native repo scoped/no-checkout read→edit→candidate root using sibling proof→server completes closure→two agents race to publish→one succeeds/other gets `StaleRef`→safe rebase/retry; offline full hydrate/export works while partial clone reports missing data precisely.
 
-Implement local independent and dependent change stacks, explicit hunk ownership, pinned derived composition, optional `absorb` preview, and conflict-aware restack. Compare single shared developer/agent view against separate workspaces for setup cost, collisions, generated artifacts and service state; do not require a daemon or full checkout merely for source composition.
+## Stage 6 — composed changes and hosted scale
 
-For hosted scale, apply proven principles from Pando/Scion/Mononoke: immutable tiered caches, derived indexes, reusable transport groups, ref-local concurrency, and optional server-side query/transform. Keep client and server source semantics shared. A hosted implementation is **not** required for a trustworthy local VCS.
+Add optional GitButler-style independent/dependent local stacks and reproducible composed source view, explicit hunk assignment, safe `absorb` preview and candidate review/test references. Verify isolation modes: distinct directories, shared directory under cooperative use, and checkout-free conditional agents; measure setup versus collisions and hidden dependency effects.
 
-## Performance evaluation
+Only then profile hosting throughput and implement derived path history, blame, rename hints, cache tiers, reusable transfer packs, Zstandard dictionaries and physical compaction policy where justified. None of these changes source IDs. Hosted features, Canto integration, CIs and forges are separate products/clients.
 
-Measure **real entry-point tasks**, not just hash throughput, and compare to Git and Jujutsu/Sapling where tasks are semantically equivalent. Use at least a small active code repository, a large monorepo with wide/deep directories, a binary-heavy project, incremental frequent agent edits, and cold/warm repeat workloads. Record environment, exact input fingerprint, memory, CPU, disk I/O, storage amplification, wire bytes, p50/p95 latency, remote round trips, and failure/retry behavior.
+## Release standards and evidence
 
-Do not extrapolate Scion's 100x or Pando's 5x claims to AVC. BLAKE3 and Zstandard must be measured **inside** complete clone, edit, diff, ingest and hydration tasks; compare against Git's delta-packed storage. Prune misleading or no-longer-applicable old fixtures, but preserve valid adversarial safety and contract coverage.
+Before public stable bytes or important-source custody, require:
 
-## Explicit format-freeze requirements
+- Independent codec vectors plus malformed inputs, fuzz and property oracles, including signed expression normalization, branch split/collapse and revision ancestry.
+- Durable complete-root acknowledgement, GC safety, exact backup/restore and interrupted file switching on supported macOS/Linux filesystems; no source loss under declared failure model.
+- Explicit partial/foreign/missing/unauthorized states; authenticated membership/absence and no sibling-name leakage for restricted clients.
+- Representative human and agent tasks against Git/Jujutsu where semantics match, cold/warm cache, SSD/RAM/CPU/network bytes, p50/p95, later history deepening and change-conflict burden.
+- Git interoperability with documented supported subset and exact refusal of lossy states; no silent move of foreign or public refs.
+- No implicit execution of untrusted source hooks or unsafe symlink/path traversal.
 
-Before admitting irreplaceable native data or declaring a stable format:
-
-- Canonical object encodings and selected radix map are independently validated against malformed/adversarial input and incremental updates; IDs have versioning and migration policy.
-- First-class conflict representation preserves source alternatives under repeated history editing and bounded failure; no ambiguous clean merge.
-- Local durable ack, staged segment loss, GC, checkpoint retention, foreign refs, export and restore survive fault injection on supported platforms.
-- Full versus partial clone promises are unambiguous; native current root cannot be fabricated from unfetched Git content.
-- Standard Git adoption completes the practical round trip for an explicitly supported subset.
-- Real CLI and library checks pass; source-code behavior agrees with these documents.
-
-The architecture is **selected enough to build**. These are verification gates, not invitations to reopen every architectural choice at every release.
-
-## Next local/device session: immediate actions
-
-1. Inspect `git status`, branch/remotes and latest commits under `~/github/nijaru/avc`; preserve unrelated work and any preexisting `.avc` state. Load `nijaru/dotfiles/instructions/AGENTS.md`, this roadmap, `design.md`, `ux.md`, and `nijaru/knowledge/projects/avc/constraints.md`.
-2. Migrate the **existing codec and tests coherently** to the smaller logical object model (no compatibility commitment to old draft), replacing whole-FlatMap merkle construction with persistent conditional path-copy updates. Keep one authority per concern.
-3. Run one native radix-versus-chunked map comparison before freezing actual node bytes/thresholds; document results and discard the rejected variant.
-4. Build object admission and root transactions into a real `init` / `commit` / `show` / `verify` vertical slice. Run crash and corruption tests before calling it custodial.
-5. Implement ordinary Git tip import and outbound exchange after the local core works; keep large partial-Git foreign view separate, with no misleading native-root claims.
-6. Reevaluate after measured tasks; do not produce another research-only architecture round without a concrete violated invariant or demonstrated end-to-end cost.
-
-**No new application, project manager, handoff file or separate private specification is required.** Update this plan and the single owning docs as observations actually change them.
+**The design phase is complete enough to begin.** There are no unresolved architecture choices requiring user input. Any future design change must cite a concrete failed invariant, uncovered essential workflow, or controlled material performance advantage. Revise one authoritative contract and dependent code, not a new parallel proposal. Do not start another broad research phase by default.

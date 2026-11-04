@@ -21,9 +21,9 @@ Use the **selected radix/32-leaf format**. No whole-system A/B architecture vote
 
 **Gate:** exact source equivalence to an independent flat-path oracle across randomized operation sequences; order-independent canonical roots; typed invalid input rejection; no need for full-tree walks on a normal one-file edit.
 
-## Stage 1A — research resolved; check only AVC-specific contracts
+## Stage 1A: Research resolved
 
-**Research disposition is already recorded in [§12](research.md#12-evidence-first-resolution-of-the-early-avc-validation-questions--november-4-2026).** Git `merge-tree` and GitHub's Trees API already implement checkout-free source operations; Pijul records causal changes from ordinary edited working directories; Jujutsu documents signed conflicts and the same-change intent-loss counterexample. Published merge evaluations already contain **6,045 real-world merge scenarios**, and a 2026 study replays **747 agent-authored PR pairs**. **Do not reproduce these broad demonstrations as prerequisite feasibility studies.**
+**Research disposition is already recorded in [§12](research.md#12-evidence-first-resolution).** Git `merge-tree` and GitHub's Trees API already implement checkout-free source operations; Pijul records causal changes from ordinary edited working directories; Jujutsu documents signed conflicts and the same-change intent-loss counterexample. Published merge evaluations already contain **6,045 real-world merge scenarios**, and a 2026 study replays **747 agent-authored PR pairs**. **Do not reproduce these broad demonstrations as prerequisite feasibility studies.**
 
 After the Stage 1 pure engine works, run only three **bounded** AVC checks:
 

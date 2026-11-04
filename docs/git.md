@@ -35,6 +35,18 @@ For enormous monorepos, intermittent agents and situations where fetching all cu
 
 A future native overlay whose canonical entries reference both Git and AVC IDs is **not selected**: it complicates content equality, full backup, identity stability, and trust. Only reconsider with demonstrated complete-task gains and a properly versioned native format design.
 
+## Optional shared Git-to-native conversion cache
+
+**Long-term adoption option, not part of the first local Git adapter.** The current rule that native BLAKE3 identities require the **complete selected current Git source bytes** is a mathematical constraint on conversion, **not** a requirement that every client download those bytes. An authorized shared conversion service could:
+
+1. Resolve an exact Git commit/hash-algorithm/remote identity and read+verify its full required Git tree and file bytes **once per unique source/conversion policy**.
+2. Compute/cache native AVC BlobIds, the deterministic source root and the Git↔AVC import mapping, keyed by exact Git commit, hash algorithm, AVC codec version and conversion policy. Verify that cache entries bind to the exact converted byte closure; repeated clients cannot simply trust an unrelated root claim.
+3. Authenticate the **native source-root attestation and holder** to selective AVC clients, then serve only their requested BLAKE3 tree nodes/blob objects and path proofs. Clients can validate fetched native bytes/proofs against the trusted root and work as *native thin clients*, without each client hydrating all current Git blobs.
+
+This amortizes conversion over many users or agents and can bypass a per-client full-current-tip download. It does **not** eliminate source-byte ingestion somewhere, and does **not** give a thin client independent proof that an untrusted gateway honestly converted a Git SHA tree without reading the foreign content or using separately specified/verifiable conversion proofs. Trust, authorization, privacy, stale/force-pushed Git tips, object retention, and service operation all require explicit contracts. If the service cannot provide adequate trust or upstream bytes are unavailable, retain **Foreign Git view** and disclose its limitations.
+
+Meta Mononoke's [canonical data and derived Git mappings](https://github.com/facebook/sapling/blob/main/eden/mononoke/docs/2.3-derived-data.md) demonstrate the pattern of centrally computed, cached cross-VCS representations, **not an AVC-specific proven gateway**. This option does **not** require a second Git-backed AVC engine or a new canonical mixed-hash source kind. Only implement after measured repeated full-tip conversion pressure or native hosted demand; it is not a dependency of first local AVC use.
+
 ## Lossless subset and explicit refusals
 
 | Input or feature | Contract |

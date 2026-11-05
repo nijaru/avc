@@ -732,6 +732,37 @@ fn import_refuses_incomplete_changed_surplus_missing_and_oversized_streams_befor
     assert_eq!(repository.load().unwrap().0.root, root);
 }
 
+#[cfg(unix)]
+#[test]
+fn reopen_cannot_bypass_failed_repository_directory_sync() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = tempfile::tempdir().unwrap();
+    struct Reset<'a>(&'a Path);
+    impl Drop for Reset<'_> {
+        fn drop(&mut self) {
+            fs::set_permissions(self.0, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    fs::set_permissions(project.path(), fs::Permissions::from_mode(0o300)).unwrap();
+    let reset = Reset(project.path());
+    // A privileged principal/filesystem may still read this directory, in
+    // which case this mechanism cannot inject the requested sync-open failure.
+    if std::fs::File::open(project.path()).is_ok() {
+        return;
+    }
+    assert!(Repository::init(project.path()).is_err());
+    assert!(
+        Repository::open(project.path()).is_err(),
+        "open must finish installation sync before permitting acknowledgements"
+    );
+    drop(reset);
+    let mut reopened = Repository::open(project.path()).unwrap();
+    let (engine, root, _) = source(b"after completed installation".to_vec());
+    reopened
+        .commit_source(&engine, root, 0, "recovered-init")
+        .unwrap();
+}
+
 #[test]
 fn export_write_failure_is_reported_and_does_not_change_the_store() {
     struct Fail;

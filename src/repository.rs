@@ -175,10 +175,7 @@ impl Repository {
             [root.to_bytes()?.as_slice()],
         )?;
         tx.commit()?;
-        sync_directory(&directory)?;
-        sync_directory(project_dir)?;
-        // Flush directory installation through the device cache on macOS too.
-        sync_file(&File::open(directory.join("store.sqlite"))?)?;
+        sync_repository_installation(&directory, project_dir)?;
         Ok(Self {
             directory,
             connection,
@@ -216,6 +213,10 @@ impl Repository {
             connection,
         };
         repo.status()?;
+        // A creator can fail or die after schema commit but before directory
+        // installation is synced. Every opener completes that idempotent phase
+        // before returning a handle that could acknowledge a new root.
+        sync_repository_installation(&repo.directory, project_dir)?;
         Ok(repo)
     }
 
@@ -226,6 +227,35 @@ impl Repository {
 
     pub fn receipt(&self, request_key: &str) -> Result<Option<Receipt>> {
         receipt(&self.connection, request_key)
+    }
+
+    /// Resolve the original source base for a conditional request/retry. Receipt
+    /// and selection are one SQLite read snapshot: an identical concurrent
+    /// commit cannot turn a valid preparation into a spurious Stale result.
+    pub fn preparation_base(
+        &self,
+        expected_generation: u64,
+        request_key: &str,
+    ) -> Result<Selection> {
+        check_request_key(request_key)?;
+        let tx = self.connection.unchecked_transaction()?;
+        let previous = match receipt(&tx, request_key)? {
+            Some(prior) => {
+                if prior.before.generation != expected_generation {
+                    return Err(Error::RequestKeyReuse(request_key.to_owned()));
+                }
+                prior.before
+            }
+            None => selection(&tx)?,
+        };
+        if previous.generation != expected_generation {
+            return Err(Error::Stale {
+                expected: expected_generation,
+                actual: previous.generation,
+            });
+        }
+        tx.commit()?;
+        Ok(previous)
     }
 
     /// Reads one selection snapshot and fully verifies its exact owning closure.
@@ -265,9 +295,7 @@ impl Repository {
         request_key: &str,
         empty_only: bool,
     ) -> Result<Receipt> {
-        if request_key.is_empty() || request_key.len() > MAX_REQUEST_BYTES {
-            return Err(Error::Limit("request key must be 1..=1024 bytes"));
-        }
+        check_request_key(request_key)?;
         if let Some(prior) = self.receipt(request_key)? {
             return same_request(prior, root, expected_generation);
         }
@@ -484,6 +512,20 @@ CREATE TRIGGER objects_no_delete BEFORE DELETE ON objects BEGIN SELECT RAISE(ABO
 CREATE TRIGGER operations_no_update BEFORE UPDATE ON operations BEGIN SELECT RAISE(ABORT, 'immutable receipt'); END;
 CREATE TRIGGER operations_no_delete BEFORE DELETE ON operations BEGIN SELECT RAISE(ABORT, 'retained receipt'); END;
 ";
+
+fn check_request_key(key: &str) -> Result<()> {
+    if key.is_empty() || key.len() > MAX_REQUEST_BYTES {
+        return Err(Error::Limit("request key must be 1..=1024 bytes"));
+    }
+    Ok(())
+}
+fn sync_repository_installation(directory: &Path, project: &Path) -> Result<()> {
+    for suffix in ["objects/staged", "objects/sealed", "objects", ""] {
+        sync_directory(&directory.join(suffix))?;
+    }
+    sync_directory(project)?;
+    sync_file(&File::open(directory.join("store.sqlite"))?)
+}
 
 fn configure(connection: &Connection, initialize: bool) -> Result<()> {
     connection.busy_timeout(Duration::from_secs(5))?;
@@ -793,6 +835,51 @@ mod crash_tests {
             )
             .unwrap();
         (engine, root)
+    }
+
+    #[test]
+    fn request_preparation_keeps_one_snapshot_during_identical_commit() {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        use std::sync::mpsc;
+        let project = tempfile::tempdir().unwrap();
+        let repo = Repository::init(project.path()).unwrap();
+        let before = repo.status().unwrap();
+        let mut writer = Repository::open(project.path()).unwrap();
+        let (engine, root) = candidate();
+        let (start, waiting) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            waiting.recv().unwrap();
+            let receipt = writer.commit_source(&engine, root, 0, "same").unwrap();
+            finished.send(receipt.clone()).unwrap();
+            receipt
+        });
+        let mut fired = false;
+        repo.connection
+            .authorizer(Some(move |context: AuthContext<'_>| {
+                if !fired
+                    && matches!(
+                        context.action,
+                        AuthAction::Read {
+                            table_name: "selection",
+                            ..
+                        }
+                    )
+                {
+                    fired = true;
+                    start.send(()).unwrap();
+                    done.recv().unwrap();
+                }
+                Authorization::Allow
+            }))
+            .unwrap();
+        // Receipt absence is read first; authorizer pauses just before reading
+        // selection, while the identical request commits on another connection.
+        let selected = repo.preparation_base(0, "same").unwrap();
+        assert_eq!(selected, before);
+        let committed = worker.join().unwrap();
+        assert_eq!(repo.receipt("same").unwrap().unwrap(), committed);
+        assert_eq!(repo.preparation_base(0, "same").unwrap(), before);
     }
 
     // The only fault hooks are SQLite hooks on this test's private connection.

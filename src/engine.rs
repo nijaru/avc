@@ -334,170 +334,163 @@ impl Engine {
     }
 
     fn update_path(&mut self, map: Id, path: &[Vec<u8>], value: Entry) -> Result<Id> {
-        let key = nibbles(&path[0]);
-        let entry = if path.len() == 1 {
-            value
-        } else {
-            let old = self.lookup(map, &key)?;
-            let child = match old {
-                Entry::Directory(id) => id,
-                _ => return Err(invalid("explicit directory parent required")),
-            };
-            Entry::Directory(self.update_path(child, &path[1..], value)?)
-        };
-        let result = self.update_node(map, &key, entry)?;
-        // Summaries walk changed directory-map nodes only; unchanged child counts
-        // and directory/conflict bounds are exact cached construction facts.
-        let bounds = self.map_bounds(result)?;
-        self.roots.insert(result, bounds);
+        let mut ancestors = Vec::with_capacity(path.len());
+        let mut current = map;
+        for (index, name) in path.iter().enumerate() {
+            let key = nibbles(name);
+            let parent = current;
+            if index + 1 < path.len() {
+                current = match self.lookup(current, &key)? {
+                    Entry::Directory(id) => id,
+                    _ => return Err(invalid("explicit directory parent required")),
+                };
+            }
+            ancestors.push((parent, key));
+        }
+        let mut entry = value;
+        let mut result = map;
+        while let Some((parent, key)) = ancestors.pop() {
+            result = self.update_node(parent, &key, entry)?;
+            // Only changed radix nodes need summaries; siblings retain their
+            // trusted counts, metrics and directory/conflict bounds.
+            let bounds = self.map_bounds(result)?;
+            self.roots.insert(result, bounds);
+            entry = Entry::Directory(result);
+        }
         Ok(result)
     }
 
-    fn update_node(&mut self, id: Id, key: &[u8], value: Entry) -> Result<Id> {
-        let node = self.node(id)?.clone();
-        match node {
-            Node::Leaf(mut entries) => {
-                match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
-                    Ok(i) if value == Entry::Absent => {
-                        entries.remove(i);
-                    }
-                    Ok(i) => {
-                        entries[i].1 = value;
-                    }
-                    Err(i) if value != Entry::Absent => entries.insert(i, (key.to_vec(), value)),
-                    Err(_) => return Ok(id),
-                }
-                self.build_node(entries)
-            }
-            Node::Branch {
-                count,
-                prefix,
-                mut terminal,
-                mut children,
-            } => {
-                let shared = common(&prefix, key);
-                if shared < prefix.len() {
-                    if value == Entry::Absent {
-                        return Ok(id);
-                    }
-                    let old_slot = prefix[shared];
-                    let old = self.store_node(Node::Branch {
-                        count,
-                        prefix: prefix[shared + 1..].to_vec(),
-                        terminal,
-                        children,
-                    })?;
-                    let mut groups = BTreeMap::from([(old_slot, old)]);
-                    let new_terminal = if key.len() == shared {
-                        Some(value)
-                    } else {
-                        let child = self.build_node(vec![(key[shared + 1..].to_vec(), value)])?;
-                        groups.insert(key[shared], child);
-                        None
-                    };
-                    return self.store_node(Node::Branch {
-                        count: count.checked_add(1).ok_or(Error::Limit("map count"))?,
-                        prefix: prefix[..shared].to_vec(),
-                        terminal: new_terminal,
-                        children: groups,
-                    });
-                }
-                let rest = &key[prefix.len()..];
-                let old_present;
-                if rest.is_empty() {
-                    old_present = terminal.is_some();
-                    terminal = (value != Entry::Absent).then(|| value.clone());
-                } else {
-                    let slot = rest[0];
-                    if let Some(child) = children.get(&slot).copied() {
-                        old_present = self.lookup(child, &rest[1..])? != Entry::Absent;
-                        let updated = self.update_node(child, &rest[1..], value.clone())?;
-                        if self.count(updated)? == 0 {
-                            children.remove(&slot);
-                        } else {
-                            children.insert(slot, updated);
+    fn update_node(&mut self, mut id: Id, mut key: &[u8], value: Entry) -> Result<Id> {
+        let old = self.lookup(id, key)?;
+        if old == value {
+            return Ok(id);
+        }
+        let mut ancestors = Vec::new();
+        let mut updated = loop {
+            match self.node(id)?.clone() {
+                Node::Leaf(mut entries) => {
+                    match entries.binary_search_by(|(k, _)| k.as_slice().cmp(key)) {
+                        Ok(i) if value == Entry::Absent => {
+                            entries.remove(i);
                         }
+                        Ok(i) => {
+                            entries[i].1 = value;
+                        }
+                        // A missing key can only be reached for an insertion:
+                        // equal/absent updates returned before the descent.
+                        Err(i) => entries.insert(i, (key.to_vec(), value)),
+                    }
+                    break self.build_node(entries)?;
+                }
+                Node::Branch {
+                    count,
+                    prefix,
+                    mut terminal,
+                    mut children,
+                } => {
+                    let shared = common(&prefix, key);
+                    if shared < prefix.len() {
+                        let old_slot = prefix[shared];
+                        let old = self.store_node(Node::Branch {
+                            count,
+                            prefix: prefix[shared + 1..].to_vec(),
+                            terminal,
+                            children,
+                        })?;
+                        let mut groups = BTreeMap::from([(old_slot, old)]);
+                        let new_terminal = if key.len() == shared {
+                            Some(value)
+                        } else {
+                            let child =
+                                self.build_node(vec![(key[shared + 1..].to_vec(), value)])?;
+                            groups.insert(key[shared], child);
+                            None
+                        };
+                        break self.store_node(Node::Branch {
+                            count: count.checked_add(1).ok_or(Error::Limit("map count"))?,
+                            prefix: prefix[..shared].to_vec(),
+                            terminal: new_terminal,
+                            children: groups,
+                        })?;
+                    }
+                    let rest = &key[prefix.len()..];
+                    let new_count = if value == Entry::Absent {
+                        count - 1
+                    } else if old == Entry::Absent {
+                        count.checked_add(1).ok_or(Error::Limit("map count"))?
                     } else {
-                        old_present = false;
+                        count
+                    };
+                    if rest.is_empty() {
+                        terminal = (value != Entry::Absent).then(|| value.clone());
+                    } else {
+                        let slot = rest[0];
+                        if let Some(child) = children.get(&slot).copied() {
+                            ancestors.push((new_count, prefix, terminal, children, slot));
+                            id = child;
+                            key = &rest[1..];
+                            continue;
+                        }
                         if value != Entry::Absent {
                             let child =
                                 self.build_node(vec![(rest[1..].to_vec(), value.clone())])?;
                             children.insert(slot, child);
                         }
                     }
+                    break self.finish_branch(new_count, prefix, terminal, children)?;
                 }
-                let new_count = if old_present && value == Entry::Absent {
-                    count - 1
-                } else if !old_present && value != Entry::Absent {
-                    count.checked_add(1).ok_or(Error::Limit("map count"))?
-                } else {
-                    count
-                };
-                if new_count <= 32 {
-                    let mut entries = Vec::new();
-                    if let Some(entry) = terminal {
-                        entries.push((prefix.clone(), entry));
-                    }
-                    for (slot, child) in children {
-                        let mut start = prefix.clone();
-                        start.push(slot);
-                        self.collect_node(child, &start, &mut entries)?;
-                    }
-                    return self.store_node(Node::Leaf(entries));
-                }
-                if terminal.is_none() && children.len() == 1 {
-                    let (slot, child) = children.into_iter().next().expect("one child");
-                    let Node::Branch {
-                        prefix: child_prefix,
-                        terminal,
-                        children,
-                        ..
-                    } = self.node(child)?.clone()
-                    else {
-                        return Err(invalid("large branch child is leaf"));
-                    };
-                    let mut combined = prefix;
-                    combined.push(slot);
-                    combined.extend(child_prefix);
-                    return self.store_node(Node::Branch {
-                        count: new_count,
-                        prefix: combined,
-                        terminal,
-                        children,
-                    });
-                }
-                self.store_node(Node::Branch {
-                    count: new_count,
-                    prefix,
-                    terminal,
-                    children,
-                })
             }
+        };
+        while let Some((count, prefix, terminal, mut children, slot)) = ancestors.pop() {
+            if self.count(updated)? == 0 {
+                children.remove(&slot);
+            } else {
+                children.insert(slot, updated);
+            }
+            updated = self.finish_branch(count, prefix, terminal, children)?;
         }
+        Ok(updated)
     }
 
-    fn build_node(&mut self, entries: Vec<(Vec<u8>, Entry)>) -> Result<Id> {
-        if entries.len() <= 32 {
+    fn finish_branch(
+        &mut self,
+        count: u32,
+        prefix: Vec<u8>,
+        terminal: Option<Entry>,
+        children: BTreeMap<u8, Id>,
+    ) -> Result<Id> {
+        if count <= 32 {
+            let mut entries = Vec::new();
+            if let Some(entry) = terminal {
+                entries.push((prefix.clone(), entry));
+            }
+            for (slot, child) in children {
+                let mut start = prefix.clone();
+                start.push(slot);
+                self.collect_node(child, &start, &mut entries)?;
+            }
             return self.store_node(Node::Leaf(entries));
         }
-        let prefix_len = common(&entries[0].0, &entries[entries.len() - 1].0);
-        let prefix = entries[0].0[..prefix_len].to_vec();
-        let count = u32::try_from(entries.len()).map_err(|_| Error::Limit("map count"))?;
-        let mut terminal = None;
-        let mut groups: BTreeMap<u8, Vec<(Vec<u8>, Entry)>> = BTreeMap::new();
-        for (key, value) in entries {
-            if key.len() == prefix_len {
-                terminal = Some(value);
-            } else {
-                groups
-                    .entry(key[prefix_len])
-                    .or_default()
-                    .push((key[prefix_len + 1..].to_vec(), value));
-            }
-        }
-        let mut children = BTreeMap::new();
-        for (slot, entries) in groups {
-            children.insert(slot, self.build_node(entries)?);
+        if terminal.is_none() && children.len() == 1 {
+            let (slot, child) = children.into_iter().next().expect("one child");
+            let Node::Branch {
+                prefix: child_prefix,
+                terminal,
+                children,
+                ..
+            } = self.node(child)?.clone()
+            else {
+                return Err(invalid("large branch child is leaf"));
+            };
+            let mut combined = prefix;
+            combined.push(slot);
+            combined.extend(child_prefix);
+            return self.store_node(Node::Branch {
+                count,
+                prefix: combined,
+                terminal,
+                children,
+            });
         }
         self.store_node(Node::Branch {
             count,
@@ -506,30 +499,85 @@ impl Engine {
             children,
         })
     }
-    fn collect_node(&self, id: Id, prefix: &[u8], out: &mut Vec<(Vec<u8>, Entry)>) -> Result<()> {
-        match self.node(id)? {
-            Node::Leaf(entries) => {
-                for (suffix, entry) in entries {
-                    let mut key = prefix.to_vec();
-                    key.extend(suffix);
-                    out.push((key, entry.clone()));
+
+    fn build_node(&mut self, entries: Vec<(Vec<u8>, Entry)>) -> Result<Id> {
+        enum Task {
+            Build(Vec<(Vec<u8>, Entry)>),
+            Finish(u32, Vec<u8>, Option<Entry>, Vec<u8>),
+        }
+        let mut pending = vec![Task::Build(entries)];
+        let mut results = Vec::new();
+        while let Some(task) = pending.pop() {
+            match task {
+                Task::Build(entries) if entries.len() <= 32 => {
+                    results.push(self.store_node(Node::Leaf(entries))?);
+                }
+                Task::Build(entries) => {
+                    let prefix_len = common(&entries[0].0, &entries[entries.len() - 1].0);
+                    let prefix = entries[0].0[..prefix_len].to_vec();
+                    let count =
+                        u32::try_from(entries.len()).map_err(|_| Error::Limit("map count"))?;
+                    let mut terminal = None;
+                    let mut groups: BTreeMap<u8, Vec<(Vec<u8>, Entry)>> = BTreeMap::new();
+                    for (key, value) in entries {
+                        if key.len() == prefix_len {
+                            terminal = Some(value);
+                        } else {
+                            groups
+                                .entry(key[prefix_len])
+                                .or_default()
+                                .push((key[prefix_len + 1..].to_vec(), value));
+                        }
+                    }
+                    pending.push(Task::Finish(
+                        count,
+                        prefix,
+                        terminal,
+                        groups.keys().copied().collect(),
+                    ));
+                    pending.extend(groups.into_values().rev().map(Task::Build));
+                }
+                Task::Finish(count, prefix, terminal, slots) => {
+                    let start = results.len() - slots.len();
+                    let children = slots.into_iter().zip(results.drain(start..)).collect();
+                    results.push(self.store_node(Node::Branch {
+                        count,
+                        prefix,
+                        terminal,
+                        children,
+                    })?);
                 }
             }
-            Node::Branch {
-                prefix: suffix,
-                terminal,
-                children,
-                ..
-            } => {
-                let mut prefix = prefix.to_vec();
-                prefix.extend(suffix);
-                if let Some(entry) = terminal {
-                    out.push((prefix.clone(), entry.clone()));
+        }
+        Ok(results.pop().expect("one completed map"))
+    }
+    fn collect_node(&self, id: Id, prefix: &[u8], out: &mut Vec<(Vec<u8>, Entry)>) -> Result<()> {
+        let mut prefix = prefix.to_vec();
+        let mut pending = vec![(id, prefix.len(), None)];
+        while let Some((id, length, slot)) = pending.pop() {
+            prefix.truncate(length);
+            prefix.extend(slot);
+            match self.node(id)? {
+                Node::Leaf(entries) => {
+                    for (suffix, entry) in entries {
+                        let mut key = prefix.clone();
+                        key.extend(suffix);
+                        out.push((key, entry.clone()));
+                    }
                 }
-                for (slot, child) in children {
-                    prefix.push(*slot);
-                    self.collect_node(*child, &prefix, out)?;
-                    prefix.pop();
+                Node::Branch {
+                    prefix: suffix,
+                    terminal,
+                    children,
+                    ..
+                } => {
+                    prefix.extend(suffix);
+                    if let Some(entry) = terminal {
+                        out.push((prefix.clone(), entry.clone()));
+                    }
+                    for (slot, child) in children.iter().rev() {
+                        pending.push((*child, prefix.len(), Some(*slot)));
+                    }
                 }
             }
         }
@@ -554,41 +602,52 @@ impl Engine {
         if let Some(metrics) = self.metrics.get(&id) {
             return Ok(*metrics);
         }
-        let mut result = Metrics::default();
-        match self.node(id)?.clone() {
-            Node::Leaf(entries) => {
-                for (key, entry) in entries {
-                    let child = self.check_entry(&entry, &[])?;
-                    result.depth = result.depth.max(1 + child.depth);
-                    result.unresolved |= child.unresolved;
-                    result.nibbles = result
-                        .nibbles
-                        .max(key.len() + 2 * (child.bytes + usize::from(child.depth != 0)));
+        let mut pending = vec![(id, false)];
+        while let Some((current, expanded)) = pending.pop() {
+            if self.metrics.contains_key(&current) {
+                continue;
+            }
+            if !expanded && let Node::Branch { children, .. } = self.node(current)? {
+                pending.push((current, true));
+                pending.extend(children.values().map(|child| (*child, false)));
+                continue;
+            }
+            let mut result = Metrics::default();
+            match self.node(current)? {
+                Node::Leaf(entries) => {
+                    for (key, entry) in entries {
+                        let child = self.check_entry(entry, &[])?;
+                        result.depth = result.depth.max(1 + child.depth);
+                        result.unresolved |= child.unresolved;
+                        result.nibbles = result
+                            .nibbles
+                            .max(key.len() + 2 * (child.bytes + usize::from(child.depth != 0)));
+                    }
+                }
+                Node::Branch {
+                    prefix,
+                    terminal,
+                    children,
+                    ..
+                } => {
+                    if let Some(entry) = terminal {
+                        let child = self.check_entry(entry, &[])?;
+                        result.depth = 1 + child.depth;
+                        result.unresolved |= child.unresolved;
+                        result.nibbles =
+                            prefix.len() + 2 * (child.bytes + usize::from(child.depth != 0));
+                    }
+                    for child in children.values() {
+                        let metrics = self.metrics.get(child).expect("completed child metrics");
+                        result.depth = result.depth.max(metrics.depth);
+                        result.unresolved |= metrics.unresolved;
+                        result.nibbles = result.nibbles.max(prefix.len() + 1 + metrics.nibbles);
+                    }
                 }
             }
-            Node::Branch {
-                prefix,
-                terminal,
-                children,
-                ..
-            } => {
-                if let Some(entry) = terminal {
-                    let child = self.check_entry(&entry, &[])?;
-                    result.depth = 1 + child.depth;
-                    result.unresolved |= child.unresolved;
-                    result.nibbles =
-                        prefix.len() + 2 * (child.bytes + usize::from(child.depth != 0));
-                }
-                for child in children.values() {
-                    let metrics = self.node_metrics(*child)?;
-                    result.depth = result.depth.max(metrics.depth);
-                    result.unresolved |= metrics.unresolved;
-                    result.nibbles = result.nibbles.max(prefix.len() + 1 + metrics.nibbles);
-                }
-            }
+            self.metrics.insert(current, result);
         }
-        self.metrics.insert(id, result);
-        Ok(result)
+        Ok(self.metrics[&id])
     }
 
     /// Immediate bindings only; conflict endpoints remain exact opaque values.
@@ -617,7 +676,7 @@ impl Engine {
         self.diff_entry(
             root_entry(before)?,
             root_entry(after)?,
-            &mut Vec::new(),
+            &[],
             &mut output,
             limit,
         )?;
@@ -627,39 +686,49 @@ impl Engine {
         &self,
         before: Entry,
         after: Entry,
-        path: &mut Path,
+        path: &[Vec<u8>],
         output: &mut Vec<Difference>,
         limit: usize,
     ) -> Result<()> {
-        if before == after {
-            return Ok(());
-        }
-        if let (Entry::Directory(a), Entry::Directory(b)) = (&before, &after) {
-            let mut changes = Vec::new();
-            self.diff_views(
-                View::Node(*a, 0),
-                View::Node(*b, 0),
-                &mut Vec::new(),
-                &mut changes,
-                limit.saturating_sub(output.len()),
-            )?;
-            for (key, left, right) in changes {
-                path.push(bytes_from_nibbles(&key)?);
-                self.diff_entry(left, right, path, output, limit)?;
-                path.pop();
+        // DFS checkpoints keep one path buffer rather than copying every
+        // ancestor component into each queued sibling.
+        let mut path = path.to_vec();
+        let mut pending = vec![(before, after, path.len(), None)];
+        while let Some((before, after, length, name)) = pending.pop() {
+            path.truncate(length);
+            path.extend(name);
+            if before == after {
+                continue;
             }
-        } else {
-            if output.len() >= limit {
-                return Err(Error::Limit("diff output"));
+            if let (Entry::Directory(a), Entry::Directory(b)) = (&before, &after) {
+                let mut changes = Vec::new();
+                self.diff_views(
+                    View::Node(*a, 0),
+                    View::Node(*b, 0),
+                    &mut Vec::new(),
+                    &mut changes,
+                    limit.saturating_sub(output.len()),
+                )?;
+                for (key, left, right) in changes.into_iter().rev() {
+                    pending.push((left, right, path.len(), Some(bytes_from_nibbles(&key)?)));
+                }
+            } else {
+                if output.len() >= limit {
+                    return Err(Error::Limit("diff output"));
+                }
+                output.push(Difference {
+                    path: path.clone(),
+                    before,
+                    after,
+                });
             }
-            output.push(Difference {
-                path: path.clone(),
-                before,
-                after,
-            });
         }
         Ok(())
     }
+    #[expect(
+        clippy::ptr_arg,
+        reason = "Preserve the merge-facing traversal signature"
+    )]
     fn diff_views(
         &self,
         left: View,
@@ -668,32 +737,34 @@ impl Engine {
         output: &mut Vec<(Vec<u8>, Entry, Entry)>,
         limit: usize,
     ) -> Result<()> {
-        if left == right {
-            return Ok(());
-        }
-        let (a, ac) = self.partition(left)?;
-        let (b, mut bc) = self.partition(right)?;
-        if a != b {
-            if output.len() >= limit {
-                return Err(Error::Limit("changed directory bindings"));
+        let mut prefix = prefix.clone();
+        let mut pending = vec![(left, right, prefix.len(), None)];
+        while let Some((left, right, length, slot)) = pending.pop() {
+            prefix.truncate(length);
+            prefix.extend(slot);
+            if left == right {
+                continue;
             }
-            output.push((prefix.clone(), a, b));
-        }
-        for (slot, child) in ac {
-            prefix.push(slot);
-            self.diff_views(
-                child,
-                bc.remove(&slot).unwrap_or(View::Empty),
-                prefix,
-                output,
-                limit,
-            )?;
-            prefix.pop();
-        }
-        for (slot, child) in bc {
-            prefix.push(slot);
-            self.diff_views(View::Empty, child, prefix, output, limit)?;
-            prefix.pop();
+            let (a, ac) = self.partition(left)?;
+            let (b, mut bc) = self.partition(right)?;
+            if a != b {
+                if output.len() >= limit {
+                    return Err(Error::Limit("changed directory bindings"));
+                }
+                output.push((prefix.clone(), a, b));
+            }
+            let mut children = Vec::with_capacity(ac.len() + bc.len());
+            for (slot, child) in ac {
+                children.push((slot, child, bc.remove(&slot).unwrap_or(View::Empty)));
+            }
+            children.extend(
+                bc.into_iter()
+                    .map(|(slot, child)| (slot, View::Empty, child)),
+            );
+            // Preserve the existing left-partitions-then-right-only DFS order.
+            for (slot, left, right) in children.into_iter().rev() {
+                pending.push((left, right, prefix.len(), Some(slot)));
+            }
         }
         Ok(())
     }
@@ -890,131 +961,193 @@ impl<'a> Verifier<'a> {
         self.source(id, 0)
     }
     fn source(&mut self, id: Id, depth: usize) -> Result<Bounds> {
-        if depth > 256 {
-            return Err(invalid("source nesting bound"));
+        enum Task {
+            Visit(Id, usize),
+            Finish(Id, bool, Vec<(usize, Entry)>),
         }
-        if let Some(bounds) = self.roots.get(&id) {
-            return Ok(*bounds);
-        }
-        if !self.active.insert(id) {
-            return Err(invalid("owning cycle"));
-        }
-        let result = match self.object(id)? {
-            Object::Map(_) => {
-                let mut entries = Vec::new();
-                self.map(id, &[], &mut entries)?;
-                let mut result = Bounds::default();
-                for (name, entry) in entries {
-                    let child = self.entry(&entry, depth + 1)?;
-                    result.depth = result.depth.max(1 + child.depth);
-                    result.unresolved |= child.unresolved;
-                    result.bytes = result
-                        .bytes
-                        .max(name.len() + child.bytes + usize::from(child.depth != 0));
+        let mut pending = vec![Task::Visit(id, depth)];
+        while let Some(task) = pending.pop() {
+            match task {
+                Task::Visit(current, depth) => {
+                    if depth > 256 {
+                        return Err(invalid("source nesting bound"));
+                    }
+                    if self.roots.contains_key(&current) {
+                        continue;
+                    }
+                    if !self.active.insert(current) {
+                        return Err(invalid("owning cycle"));
+                    }
+                    let (is_map, entries) = match self.object(current)? {
+                        Object::Map(_) => {
+                            let mut entries = Vec::new();
+                            self.map(current, &[], &mut entries)?;
+                            (
+                                true,
+                                entries
+                                    .into_iter()
+                                    .map(|(name, entry)| (name.len(), entry))
+                                    .collect::<Vec<_>>(),
+                            )
+                        }
+                        Object::Conflict(conflict) => (
+                            false,
+                            conflict
+                                .positive
+                                .iter()
+                                .chain(&conflict.negative)
+                                .map(|(entry, _)| (0, entry.clone()))
+                                .collect(),
+                        ),
+                        _ => return Err(invalid("expected source value")),
+                    };
+                    let mut dependencies = Vec::new();
+                    for (_, entry) in &entries {
+                        if let Some(child) = self.entry_source(entry)? {
+                            dependencies.push(Task::Visit(child, depth + usize::from(is_map)));
+                        }
+                    }
+                    pending.push(Task::Finish(current, is_map, entries));
+                    pending.extend(dependencies.into_iter().rev());
                 }
-                result
-            }
-            Object::Conflict(conflict) => {
-                let mut result = Bounds {
-                    unresolved: true,
-                    ..Bounds::default()
-                };
-                for (entry, _) in conflict.positive.iter().chain(&conflict.negative) {
-                    let child = self.entry(entry, depth)?;
-                    result.depth = result.depth.max(child.depth);
-                    result.bytes = result.bytes.max(child.bytes);
+                Task::Finish(current, is_map, entries) => {
+                    let mut result = Bounds {
+                        unresolved: !is_map,
+                        ..Bounds::default()
+                    };
+                    for (name_len, entry) in entries {
+                        let child = match entry {
+                            Entry::Directory(id) | Entry::Conflict(id) => self.roots[&id],
+                            _ => Bounds::default(),
+                        };
+                        result.depth = result.depth.max(usize::from(is_map) + child.depth);
+                        result.unresolved |= child.unresolved;
+                        result.bytes = result
+                            .bytes
+                            .max(name_len + child.bytes + usize::from(is_map && child.depth != 0));
+                    }
+                    if result.depth > 256 || result.bytes > 4096 {
+                        return Err(invalid("source path bounds"));
+                    }
+                    self.active.remove(&current);
+                    self.roots.insert(current, result);
                 }
-                result
             }
-            _ => return Err(invalid("expected source value")),
-        };
-        if result.depth > 256 || result.bytes > 4096 {
-            return Err(invalid("source path bounds"));
         }
-        self.active.remove(&id);
-        self.roots.insert(id, result);
-        Ok(result)
+        Ok(self.roots[&id])
     }
-    fn entry(&mut self, entry: &Entry, depth: usize) -> Result<Bounds> {
+    fn entry_source(&mut self, entry: &Entry) -> Result<Option<Id>> {
         match entry {
-            Entry::Absent => Ok(Bounds::default()),
+            Entry::Absent => Ok(None),
             Entry::File { blob, .. } | Entry::Symlink(blob) => match self.object(*blob)? {
-                Object::Blob(_) => Ok(Bounds::default()),
+                Object::Blob(_) => Ok(None),
                 _ => Err(invalid("expected blob dependency")),
             },
             Entry::Directory(id) => {
                 if !matches!(self.object(*id)?, Object::Map(_)) {
                     return Err(invalid("directory reference kind"));
                 }
-                self.source(*id, depth)
+                Ok(Some(*id))
             }
             Entry::Conflict(id) => {
                 match self.object(*id)? {
                     Object::Conflict(conflict) if conflict.region == 0 => {}
                     _ => return Err(invalid("path conflict region")),
                 }
-                self.source(*id, depth)
+                Ok(Some(*id))
             }
         }
     }
     fn map(&mut self, id: Id, prefix: &[u8], output: &mut Vec<(Vec<u8>, Entry)>) -> Result<u32> {
-        if prefix.len() > 510 {
-            return Err(invalid("radix key bound"));
+        enum Task {
+            Visit(Id, usize, Option<u8>),
+            Finish(Id, u32, u32, Vec<Id>),
         }
-        let count = match self.object(id)? {
-            Object::Map(Node::Leaf(entries)) => {
-                for (suffix, entry) in entries {
-                    let mut key = prefix.to_vec();
-                    key.extend(suffix);
-                    let name = bytes_from_nibbles(&key)?;
-                    validate_name(&name)?;
-                    output.push((name, entry.clone()));
-                    self.bindings += 1;
-                    if self.bindings > self.limits.bindings {
-                        return Err(Error::Limit("verification bindings"));
+        let mut prefix = prefix.to_vec();
+        let mut pending = vec![Task::Visit(id, prefix.len(), None)];
+        let mut active = BTreeSet::new();
+        while let Some(task) = pending.pop() {
+            match task {
+                Task::Visit(current, length, slot) => {
+                    prefix.truncate(length);
+                    prefix.extend(slot);
+                    if prefix.len() > 510 {
+                        return Err(invalid("radix key bound"));
+                    }
+                    if !active.insert(current) {
+                        return Err(invalid("owning cycle"));
+                    }
+                    match self.object(current)? {
+                        Object::Map(Node::Leaf(entries)) => {
+                            for (suffix, entry) in entries {
+                                let mut key = prefix.clone();
+                                key.extend(suffix);
+                                self.map_binding(&key, entry, output)?;
+                            }
+                            self.counts.insert(current, entries.len() as u32);
+                            active.remove(&current);
+                        }
+                        Object::Map(Node::Branch {
+                            count,
+                            prefix: suffix,
+                            terminal,
+                            children,
+                        }) => {
+                            prefix.extend(suffix);
+                            if prefix.len() > 510 {
+                                return Err(invalid("radix key bound"));
+                            }
+                            if let Some(entry) = terminal {
+                                self.map_binding(&prefix, entry, output)?;
+                            }
+                            pending.push(Task::Finish(
+                                current,
+                                *count,
+                                u32::from(terminal.is_some()),
+                                children.values().copied().collect(),
+                            ));
+                            for (slot, child) in children.iter().rev() {
+                                pending.push(Task::Visit(*child, prefix.len(), Some(*slot)));
+                            }
+                        }
+                        _ => return Err(invalid("wrong map dependency kind")),
                     }
                 }
-                entries.len() as u32
+                Task::Finish(current, count, mut total, children) => {
+                    for child in children {
+                        let size = self.counts[&child];
+                        if size == 0 {
+                            return Err(invalid("empty radix partition"));
+                        }
+                        total = total.checked_add(size).ok_or(Error::Limit("map count"))?;
+                    }
+                    if total != count {
+                        return Err(invalid("forged map count"));
+                    }
+                    self.counts.insert(current, count);
+                    active.remove(&current);
+                }
             }
-            Object::Map(Node::Branch {
-                count,
-                prefix: suffix,
-                terminal,
-                children,
-            }) => {
-                let mut prefix = prefix.to_vec();
-                prefix.extend(suffix);
-                if prefix.len() > 510 {
-                    return Err(invalid("radix key bound"));
-                }
-                let mut total = 0u32;
-                if let Some(entry) = terminal {
-                    let name = bytes_from_nibbles(&prefix)?;
-                    validate_name(&name)?;
-                    output.push((name, entry.clone()));
-                    total = 1;
-                    self.bindings += 1;
-                    if self.bindings > self.limits.bindings {
-                        return Err(Error::Limit("verification bindings"));
-                    }
-                }
-                for (slot, child) in children {
-                    prefix.push(*slot);
-                    let size = self.map(*child, &prefix, output)?;
-                    prefix.pop();
-                    if size == 0 {
-                        return Err(invalid("empty radix partition"));
-                    }
-                    total = total.checked_add(size).ok_or(Error::Limit("map count"))?;
-                }
-                if total != *count {
-                    return Err(invalid("forged map count"));
-                }
-                total
-            }
-            _ => return Err(invalid("wrong map dependency kind")),
-        };
-        self.counts.insert(id, count);
-        Ok(count)
+        }
+        Ok(self.counts[&id])
+    }
+
+    fn map_binding(
+        &mut self,
+        key: &[u8],
+        entry: &Entry,
+        output: &mut Vec<(Vec<u8>, Entry)>,
+    ) -> Result<()> {
+        let name = bytes_from_nibbles(key)?;
+        validate_name(&name)?;
+        self.bindings = self
+            .bindings
+            .checked_add(1)
+            .ok_or(Error::Limit("verification bindings"))?;
+        if self.bindings > self.limits.bindings {
+            return Err(Error::Limit("verification bindings"));
+        }
+        output.push((name, entry.clone()));
+        Ok(())
     }
 }

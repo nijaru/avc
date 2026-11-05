@@ -33,6 +33,11 @@ class Limit(Invalid):
     """Configured resource budget exhausted, not a semantic conflict."""
 
 
+@dataclass(frozen=True)
+class Pending:
+    reason: str
+
+
 def require(ok, message):
     if not ok:
         raise Invalid(message)
@@ -228,9 +233,7 @@ def decode_node(kind, payload):
                     not terms or terms[-1][0] < term,
                     "unsorted/duplicate conflict terms",
                 )
-                require(
-                    region == 0 or term[0] in (0, 3), "non-directory root conflict term"
-                )
+                require(region == 0 or term[0] == 3, "non-directory root conflict term")
                 terms.append((term, multiplicity))
             signs.append(tuple(terms))
         positive, negative = signs
@@ -553,6 +556,7 @@ class Store:
             r.entry(absent=True)
             r.end()
             if entry[0] != 4:
+                require(region == 0 or entry[0] == 3, "root conflict type")
                 terms[entry] += sign
                 return
             ref = entry[1:34]
@@ -570,14 +574,25 @@ class Store:
         terms = {term: mult for term, mult in terms.items() if mult}
         require(sum(terms.values()) == 1, "signed balance")
         require(sum(abs(m) for m in terms.values()) <= 64, "signed bound")
-        require(region == 0 or all(t[0] in (0, 3) for t in terms), "root conflict type")
         if len(terms) == 1 and next(iter(terms.values())) == 1:
-            entry = next(iter(terms))
-            require(region == 0 or entry[0] == 3, "Absent source root")
-            return entry
+            return next(iter(terms))
         pos = tuple((t, m) for t, m in sorted(terms.items()) if m > 0)
         neg = tuple((t, -m) for t, m in sorted(terms.items()) if m < 0)
         return b"\x04" + self.add(4, encode_node(4, (region, pos, neg)))
+
+    def merge_opaque(self, base, left, right, region=0):
+        """Tiny semantic oracle for validated values, not a directory/text driver."""
+        if left == right:
+            return left
+        if left == base:
+            return right
+        if right == base:
+            return left
+        # A signed expression does not retain which alternative an author
+        # resolved. Subtracting that base can fabricate deletion or undo edits.
+        if base[0] == 4:
+            return Pending("UnresolvedBase")
+        return self.signed([left, right], [base], region=region)
 
     def authored(
         self,

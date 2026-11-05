@@ -112,12 +112,24 @@ verification, never imported from JSON. All name/path limits apply to the whole
 source, not just each object in isolation. Multiplicity does not change path
 bounds or permit dropping an owning term.
 
-Signed normalization flattens input conflicts, inverts signs for negative
-operands, combines multiplicities, and cancels only byte-identical descriptors.
-`2A - B` remains unresolved even when its two positive occurrences agree. Tests
-exercise repeated rebase and revert cancellation without conflating this with
-section E's intentionally lossy clean equality/base fast paths. The reference
-does not implement section E's text merge, ancestry-base selection, or edits.
+Signed normalization is an algebra helper: it flattens input conflicts, inverts
+signs for negative operands, combines multiplicities, and cancels only
+byte-identical descriptors. `2A - B` remains unresolved even when its two positive
+occurrences agree. Tests exercise repeated rebase and revert cancellation
+without conflating this with section E's intentionally lossy clean equality/base
+fast paths.
+
+`Store.merge_opaque` is a tiny semantic oracle for already-validated entry values
+when no specialized directory/content driver applies. It first checks `L=R`,
+`L=B`, and `R=B`. If those do not resolve the result and the base is a Conflict,
+it returns `Pending("UnresolvedBase")`, without producing an object. It must not
+subtract the unresolved base: resolving `C = X + Y - Absent` independently to X
+and Y would otherwise fabricate Absent. A resolved base still permits exact
+cancellation and flattening of positive-side conflicts. Direct calls to `signed`
+do not enforce this merge policy and must not be mistaken for an authoritative
+merge operation. The reference does not implement text/directory merge drivers,
+ancestry-base selection, or edits. Equal hashes do not imply moves; only explicit
+validated witnesses can authorize a move.
 
 For semantic cross-checking, consulted Jujutsu's primary
 [first-class conflict technical document](https://github.com/jj-vcs/jj/blob/c746b82313b9c23199d376eb45899019258c502e/docs/technical/conflicts.md)
@@ -126,17 +138,17 @@ same-change resolution as lossy, citing
 [issue #6369](https://github.com/jj-vcs/jj/issues/6369). This supports the separation
 above; Jujutsu's implementation, ordering, and merge policies are not imported.
 
-### Format wording requiring an owner decision
+### Source roots are never absent
 
-Section B describes root-conflict resolved alternatives as directories, while
-section D explicitly allows Absent in region `1` unless it is the sole result.
-The reference follows the more explicit region grammar: `+Absent +DirA -DirB`
-is a valid unresolved root expression, but a resolved Absent root is invalid.
-The named `root-conflict-includes-absence` vector exposes this decision rather
-than hiding it. If section B instead intends to forbid positive Absent root
-terms, the format owner must resolve that tension and regenerate the pins.
-No byte-grammar defect requiring a silent fallback was found.
+Every term of a region `1` conflict, positive or negative, must be a Directory.
+Absent is forbidden on both signs; deleting all source bindings produces the
+empty map, never a missing root. Region `0` retains Absent at ordinary paths.
+Region `1` conflicts are legal only as source roots, and region `0` conflicts
+only as Entry descriptors. The root-Absent wording tension identified in the
+initial reference has been resolved by this directory-only rule. The named
+`root-conflict-positive-absence` and `root-conflict-negative-absence` rejection
+vectors pin both sides of the correction.
 
-Also, total multiplicity at most 64 together with signed balance exactly `+1`
-means the greatest realizable total is **63**, necessarily odd. The reference
-checks the written inequalities, including the 63-valid/65-invalid boundary.
+Total multiplicity at most 64 together with signed balance exactly `+1` means
+the greatest realizable total is **63**, necessarily odd. The reference checks
+the written inequalities, including the 63-valid/65-invalid boundary.

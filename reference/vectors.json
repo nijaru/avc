@@ -121,28 +121,24 @@
       "payload": "000301000102018c2417798790b692bd9f830858bba8391153684c2103034df20f88b6df6c7465010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff02010101611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b427824800010101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe01"
     },
     {
-      "id": "avc1-k04-bf6ee91d57791895dac53c1071277b42ecccb2a678b90610d4ea252db7adbced",
-      "payload": "01020100010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff01010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+      "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+      "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
     },
     {
       "id": "avc1-k04-ce8bffa1a059f4fb54e9a8e41f18b7adab56ee9fe51fcba253246ee0da4d9515",
       "payload": "0001020101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe0001010101611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b427824800"
     },
     {
-      "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-      "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
-    },
-    {
       "id": "avc1-k05-2140b4234fb5b99886076237f0a27600a24ce55d81d73bd00f28df955f13bdfc",
       "payload": "02b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca00000102030405060708090a0b0c0d0e0f1200000041203c61406578616d706c652e746573743e0a0000007265666572656e63650a000000000000008061fa"
     },
     {
-      "id": "avc1-k05-4487f0886bbe3f533b62da11e47c067dc10d4b3d37ddf28f73d19404ceb8e4df",
-      "payload": "04d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a001052140b4234fb5b99886076237f0a27600a24ce55d81d73bd00f28df955f13bdfc000102030405060708090a0b0c0d0e0f1200000041203c61406578616d706c652e746573743e0a000000636f6e666c6963740d0affffffffffffff7f9f05"
+      "id": "avc1-k05-e1d8784902f576450a8410dce658046c1056924ae49c1d6fb7251c670766b601",
+      "payload": "045dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d701052140b4234fb5b99886076237f0a27600a24ce55d81d73bd00f28df955f13bdfc000102030405060708090a0b0c0d0e0f1200000041203c61406578616d706c652e746573743e0a000000636f6e666c6963740d0affffffffffffff7f9f05"
     },
     {
-      "id": "avc1-k05-4672ce36c7f7cc58677a64942e8af3bc22899cb84b8348ce2c9a0c4513c538ca",
-      "payload": "02d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff02054487f0886bbe3f533b62da11e47c067dc10d4b3d37ddf28f73d19404ceb8e4df052140b4234fb5b99886076237f0a27600a24ce55d81d73bd00f28df955f13bdfc000102030405060708090a0b0c0d0e0f08000000c3a9203c7840793e0a0000007265666572656e63650a00000000000000000000"
+      "id": "avc1-k05-f217dc1daef6e577527f9aaa04584f00a7cf6f42fae491b3300fad1d40956227",
+      "payload": "02d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0205e1d8784902f576450a8410dce658046c1056924ae49c1d6fb7251c670766b601052140b4234fb5b99886076237f0a27600a24ce55d81d73bd00f28df955f13bdfc000102030405060708090a0b0c0d0e0f08000000c3a9203c7840793e0a0000007265666572656e63650a00000000000000000000"
     }
   ],
   "roots": [
@@ -165,11 +161,10 @@
     "avc1-k02-8c82d2b9e6489284c6ed826d7af669907ae76398171e06d589330e0c01bd77da",
     "avc1-k02-7d1e427ed1eb74196a4a3414feb446813a5fdc5b75221592593f0cd39dfa7104",
     "avc1-k02-35a6dc348d96184d24fd681f8ad16bb8adddd14fb33a0fb09a37f253de82fc95",
-    "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-    "avc1-k04-bf6ee91d57791895dac53c1071277b42ecccb2a678b90610d4ea252db7adbced",
+    "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
     "avc1-k05-2140b4234fb5b99886076237f0a27600a24ce55d81d73bd00f28df955f13bdfc",
-    "avc1-k05-4487f0886bbe3f533b62da11e47c067dc10d4b3d37ddf28f73d19404ceb8e4df",
-    "avc1-k05-4672ce36c7f7cc58677a64942e8af3bc22899cb84b8348ce2c9a0c4513c538ca"
+    "avc1-k05-e1d8784902f576450a8410dce658046c1056924ae49c1d6fb7251c670766b601",
+    "avc1-k05-f217dc1daef6e577527f9aaa04584f00a7cf6f42fae491b3300fad1d40956227"
   ],
   "cases": [
     {
@@ -254,11 +249,7 @@
     },
     {
       "name": "root-directory-conflict",
-      "root": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
-    },
-    {
-      "name": "root-conflict-includes-absence",
-      "root": "avc1-k04-bf6ee91d57791895dac53c1071277b42ecccb2a678b90610d4ea252db7adbced"
+      "root": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
     },
     {
       "name": "revision-zero-parent",
@@ -266,11 +257,11 @@
     },
     {
       "name": "revision-parent-and-root-conflict",
-      "root": "avc1-k05-4487f0886bbe3f533b62da11e47c067dc10d4b3d37ddf28f73d19404ceb8e4df"
+      "root": "avc1-k05-e1d8784902f576450a8410dce658046c1056924ae49c1d6fb7251c670766b601"
     },
     {
       "name": "revision-two-ordered-parents",
-      "root": "avc1-k05-4672ce36c7f7cc58677a64942e8af3bc22899cb84b8348ce2c9a0c4513c538ca"
+      "root": "avc1-k05-f217dc1daef6e577527f9aaa04584f00a7cf6f42fae491b3300fad1d40956227"
     }
   ],
   "negative": [
@@ -768,6 +759,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -776,8 +771,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-6e4f0dab6cceb9d1b121df176edd0be9ef4e49caa64a84bc1e953c43cdb10962",
@@ -791,7 +786,7 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -810,6 +805,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -818,8 +817,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-77c4c0ce8859ef588f9b58b8e33810631a097372fecf6270f0e3792bc30f47f7",
@@ -833,7 +832,7 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -852,6 +851,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -860,8 +863,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-8fa2d9bb2ebc81b3d6d63cd3e5356021096f8f3ccd94c6437660bffdeb5b9f03",
@@ -875,7 +878,7 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -894,6 +897,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -902,8 +909,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-2b745f0320c2de678446b200d13a4f686dc6da7f18e7d359ed6af4ecc89b3608",
@@ -917,7 +924,7 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -936,6 +943,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -944,8 +955,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-024a0c35612b7b824b9b1215084849fb0e49e6335fe1d4ed4e2c61e0d3a64698",
@@ -959,7 +970,99 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
+      ]
+    },
+    {
+      "name": "root-conflict-positive-absence",
+      "objects": [
+        {
+          "id": "avc1-k01-611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b4278248",
+          "payload": "420a"
+        },
+        {
+          "id": "avc1-k01-bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe",
+          "payload": "410a"
+        },
+        {
+          "id": "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
+          "payload": "430a"
+        },
+        {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
+          "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
+          "payload": "00"
+        },
+        {
+          "id": "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
+          "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
+        },
+        {
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
+        },
+        {
+          "id": "avc1-k04-bf6ee91d57791895dac53c1071277b42ecccb2a678b90610d4ea252db7adbced",
+          "payload": "01020100010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff01010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        }
+      ],
+      "roots": [
+        "avc1-k04-bf6ee91d57791895dac53c1071277b42ecccb2a678b90610d4ea252db7adbced",
+        "avc1-k01-bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe",
+        "avc1-k01-611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b4278248",
+        "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
+        "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
+        "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
+      ]
+    },
+    {
+      "name": "root-conflict-negative-absence",
+      "objects": [
+        {
+          "id": "avc1-k01-611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b4278248",
+          "payload": "420a"
+        },
+        {
+          "id": "avc1-k01-bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe",
+          "payload": "410a"
+        },
+        {
+          "id": "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
+          "payload": "430a"
+        },
+        {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
+          "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
+          "payload": "00"
+        },
+        {
+          "id": "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
+          "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
+        },
+        {
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
+        },
+        {
+          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+        }
+      ],
+      "roots": [
+        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
+        "avc1-k01-bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe",
+        "avc1-k01-611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b4278248",
+        "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
+        "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
+        "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -978,6 +1081,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -986,8 +1093,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-38263000e096bbedc626f5048a0391a23b382a725ce9919192fb0575bce80c5a",
@@ -1001,7 +1108,7 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -1020,6 +1127,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -1028,8 +1139,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-adb40182c80bfb182295ab018f25b21f2616728fc4570fe010bbb8aa37c464a1",
@@ -1043,7 +1154,7 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -1062,6 +1173,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -1070,22 +1185,22 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
-          "id": "avc1-k04-3c85973b8b4fa4a7d659998304c346065e1a73894d3b9d42c13bf9ce512f2ee4",
-          "payload": "0102010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010100"
+          "id": "avc1-k04-92360744444cd4b5e6c2e8b34ae54eedb80332532a1e44d9f1f7775f3ae4555c",
+          "payload": "0102010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         }
       ],
       "roots": [
-        "avc1-k04-3c85973b8b4fa4a7d659998304c346065e1a73894d3b9d42c13bf9ce512f2ee4",
+        "avc1-k04-92360744444cd4b5e6c2e8b34ae54eedb80332532a1e44d9f1f7775f3ae4555c",
         "avc1-k01-bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe",
         "avc1-k01-611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b4278248",
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -1104,6 +1219,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -1112,8 +1231,8 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
           "id": "avc1-k04-b938ce1a9155ababf00ff77dc13ba5ff78675b3228a6f4c121b17647eea39cd9",
@@ -1127,7 +1246,7 @@
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {
@@ -1146,6 +1265,10 @@
           "payload": "430a"
         },
         {
+          "id": "avc1-k02-27dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d",
+          "payload": "0206006469720302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0a00656d7074790302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+        },
+        {
           "id": "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
           "payload": "00"
         },
@@ -1154,22 +1277,22 @@
           "payload": "01080066696c650101bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe00"
         },
         {
-          "id": "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0",
-          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff010100"
+          "id": "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7",
+          "payload": "0102010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca010302d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff0101030227dffa23411da3eef7ad2a6ba2801bbea1ddf135a36e4b29e055fb6385d50a7d"
         },
         {
-          "id": "avc1-k04-35c9004c94a6edfdf9ab023815b39d1ae92b5111c382e1a2decd7a2bc2a86ca2",
-          "payload": "0101020404d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a001010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
+          "id": "avc1-k04-e79a0308d41a18fbe9b647e569054bb2b22e6580bfb22e966cf4ea0ca2e87b5b",
+          "payload": "01010204045dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d701010302b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca"
         }
       ],
       "roots": [
-        "avc1-k04-35c9004c94a6edfdf9ab023815b39d1ae92b5111c382e1a2decd7a2bc2a86ca2",
+        "avc1-k04-e79a0308d41a18fbe9b647e569054bb2b22e6580bfb22e966cf4ea0ca2e87b5b",
         "avc1-k01-bdf00d7676b0be0fb1d14b23d0448ad2af96de3f5306642560d583474a213dbe",
         "avc1-k01-611cd846e02d78c4ac12444638a797c633d9d041e0052e48de657802b4278248",
         "avc1-k01-e4083f766f2ff4009e432fef7241ce3fe598d09ce0b56bf811c721362e50d5c9",
         "avc1-k02-b6ad525fb43e0b35ae0fc7e119fe290df033d1cbf1b79a58ae5bede4323e0bca",
         "avc1-k02-d1642a3dc8c4dfdbcd252805efb77d45ed3877eabe1e6c067859ce8c938840ff",
-        "avc1-k04-d6fcaf52e35aa1a93bf92be8278358c6afd18b5560217ef321d633bd4a11a0a0"
+        "avc1-k04-5dd1752768b09c81eb80b216b31e04cf36eecb21ab6e94ddfbf61c096e8358d7"
       ]
     },
     {

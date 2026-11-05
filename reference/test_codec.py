@@ -13,6 +13,7 @@ from blake3 import blake3
 from check import (
     Invalid,
     Limits,
+    Pending,
     Store,
     corpus_store,
     decode_node,
@@ -259,7 +260,8 @@ class CodecTests(unittest.TestCase):
     def test_root_and_path_conflicts_are_typed(self):
         empty = directory(self.s.map([]))
         one = directory(self.s.map([(b"a", self.fa)]))
-        root = self.s.signed([empty, one], [b"\0"], region=1)[1:]
+        other = directory(self.s.map([(b"b", self.fb)]))
+        root = self.s.signed([empty, one], [other], region=1)[1:]
         self.verify(root)
         with self.assertRaisesRegex(Invalid, "region/context"):
             self.verify(self.s.map([(b"x", b"\x04" + root)]))
@@ -268,11 +270,67 @@ class CodecTests(unittest.TestCase):
             self.verify(path)
         with self.assertRaisesRegex(Invalid, "root conflict type"):
             self.s.signed([self.fa, empty], [one], region=1)
-        with self.assertRaisesRegex(Invalid, "Absent source root"):
+        with self.assertRaisesRegex(Invalid, "root conflict type"):
             self.s.signed([b"\0"], region=1)
-        # Present root terms must be directories; Absent in a nontrivial signed
-        # expression is explicitly permitted by section D.
-        self.verify(self.s.signed([b"\0", empty], [one], region=1)[1:])
+        # A source with no bindings is an empty map, not an absent root.
+        self.verify(self.s.signed([empty], region=1)[1:])
+
+    def test_opaque_merge_refuses_differing_resolutions_of_unresolved_base(self):
+        conflict = self.s.signed([self.fa, self.fb], [b"\0"])
+        # Algebra alone would turn two resolutions of an add/add conflict into
+        # deletion. It is not a semantic merge of authored resolved values.
+        self.assertEqual(self.s.signed([self.fa, self.fb], [conflict]), b"\0")
+        before = dict(self.s.objects)
+        self.assertEqual(
+            self.s.merge_opaque(conflict, self.fa, self.fb), Pending("UnresolvedBase")
+        )
+        self.assertEqual(
+            self.s.merge_opaque(conflict, self.fb, self.fa), Pending("UnresolvedBase")
+        )
+        self.assertEqual(self.s.objects, before)
+
+    def test_opaque_merge_fast_paths_precede_unresolved_base_guard(self):
+        conflict = self.s.signed([self.fa, self.fb], [b"\0"])
+        self.assertEqual(self.s.merge_opaque(conflict, self.fa, self.fa), self.fa)
+        self.assertEqual(self.s.merge_opaque(conflict, conflict, self.fb), self.fb)
+        self.assertEqual(self.s.merge_opaque(conflict, self.fa, conflict), self.fa)
+        self.assertEqual(self.s.merge_opaque(conflict, conflict, conflict), conflict)
+
+    def test_opaque_merge_with_resolved_base_keeps_exact_cancellation(self):
+        conflict = self.s.signed([self.fa, self.fb], [self.fc])
+        # Base A, left A+B-C, right C cancels exactly to B; the base itself is
+        # resolved, so positive-side conflicts can still be flattened safely.
+        self.assertEqual(self.s.merge_opaque(self.fa, conflict, self.fc), self.fb)
+        added = self.s.merge_opaque(b"\0", self.fa, self.fb)
+        self.assertEqual(added, self.s.signed([self.fa, self.fb], [b"\0"]))
+        self.verify(self.s.map([(b"added", added)]))
+
+    def test_root_conflicts_reject_absent_in_either_sign(self):
+        empty = directory(self.s.map([]))
+        one = directory(self.s.map([(b"a", self.fa)]))
+        for name, positive, negative in (
+            ("positive-absence", [b"\0", one], [empty]),
+            ("negative-absence", [empty, one], [b"\0"]),
+        ):
+            node = (
+                1,
+                tuple((t, 1) for t in sorted(positive)),
+                tuple((t, 1) for t in sorted(negative)),
+            )
+            payload = encode_node(4, node)
+            with (
+                self.subTest(name=name, operation="decode"),
+                self.assertRaisesRegex(Invalid, "root conflict term"),
+            ):
+                decode_node(4, payload)
+            with (
+                self.subTest(name=name, operation="normalize"),
+                self.assertRaisesRegex(Invalid, "root conflict type"),
+            ):
+                self.s.signed(positive, negative, region=1)
+            # The same exact alternatives remain valid at an ordinary path.
+            path = self.s.signed(positive, negative, region=0)
+            self.verify(self.s.map([(b"path", path)]))
 
     def chain(self, count, name=b"x", terminal=None):
         root = self.s.map([]) if terminal is None else terminal

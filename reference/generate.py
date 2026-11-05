@@ -39,7 +39,7 @@ def generate():
     c = case("blob-c", s.add(1, b"C\n"))
     fa, fb, fc = file(a), file(b), file(c)
     one = case("one-file", s.map([(b"file", fa)]))
-    case(
+    nested_map = case(
         "nested-file-map",
         s.map([(b"dir", directory(one)), (b"empty", directory(empty))]),
     )
@@ -85,10 +85,10 @@ def generate():
     nested = s.signed([signed, fc], [fb])
     assert nested == fa
     case("flatten-exact-cancellation", s.map([(b"f", nested)]))
-    root_conflict = s.signed([directory(empty), directory(one)], [b"\0"], region=1)
+    root_conflict = s.signed(
+        [directory(empty), directory(one)], [directory(nested_map)], region=1
+    )
     root_ref = case("root-directory-conflict", root_conflict[1:])
-    root_absence = s.signed([b"\0", directory(one)], [directory(empty)], region=1)
-    case("root-conflict-includes-absence", root_absence[1:])
     r0 = case(
         "revision-zero-parent", s.authored(empty, timestamp=-(1 << 63), timezone=-1439)
     )
@@ -212,6 +212,18 @@ def generate():
     bad_conflict("zero-multiplicity", (1, ((directory(empty), 0),), ()))
     bad_conflict("root-file-conflict", (1, ((fa, 2),), ((fb, 1),)))
     bad_conflict(
+        "root-conflict-positive-absence",
+        (1, ((b"\0", 1), (directory(one), 1)), ((directory(empty), 1),)),
+    )
+    bad_conflict(
+        "root-conflict-negative-absence",
+        (
+            1,
+            tuple((t, 1) for t in sorted((directory(empty), directory(one)))),
+            ((b"\0", 1),),
+        ),
+    )
+    bad_conflict(
         "path-conflict-as-source-root",
         (0, tuple(sorted(((fa, 1), (fb, 1)))), ((fc, 1),)),
     )
@@ -221,7 +233,8 @@ def generate():
     )
     ordered = sorted((directory(empty), directory(one)))
     bad_conflict(
-        "unsorted-conflict", (1, ((ordered[1], 1), (ordered[0], 1)), ((b"\0", 1),))
+        "unsorted-conflict",
+        (1, ((ordered[1], 1), (ordered[0], 1)), ((directory(nested_map), 1),)),
     )
     bad_conflict(
         "multiplicity-bound", (1, ((directory(empty), 33),), ((directory(one), 32),))

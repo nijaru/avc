@@ -1,6 +1,8 @@
 //! In-memory canonical source authority. No filesystem or durable-custody claims.
 use crate::codec::{Entry, Error, Id, Node, Object, Result};
 use std::collections::{BTreeMap, BTreeSet};
+mod merge;
+pub use merge::{Candidate, MergeBudget, Merged};
 
 pub type Path = Vec<Vec<u8>>;
 
@@ -33,12 +35,14 @@ pub struct Difference {
 struct Bounds {
     depth: usize,
     bytes: usize,
+    unresolved: bool,
 }
 
 #[derive(Clone, Copy, Default, Debug)]
 struct Metrics {
     depth: usize,
     nibbles: usize,
+    unresolved: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -539,6 +543,7 @@ impl Engine {
         let bounds = Bounds {
             depth: metrics.depth,
             bytes: metrics.nibbles / 2,
+            unresolved: metrics.unresolved,
         };
         if bounds.depth > 256 || bounds.bytes > 4096 {
             return Err(invalid("source path bounds"));
@@ -555,6 +560,7 @@ impl Engine {
                 for (key, entry) in entries {
                     let child = self.check_entry(&entry, &[])?;
                     result.depth = result.depth.max(1 + child.depth);
+                    result.unresolved |= child.unresolved;
                     result.nibbles = result
                         .nibbles
                         .max(key.len() + 2 * (child.bytes + usize::from(child.depth != 0)));
@@ -569,12 +575,14 @@ impl Engine {
                 if let Some(entry) = terminal {
                     let child = self.check_entry(&entry, &[])?;
                     result.depth = 1 + child.depth;
+                    result.unresolved |= child.unresolved;
                     result.nibbles =
                         prefix.len() + 2 * (child.bytes + usize::from(child.depth != 0));
                 }
                 for child in children.values() {
                     let metrics = self.node_metrics(*child)?;
                     result.depth = result.depth.max(metrics.depth);
+                    result.unresolved |= metrics.unresolved;
                     result.nibbles = result.nibbles.max(prefix.len() + 1 + metrics.nibbles);
                 }
             }
@@ -600,6 +608,9 @@ impl Engine {
     }
 
     pub fn diff(&self, before: Id, after: Id) -> Result<Vec<Difference>> {
+        self.diff_with_limit(before, after, 1_000_000)
+    }
+    pub fn diff_with_limit(&self, before: Id, after: Id, limit: usize) -> Result<Vec<Difference>> {
         self.root(before)?;
         self.root(after)?;
         let mut output = Vec::new();
@@ -608,6 +619,7 @@ impl Engine {
             root_entry(after)?,
             &mut Vec::new(),
             &mut output,
+            limit,
         )?;
         Ok(output)
     }
@@ -617,6 +629,7 @@ impl Engine {
         after: Entry,
         path: &mut Path,
         output: &mut Vec<Difference>,
+        limit: usize,
     ) -> Result<()> {
         if before == after {
             return Ok(());
@@ -628,13 +641,17 @@ impl Engine {
                 View::Node(*b, 0),
                 &mut Vec::new(),
                 &mut changes,
+                limit.saturating_sub(output.len()),
             )?;
             for (key, left, right) in changes {
                 path.push(bytes_from_nibbles(&key)?);
-                self.diff_entry(left, right, path, output)?;
+                self.diff_entry(left, right, path, output, limit)?;
                 path.pop();
             }
         } else {
+            if output.len() >= limit {
+                return Err(Error::Limit("diff output"));
+            }
             output.push(Difference {
                 path: path.clone(),
                 before,
@@ -649,6 +666,7 @@ impl Engine {
         right: View,
         prefix: &mut Vec<u8>,
         output: &mut Vec<(Vec<u8>, Entry, Entry)>,
+        limit: usize,
     ) -> Result<()> {
         if left == right {
             return Ok(());
@@ -656,6 +674,9 @@ impl Engine {
         let (a, ac) = self.partition(left)?;
         let (b, mut bc) = self.partition(right)?;
         if a != b {
+            if output.len() >= limit {
+                return Err(Error::Limit("changed directory bindings"));
+            }
             output.push((prefix.clone(), a, b));
         }
         for (slot, child) in ac {
@@ -665,12 +686,13 @@ impl Engine {
                 bc.remove(&slot).unwrap_or(View::Empty),
                 prefix,
                 output,
+                limit,
             )?;
             prefix.pop();
         }
         for (slot, child) in bc {
             prefix.push(slot);
-            self.diff_views(View::Empty, child, prefix, output)?;
+            self.diff_views(View::Empty, child, prefix, output, limit)?;
             prefix.pop();
         }
         Ok(())
@@ -885,6 +907,7 @@ impl<'a> Verifier<'a> {
                 for (name, entry) in entries {
                     let child = self.entry(&entry, depth + 1)?;
                     result.depth = result.depth.max(1 + child.depth);
+                    result.unresolved |= child.unresolved;
                     result.bytes = result
                         .bytes
                         .max(name.len() + child.bytes + usize::from(child.depth != 0));
@@ -892,7 +915,10 @@ impl<'a> Verifier<'a> {
                 result
             }
             Object::Conflict(conflict) => {
-                let mut result = Bounds::default();
+                let mut result = Bounds {
+                    unresolved: true,
+                    ..Bounds::default()
+                };
                 for (entry, _) in conflict.positive.iter().chain(&conflict.negative) {
                     let child = self.entry(entry, depth)?;
                     result.depth = result.depth.max(child.depth);

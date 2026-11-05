@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod engine;
+pub mod text;
 
 pub use codec::{
     BLOB_KIND, CONFLICT_KIND, Conflict, DecodeLimits, Entry, Error, Id, MAP_BRANCH_KIND,

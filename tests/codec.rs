@@ -495,13 +495,13 @@ fn exact_conflicts_use_wire_order_not_rust_enum_order() {
     exact(
         Object::Conflict(Conflict {
             region: 1,
-            positive: vec![(Entry::Absent, 1), (directory(1), 1)],
-            negative: vec![(directory(2), 1)],
+            positive: vec![(directory(1), 1), (directory(2), 1)],
+            negative: vec![(directory(3), 1)],
         }),
         conflict(
             1,
-            &[(1, vec![0]), (1, descriptor(3, 2, 1))],
-            &[(1, descriptor(3, 2, 2))],
+            &[(1, descriptor(3, 2, 1)), (1, descriptor(3, 2, 2))],
+            &[(1, descriptor(3, 2, 3))],
         ),
     );
     // 63 is the greatest usable total <=64 with signed sum exactly one.
@@ -569,13 +569,25 @@ fn conflict_descriptor_identity_and_distinct_term_bounds() {
         negative: (32..63).map(|n| (file(n), 1)).collect(),
     });
     assert_eq!(decode(4, &value.encode().unwrap()).unwrap(), value);
-    // Current grammar allows Absent on either sign of a root expression.
+    // A missing source root has no meaning; empty source uses an empty map.
     let value = Object::Conflict(Conflict {
         region: 1,
         positive: vec![(directory(1), 2)],
         negative: vec![(Entry::Absent, 1)],
     });
-    assert_eq!(decode(4, &value.encode().unwrap()).unwrap(), value);
+    assert!(value.encode().is_err());
+    rejects(
+        4,
+        &conflict(1, &[(2, descriptor(3, 2, 1))], &[(1, vec![0])]),
+    );
+    rejects(
+        4,
+        &conflict(
+            1,
+            &[(1, vec![0]), (1, descriptor(3, 2, 1))],
+            &[(1, descriptor(3, 2, 2))],
+        ),
+    );
 }
 
 #[test]

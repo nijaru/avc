@@ -20,6 +20,7 @@ pub enum Error {
     Invalid(String),
     NeedObjects(Id),
     Conflict(Id),
+    UnresolvedBase(Id),
     Limit(&'static str),
     Stale,
     Io(std::io::Error),
@@ -31,6 +32,10 @@ impl fmt::Display for Error {
             Self::Invalid(reason) => write!(f, "invalid AVC object: {reason}"),
             Self::NeedObjects(id) => write!(f, "need object {id}"),
             Self::Conflict(id) => write!(f, "explicit resolution required for conflict {id}"),
+            Self::UnresolvedBase(id) => write!(
+                f,
+                "merge pending: unresolved base {id}; choose an explicit resolved base or replacement"
+            ),
             Self::Limit(limit) => write!(f, "resource limit: {limit}"),
             Self::Stale => f.write_str("stale witness"),
             Self::Io(error) => error.fmt(f),
@@ -393,10 +398,8 @@ impl Conflict {
             if matches!(entry, Entry::Conflict(_)) {
                 return Err(invalid("nested conflict term"));
             }
-            if self.region == 1 && !matches!(entry, Entry::Directory(_) | Entry::Absent) {
-                return Err(invalid(
-                    "source-root conflict term must be a directory or Absent",
-                ));
+            if self.region == 1 && !matches!(entry, Entry::Directory(_)) {
+                return Err(invalid("source-root conflict term must be a directory"));
             }
             let descriptor = entry.descriptor()?;
             if previous

@@ -80,6 +80,18 @@ fn witnessed_move_edit_retains_correlated_whole_source_choices() {
         composed
     );
     engine.verify(composed.root, Limits::default()).unwrap();
+    assert!(
+        matches!(
+            engine.merge(
+                composed.root,
+                moved.root(),
+                edited.root(),
+                MergeBudget::default()
+            ),
+            Err(avc::Error::UnresolvedBase(_))
+        ),
+        "divergent whole-source resolutions must not resurrect the removed base"
+    );
     let other = engine
         .prepare(
             base,

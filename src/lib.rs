@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod engine;
+pub mod repository;
 pub mod text;
 
 pub use codec::{

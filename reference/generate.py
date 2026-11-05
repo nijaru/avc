@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.11,<3.15"
 # dependencies = ["blake3==1.0.8"]
 # ///
 """Deterministically regenerate independent vectors; no external implementation inputs."""

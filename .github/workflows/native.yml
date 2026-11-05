@@ -5,6 +5,7 @@ permissions:
 jobs:
   source:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -14,6 +15,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.14'
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: uv run reference/check.py --vectors

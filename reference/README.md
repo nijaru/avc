@@ -18,7 +18,9 @@ uv run reference/generate.py  # deliberately regenerate pins after format change
 regeneration, and the `unittest` suite. `--verify FILE` checks a corpus from any
 implementation; it does not regenerate expected bytes or need Rust. Both exit
 nonzero on failure. BLAKE3 is the only third-party Python dependency and is
-pinned in the scripts' PEP 723 headers.
+pinned in the scripts' PEP 723 headers. The scripts select Python 3.11–3.14:
+the pinned binding's PyO3 version does not support Python 3.15. CI explicitly
+selects 3.14 rather than inheriting the runner's interpreter.
 
 ## Interoperability JSON
 

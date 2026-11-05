@@ -94,9 +94,47 @@ recovered bindings against flat byte-name oracles and include a hand-laid-out
 split/collapse cases model identical final binding sets, not an incremental edit
 algorithm.
 
+## Experimental source export bundles
+
+`bundle.py` independently parses the experimental repository's `AVCEXP01`
+object-only export stream. It does not invoke Rust or change the canonical object
+grammar:
+
+```sh
+uv run reference/bundle.py source.avcexp
+uv run reference/bundle.py source.avcexp --json > source-corpus.json
+uv run reference/check.py --verify source-corpus.json
+```
+
+The parser checks the explicit source root, strictly sorted unique typed-wire
+IDs, bounded record lengths/count, completion marker, BLAKE3 checksum, and exact
+EOF. The checksum covers every preceding byte **including** `AVCEND01`, but not
+its own 32 bytes. After physical verification, `check.py` independently checks
+all object IDs, canonical payloads, and the exact rooted owning closure. A valid
+outer checksum cannot authorize a wrong object hash, missing dependency, or
+surplus record. Only map/root-conflict source roots are accepted here, not Blob
+or Revision entry points. `--json` emits the existing `{objects, roots}` corpus
+only after all checks pass; failures return nonzero without a candidate corpus.
+
+Defaults are 16 MiB per object payload, 256 MiB aggregate payload, and 100,000
+objects. The whole-file default allows that payload plus framing:
+`256 MiB + 41 × 100,000 + 89` bytes. Configure `--max-object-bytes`,
+`--max-closure-bytes`, `--max-objects`, and `--max-file-bytes` independently.
+Counts and lengths are checked before payload allocation; individual stream
+reads are at most 64 KiB. An EOF check reads at most one additional byte and
+refuses any trailing input. The delegated codec retains its traversal limits and
+uses the bundle's aggregate byte cap for recovered-key workspace. Limits yield
+refusal, never an authoritative partial result. Input must terminate.
+
+This is an **experimental object-only source export**, excluding operation
+receipts, authored history, selections, and workspace state. It is not a full
+repository backup or a source-custody qualification. Tests construct streams
+independently, including repaired-checksum attacks, without using the Rust
+exporter; parent end-to-end tests can also feed real CLI exports to this parser.
+
 ## Bounds and semantic decisions
 
-Defaults: 64 MiB JSON input/aggregate payload/recovered-key workspace budgets,
+`check.py` defaults: 64 MiB JSON input/aggregate payload/recovered-key workspace budgets,
 16 MiB per payload, 100,000 objects, 1,000,000 traversal steps, and 1,024 nested
 traversal levels. Set `--max-bytes`, `--max-object-bytes`, `--max-objects`,
 `--max-visits`, and `--max-nesting` as needed (nesting maximum: 2,000). The byte

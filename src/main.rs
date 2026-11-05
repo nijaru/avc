@@ -32,6 +32,7 @@ enum Command {
     Verify(Verify),
     Export(Export),
     Import(Import),
+    Restore(Restore),
     Receipt(ReceiptArgs),
     Source(Source),
 }
@@ -75,6 +76,14 @@ struct Import {
     input: PathBuf,
     #[usage(long)]
     request_key: String,
+}
+/// Materialize exact source into an exclusively new directory (not a workspace).
+#[derive(Args)]
+struct Restore {
+    #[usage(long)]
+    root: Option<Id>,
+    #[usage(long)]
+    to: PathBuf,
 }
 /// Inspect an immutable request outcome after a lost response.
 #[derive(Args)]
@@ -191,15 +200,7 @@ fn mutation_base(
     expected: u64,
     key: &str,
 ) -> Result<(Id, Engine)> {
-    let prior = repo.receipt(key)?;
-    let previous = prior.as_ref().map(|r| r.before).unwrap_or(repo.status()?);
-    if previous.generation != expected {
-        return Err(format!(
-            "stale selection: expected {expected}, actual {}",
-            previous.generation
-        )
-        .into());
-    }
+    let previous = repo.preparation_base(expected, key)?;
     let root = base.unwrap_or(previous.root);
     Ok((root, repo.load_root(root)?))
 }
@@ -330,7 +331,7 @@ fn relocate(repo: &mut Repository, args: Move, copy: bool) -> Result<Receipt> {
 fn run(cli: CommandLine) -> Result<()> {
     let mutating = matches!(
         cli.command,
-        Command::Init(_) | Command::Import(_) | Command::Source(_)
+        Command::Init(_) | Command::Import(_) | Command::Source(_) | Command::Restore(_)
     );
     if mutating && !cli.experimental {
         return Err("writes require --experimental; keep independent backups (format and source custody are unqualified)".into());
@@ -429,6 +430,15 @@ fn run(cli: CommandLine) -> Result<()> {
         Command::Import(args) => {
             let receipt = repo.import(File::open(args.input)?, &args.request_key)?;
             print_receipt(&receipt);
+        }
+        Command::Restore(args) => {
+            let root = selected(&repo, args.root)?;
+            let engine = repo.load_root(root)?;
+            avc::materialize::restore(&engine,root,&args.to).map_err(|error|format!("{error}; source remains retained; destination may be incomplete—use a different fresh directory"))?;
+            println!(
+                "Materialized {root} into {}; no workspace registered.",
+                args.to.display()
+            );
         }
         Command::Receipt(args) => {
             let receipt = repo

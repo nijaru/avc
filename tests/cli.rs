@@ -34,8 +34,9 @@ fn cli_source_edit_reopen_export_and_independent_restore() {
     assert_eq!(initial.generation, 0);
     let inputs = tempfile::tempdir().unwrap();
     let input = inputs.path().join("payload");
-    let bytes = b"exact\0binary\r\n";
-    fs::write(&input, bytes).unwrap();
+    let mut bytes = b"exact\0binary\r\n".to_vec();
+    bytes.extend(vec![b'z'; 8192]);
+    fs::write(&input, &bytes).unwrap();
     let input = input.to_str().unwrap();
     success(
         project.path(),
@@ -141,6 +142,23 @@ fn cli_source_edit_reopen_export_and_independent_restore() {
     let export = inputs.path().join("source.avc");
     let export = export.to_str().unwrap();
     success(project.path(), &["export", "--output", export]);
+    if std::env::var_os("AVC_REFERENCE_CHECK").is_some() {
+        let output = Command::new("uv")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .args(["run", "reference/bundle.py", export, "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let independent: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            independent["roots"][0].as_str().unwrap(),
+            second.root.to_string()
+        );
+    }
     assert!(
         !run(project.path(), &["export", "--output", export])
             .status
@@ -168,6 +186,32 @@ fn cli_source_edit_reopen_export_and_independent_restore() {
             .root,
         second.root
     );
+    let output = inputs.path().canonicalize().unwrap().join("fresh-source");
+    success(
+        restored.path(),
+        &[
+            "--experimental",
+            "restore",
+            "--to",
+            output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(fs::read(output.join("f")).unwrap(), bytes);
+    assert_eq!(fs::read(output.join("g")).unwrap(), bytes);
+    assert!(
+        !run(
+            restored.path(),
+            &[
+                "--experimental",
+                "restore",
+                "--to",
+                output.to_str().unwrap()
+            ]
+        )
+        .status
+        .success()
+    );
+    assert_eq!(fs::read(output.join("f")).unwrap(), bytes);
     assert_eq!(
         fs::read(project.path().join("user.txt")).unwrap(),
         b"live work"

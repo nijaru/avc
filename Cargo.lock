@@ -17,6 +17,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "tempfile",
+ "usage-rs",
 ]
 
 [[package]]
@@ -393,6 +394,33 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "usage-argv"
+version = "7.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f58b7c9d1f258d43cb6571dc912031ac77ddaf007699b6104ea7ba8efe12d88"
+
+[[package]]
+name = "usage-derive"
+version = "7.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b62b9d971043bae7e31aabf88e4ffce7f045d326a7b31d2d68ea698e5ae76a2c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "usage-rs"
+version = "7.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13e4bd547c41ee468a693c8cc72496d956fe9562d8194912c1b883d0e1cd41b0"
+dependencies = [
+ "usage-argv",
+ "usage-derive",
+]
 
 [[package]]
 name = "vcpkg"

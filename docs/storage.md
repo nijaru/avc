@@ -2,6 +2,18 @@
 
 **Implementation contract, 2026-11-04.** Owns *physical storage and mutable local authority*, not canonical source encoding ([format](format.md)), network semantics ([sync](sync.md)) or CLI policy ([UX](ux.md)). This is a chosen design, **not proven crash-safe until implementation/fault injection**.
 
+## Current implementation boundary (November 5, 2026)
+
+`src/repository.rs` implements an **experimental source-root-only subset**: SQLite WAL/FULL selection and immutable retry receipts, inline payloads through 1 KiB, raw immutable files above that threshold, complete-closure validation, conditional admission, reopening and object-only export/import. Receipts retain both source selections; no objects or receipts are deleted. There are no reader-expiry/GC races yet because no GC, compaction or location replacement API exists. This is not a substitute for qualifying those future lifecycles.
+
+Physical limits are explicit: 16 MiB per canonical payload, 256 MiB per owning closure, 100,000 objects. Operations buffer bounded closures and may hold multiple copies. Compression, segment packing/extents, streaming large files, incremental persisted verification, authored refs, observation/checkpoints and in-place materialization remain unimplemented. Current loads/admissions revalidate complete closures, not just changed paths. Administration directories are assumed trusted against hostile concurrent replacement; project source and imported object streams are not trusted. Process termination around SQLite commit, concurrent CAS/dedup, corruption and independent-store round trips are tested; the complete fault matrix and OS/device power-loss behavior are **not qualified**.
+
+Initialization and every recognized reopen complete an idempotent directory/database installation sync before returning a write-capable handle. A failed final initialization sync cannot be bypassed by reopening and acknowledging a later root. Request preparation reads its prior receipt and selection in one SQLite snapshot, so an identical concurrent commit cannot spuriously change a valid retry into `Stale`. Neither repair invents a second mutable authority.
+
+`src/materialize.rs` and `restore` implement fresh-directory output only: preflight the complete source and resource/platform bounds, exclusively create the destination, use anchored Unix directory handles without following symlink parents, and sync output files/directories. Preserve exact file bytes, executable bits, symlinks and empty directories. Conflicts refuse before creation. An error can leave an incomplete new directory, retained for inspection; there is no automatic cleanup, resume journal, workspace registration or overwrite of an existing destination. This is not the in-place materialization/recovery protocol below.
+
+The target protocols below remain release requirements, not guarantees inferred from this subset. The CLI requires explicit `--experimental` for repository mutations and makes no important-source custody claim.
+
 ## 1. Chosen engine and directory ownership
 
 - Rust library with one **SQLite WAL/FULL metadata authority**, short transactions and process-safe writer coordination; no mandatory daemon.
@@ -19,10 +31,9 @@
     sealed/                   # immutable, durably installed segments
   tmp/                        # recovery and materialization staging, explicitly tracked
   lock                        # local segment installer/GC coordination, not source identity
-  format                      # repository/SQLite schema version and instance ID
 ```
 
-Paths under `.avc` are excluded from source capture even when users pass broad patterns. Never silently import, overwrite or delete a preexisting old `.avc` layout. `init` refuses unknown/legacy content unless an explicit, separately qualified migration or fresh path is chosen. Avoid storing credentials in source or diagnostic dumps.
+Repository format/schema version and instance ID belong to SQLite (`application_id`, `user_version` and the repository row), not a competing mutable manifest. Paths under `.avc` are excluded from source capture even when users pass broad patterns. Never silently import, overwrite or delete a preexisting old `.avc` layout. `init` refuses unknown/legacy content unless an explicit, separately qualified migration or fresh path is chosen. Avoid storing credentials in source or diagnostic dumps.
 
 ## 2. SQLite authority and local record model
 
@@ -134,6 +145,27 @@ A **native self-contained export** chooses exact roots/ref generations and an ex
 An export manifest includes format/protocol version, chosen refs/roots, source repo instance ID, exact protected histories, foreign import metadata when selected, object count/checksums, and proof that EOF/manifest was completed. Do not include excluded private checkpoints or credentials by default. A backup includes mutable local refs/operation state only if explicitly requested; restoring shared Git identities or local filesystem locations may require a separate remap and does not grant publication permissions. An object-only export is not a complete workstation-environment snapshot.
 
 Validate backup by independently restoring into an empty store and checking source bytes, revision ancestry and manifest integrity; then run representative local clone, read and diff without contacting the source. Snapshotting only `store.sqlite` or only `objects/sealed` is not acceptable.
+
+### Experimental object-only source stream
+
+The current `export`/`import` interface is **not the full backup manifest above**. It exports one exact source root (Map or root Conflict), its complete owning objects, and no local selections, request receipts, private discarded roots, repository instance, workspaces or authored refs. The current source-only selection cannot point at a Revision. Source-level restore is independent of the originating SQLite/files and does not require Git/network.
+
+Its unreleased binary framing is:
+
+```text
+8 bytes "AVCEXP01"
+33 bytes typed source-root reference
+u64le record_count                    # 1..100000
+repeat sorted unique typed references (kind byte, then digest bytes):
+    33 bytes typed ObjectId
+    u64le canonical_payload_length    # <=16 MiB; sum <=256 MiB
+    canonical payload
+8 bytes "AVCEND01"
+32 bytes BLAKE3(all preceding bytes, including AVCEND01)
+EOF                                  # trailing bytes are invalid
+```
+
+Verify the outer completion hash **and** each canonical typed ID/context/complete owning closure; a repaired outer checksum cannot authorize corrupt objects. Surplus non-owning records are invalid in this stream. Import requires an untouched initialized source store (generation zero), subject to exact same-request receipt replay. The output caller owns flush/sync/publication; CLI output uses exclusive creation and checked sync, never overwrite. A failed export can leave an incomplete output file, which must not import successfully. This is an experimental source transfer, not complete repository or workstation backup.
 
 ## 9. Engineering/qualification gates
 

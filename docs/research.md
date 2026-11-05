@@ -1,8 +1,8 @@
 # AVC — adversarial architecture decisions and evidence
 
-**Reconciled 2026-11-04.** This is a **decision and falsification record**, not a second source/specification. Authoritative logic: [design](design.md), [canonical format](format.md), [storage](storage.md), [native protocol](sync.md), [Git bridge](git.md), [UX](ux.md), and [roadmap](roadmap.md). The extensive older research corpus, independent prototypes and their full measurements are [preserved in Git history](https://github.com/nijaru/avc/blob/af66a63898f383b596e4828199dc625a80e28a72/docs/research.md); the historical experiment source is [also preserved](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72/docs/experiments). **Do not reinstate old code/fixtures as normative simply because they existed.**
+**Reconciled 2026-11-05.** This is a **decision and falsification record**, not a second source/specification. Authoritative logic: [design](design.md), [canonical format](format.md), [storage](storage.md), [native protocol](sync.md), [Git bridge](git.md), [UX](ux.md), and [roadmap](roadmap.md). The extensive older research corpus, independent prototypes and their full measurements are [preserved in Git history](https://github.com/nijaru/avc/blob/af66a63898f383b596e4828199dc625a80e28a72/docs/research.md); the historical experiment source is [also preserved](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72/docs/experiments). **Do not reinstate old code/fixtures as normative simply because they existed.**
 
-This review is an independent synthesis of upstream documentation and earlier bounded experiments. It is **not** new native benchmark, interoperability testing, formal proof or fault-injection evidence.
+Sections 1–12 synthesize upstream documentation and earlier bounded experiments, not new AVC performance or durability evidence. Section 13 records the first new implementation checks and their limits.
 
 ## 1. Strongest alternative: don't build a new VCS at all
 
@@ -76,7 +76,7 @@ AVC is **not** Canto's agent orchestrator, a task tracker, a CRDT editor, CI/bui
 
 The former `src/objects.rs`, `src/merkle.rs`, `src/verify.rs` and `src/lib.rs` implemented the **superseded** state-wrapped 4 KiB map format with whole-directory construction and full-map verification. The ~50 Python/Node/Rust study fixtures, old golden vectors and CI asserted obsolete source identities, conflict algorithms, or models not usable as production guarantees. Running them after this redesign would encourage future agents to conform to the wrong format. They were removed from the **active tree**, but their exact source/results remain available in the pinned Git commit linked at the top. They may be deliberately consulted to recreate **new independent conformance checks**, but should not be copied wholesale.
 
-The code reset is intentional, authorized and not a claim that no earlier research was useful. The next local session must implement from **current contracts**, with fresh golden vectors and real failure-path checks.
+The code reset is intentional, authorized and not a claim that no earlier research was useful. The November 5 implementation starts from **current contracts**, with fresh independent vectors and real failure-path checks; it does not revive the retired codec.
 
 ## Git backend decision: preserve adoption without two source authorities
 
@@ -202,3 +202,38 @@ An overturn requires one specific violated invariant, an essential workflow that
 **Not essential as new tests:** proving that checkout-free source edits exist; replaying hundreds of thousands of existing merges in a new custom harness; implementing Pijul's entire causal algebra only to compare; repeating GitHub's generic shallow/partial clone study; measuring a nonfunctional AVC against feature-complete competitors.
 
 **Remaining uncertainty:** no controlled published study was found that compares **AVC's exact chosen signed-conflict + snapshot-root representation** against Pijul under equal workload, implementation quality and durability. We should not invent such a result. Its *specific* correctness needs independent implementation tests, while broad architectural priority can be decided from existing research.
+
+## 13. First native qualification and demonstrated corrections (November 5, 2026)
+
+**Implemented, not frozen:** the new Rust codec and separately authored Python encoder/decoder agree on **35 canonical objects / 23 entry points** and reject **50 malformed corpora**. Neither imports the old v0 implementation or vectors. Rust-generated 400-binding maps also pass the Python full contextual decoder and match its independent full-map builder. A separate Rust rebuild oracle checks 2,500 deterministic incremental edit steps, split/collapse, prefix terminals, long names, relocation bounds and exact old-value witnesses. These are bounded executable checks, not a universal format proof.
+
+An adversarial review exposed a **real false-clean cancellation** in the draft: given unresolved base `C = X + Y − Absent`, independently resolving to X and Y computes `X + Y − C = Absent`. A directory version resurrects the removed base directory even though neither side selected it. The new regression failed before correction. The chosen correction is a typed **UnresolvedBase refusal after outer equality/base rules**, not an invented resolved baseline or another nested conflict grammar. The trade-off is explicit manual handling of divergent resolutions. This differs from the already documented identical-clean-change intent loss, which remains a disclosed snapshot limitation.
+
+Two related corrections now have executable tests and one normative owner in [format.md](format.md): root conflicts forbid Absent on **both signs** (empty source is a map), and conflicting file content retains the independently resolved executable bit on every derived signed File term. The latter regression also failed before correction. Only previously admitted invalid root-conflict examples were removed/repinned; no released bytes or compatibility commitments exist. Region-0/path versus region-1/root placement is checked through owning references, not just standalone object hashes.
+
+Recorded relocation composition uses actual validated operation witnesses, not inferred move authority from equal hashes. Interacting move/edit, divergent-move or move/delete candidates conservatively retain **whole-source signed alternatives**; ordinary disjoint edits still compose. The initial implementation deliberately does not guess a remap or split correlated resolution across independent paths. Snapshot-only merge remains path-based and cannot claim unavailable move intent. This can impose whole-root resolution/review cost; a narrower remapper is future work, not proof that arbitrary delete/add pairs were renames.
+
+The text driver now pins patience/Myers tie-breaking, retained CR/LF/CRLF tokenization and insertion-boundary rules. Small exhaustive checks independently compare Myers shortest paths, reconstruct input pairs and check side symmetry including budget refusal. Work exhaustion returns Pending rather than selecting a different alignment or manufacturing a semantic conflict. Passing these cases does not replace the established merge evaluation corpus or establish program correctness.
+
+A local Git fixture exercises a **real blobless/no-checkout clone**, changes a Git tree while reusing an unfetched foreign Blob OID, and confirms that no native source root or working files were fabricated. This is the narrow Stage 1A boundary check, not a Git adapter, large-Git conversion measurement or new clone-policy benchmark. Existing Git/Pijul/Jujutsu research still supplies the broader prior-art evidence.
+
+### Pure-engine cost probe, not a VCS speed claim
+
+`cargo run --release --locked --example source_cost -- 10000 [shared]` constructs one 10,000-binding directory, changes one file, checks the exact one-path diff, then independently re-verifies the result. On an Apple M3 Max, arm64 macOS 26.7.2, Rust 1.99.1, using the source engine at commit `44f1b2f`, two preliminary warm-process invocations per shape measured:
+
+| Names | Build | One edit | Merkle diff | Full verify | New objects / canonical payload bytes |
+| --- | --- | --- | --- | --- | --- |
+| short common prefix | 65.5–71.5 ms | 11.8–13.6 µs | 18.9–20.3 µs | 0.94–1.01 ms | 5 / 1,417 |
+| 220-byte common prefix | 72.2–92.3 ms | 13.0–13.5 µs | 142–146 µs | 2.98–3.21 ms | 5 / 1,637 |
+
+These timings exclude disk/SQLite, cloning, cold object acquisition, filesystem capture and durability. All old in-memory construction objects remain retained during the probe; it is not an allocation/RSS or sustained-churn benchmark. The five new objects include the replacement Blob. The initial long-prefix diff expands compressed prefixes nibble by nibble; these measurements expose that cost, not justification for changing the canonical leaf threshold. Node/byte counts establish structural sharing for this workload, **not** superiority over Git, Jujutsu, Pijul or a different map layout.
+
+### Stack, storage and real-entry-point checks
+
+Valid deep radix/source inputs overflowed the initial recursive engine on a 2 MiB debug thread stack. Source update/build, collection, metrics, verification and diff now use explicit heap stacks; bounded deep-radix and exact-path-limit fixtures pass in debug and release without shrinking the format's accepted paths. These are regression bounds, not an unlimited resource claim.
+
+The experimental SQLite/raw-object repository adds actual two-connection CAS/dedup, immutable lost-response receipts, exact-closure export/import, corruption/missing-object refusal and process termination before/after SQLite commit. Two storage review findings were reproduced before correction: a failed final repository-directory sync could be bypassed by reopening, and an identical commit between separate receipt/selection reads could make CLI request preparation falsely stale. Every recognized open now completes the installation barrier; preparation uses one SQLite read snapshot. A permission-failure regression and a controlled real-WAL interleaving pin these cases.
+
+The real CLI test writes source larger than the inline threshold, exports it, checks the binary stream with the independently authored Python bundle parser, imports into another store and materializes a fresh directory. Additional tests preserve executable files, literal symlinks and empty directories, refuse existing destinations and symlink parents, and exercise anchored handles during name replacement. The current suite passes 92 Rust tests in debug and release on arm64 macOS 26.7.2; the independent Python suite passes 49 tests. Linux/macOS CI is configured separately; local results do not stand in for an unrun platform.
+
+These tests do **not** qualify disk-full at every write/sync, GC/compaction/reader retirement, supported-filesystem power loss or normal workspace recovery. The [storage owner](storage.md) distinguishes the bounded implemented subset from its release gates.

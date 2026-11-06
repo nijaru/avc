@@ -4,6 +4,10 @@
 //!
 //! Usage: `storage_cost <small-churn|binary-churn> <rep> [label]`
 //!
+//! Runs must set `AVC_STORAGE_COST_REV` to the source revision being measured
+//! (e.g. `git rev-parse HEAD`); results record it so guard/fence behavior can
+//! be attributed and runs without it are not evidence.
+//!
 //! Measures acknowledged commit cost (commit_source round trip), read cost
 //! (full verified load after every acknowledged commit), export cost (complete
 //! object-only stream), import/restore cost into a fresh store, reopen cost, and
@@ -120,6 +124,8 @@ fn main() {
         .parse()
         .expect("integer rep");
     let label = args.next().unwrap_or_else(|| "unlabeled".to_owned());
+    let source_rev =
+        std::env::var("AVC_STORAGE_COST_REV").unwrap_or_else(|_| "unrecorded".to_owned());
 
     let w = &spec;
     let mut fingerprint = blake3::Hasher::new();
@@ -277,6 +283,7 @@ fn main() {
         "label": label,
         "workload": w.name,
         "rep": rep,
+        "source_rev": source_rev,
         "env": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -317,5 +324,5 @@ fn main() {
             "object_rows": object_rows,
         },
     });
-    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+    println!("{}", serde_json::to_string(&result).unwrap());
 }

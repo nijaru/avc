@@ -3,7 +3,7 @@ use avc::engine::{Edit, Engine, Limits, MergeBudget, Relocate};
 use avc::repository::{Receipt, Repository, Selection};
 use avc::{Entry, Id, Object};
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -412,19 +412,7 @@ fn run(cli: CommandLine) -> Result<()> {
         }
         Command::Export(args) => {
             let root = selected(&repo, args.root)?;
-            let mut output = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&args.output)?;
-            repo.export(root, &mut output)?;
-            output.sync_all()?;
-            File::open(
-                args.output
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .unwrap_or(Path::new(".")),
-            )?
-            .sync_all()?;
+            repo.export_file(root, &args.output)?;
             println!("Exported exact source closure {root}; private operations excluded.");
         }
         Command::Import(args) => {

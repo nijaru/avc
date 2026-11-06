@@ -55,6 +55,8 @@ pub enum Error {
     Stale { expected: u64, actual: u64 },
     RequestKeyReuse(String),
     NotEmpty,
+    RecoveryRequired,
+    DurabilityPending,
     MissingObject(Id),
 }
 impl fmt::Display for Error {
@@ -73,6 +75,12 @@ impl fmt::Display for Error {
                 write!(f, "request key reused with a different identity: {key}")
             }
             Self::NotEmpty => f.write_str("import requires an untouched initialized repository"),
+            Self::RecoveryRequired => {
+                f.write_str("unfinished SQLite transaction: drop this repository handle and reopen")
+            }
+            Self::DurabilityPending => f.write_str(
+                "WAL durability checkpoint incomplete: retry after active readers/writers release",
+            ),
             Self::MissingObject(id) => write!(f, "missing retained object {id}"),
         }
     }
@@ -176,6 +184,7 @@ impl Repository {
         )?;
         tx.commit()?;
         sync_repository_installation(&directory, project_dir)?;
+        durability_fence(&connection)?;
         Ok(Self {
             directory,
             connection,
@@ -217,16 +226,32 @@ impl Repository {
         // installation is synced. Every opener completes that idempotent phase
         // before returning a handle that could acknowledge a new root.
         sync_repository_installation(&repo.directory, project_dir)?;
+        durability_fence(&repo.connection)?;
         Ok(repo)
+    }
+
+    fn ensure_idle(&self) -> Result<()> {
+        if !self.connection.is_autocommit() {
+            return Err(Error::RecoveryRequired);
+        }
+        Ok(())
     }
 
     /// Metadata only: does not assert physical availability or source custody.
     pub fn status(&self) -> Result<Selection> {
+        self.ensure_idle()?;
         selection(&self.connection)
     }
 
+    /// A visible recovered WAL record is not by itself a durable acknowledgement.
+    /// Complete the checked SQLite fence before reporting a committed receipt.
     pub fn receipt(&self, request_key: &str) -> Result<Option<Receipt>> {
-        receipt(&self.connection, request_key)
+        self.ensure_idle()?;
+        let prior = receipt(&self.connection, request_key)?;
+        if prior.is_some() {
+            durability_fence(&self.connection)?;
+        }
+        Ok(prior)
     }
 
     /// Resolve the original source base for a conditional request/retry. Receipt
@@ -237,6 +262,7 @@ impl Repository {
         expected_generation: u64,
         request_key: &str,
     ) -> Result<Selection> {
+        self.ensure_idle()?;
         check_request_key(request_key)?;
         let tx = self.connection.unchecked_transaction()?;
         let previous = match receipt(&tx, request_key)? {
@@ -266,6 +292,7 @@ impl Repository {
     }
 
     pub fn load_root(&self, root: Id) -> Result<Engine> {
+        self.ensure_idle()?;
         let records = collect_closure(root, |id| self.read_object(id))?;
         let mut engine = Engine::new();
         engine.import(records, root, limits())?;
@@ -295,6 +322,7 @@ impl Repository {
         request_key: &str,
         empty_only: bool,
     ) -> Result<Receipt> {
+        self.ensure_idle()?;
         check_request_key(request_key)?;
         if let Some(prior) = self.receipt(request_key)? {
             return same_request(prior, root, expected_generation);
@@ -345,6 +373,8 @@ impl Repository {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(prior) = receipt(&tx, request_key)? {
+            tx.rollback()?;
+            durability_fence(&self.connection)?;
             return same_request(prior, root, expected_generation);
         }
         let before = selection(&tx)?;
@@ -436,11 +466,31 @@ impl Repository {
         Ok(())
     }
 
+    /// Exclusively create and durably finish an object-only export. A failure
+    /// leaves the incomplete output for inspection; existing paths are refused.
+    pub fn export_file(&self, root: Id, path: &Path) -> Result<()> {
+        self.ensure_idle()?;
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        self.export(root, &mut output)?;
+        sync_file(&output)?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        sync_directory(parent)?;
+        // Flush device caches after the containing directory entry was synced.
+        sync_file(&output)
+    }
+
     /// Verifies each typed hash, completed EOF/hash, exact closure and Engine
     /// invariants before any admission. Initial selection must still be generation
     /// zero at commit. A successful same-key retry returns its original receipt.
     /// The reader must terminate (this is an object stream, not a network frame).
     pub fn import(&mut self, mut reader: impl Read, request_key: &str) -> Result<Receipt> {
+        self.ensure_idle()?;
         let mut hash = blake3::Hasher::new();
         if read_hashed::<8>(&mut reader, &mut hash)? != *EXPORT_MAGIC {
             return Err(invalid("export version/magic"));
@@ -523,8 +573,27 @@ fn sync_repository_installation(directory: &Path, project: &Path) -> Result<()> 
     for suffix in ["objects/staged", "objects/sealed", "objects", ""] {
         sync_directory(&directory.join(suffix))?;
     }
-    sync_directory(project)?;
-    sync_file(&File::open(directory.join("store.sqlite"))?)
+    sync_directory(project)
+}
+
+fn durability_fence(connection: &Connection) -> Result<()> {
+    if !connection.is_autocommit() {
+        return Err(Error::RecoveryRequired);
+    }
+    // SQLite owns all database/WAL descriptors. Opening and closing a separate
+    // main-DB descriptor here would release its POSIX locks behind its back.
+    // FULL syncs recovered WAL commits before backfill, then syncs the database.
+    let (busy, log, checkpointed): (i64, i64, i64) =
+        connection.query_row("PRAGMA main.wal_checkpoint(FULL)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 || log != checkpointed {
+        return Err(Error::DurabilityPending);
+    }
+    if log < -1 {
+        return Err(invalid("checkpoint frame counts"));
+    }
+    Ok(())
 }
 
 fn configure(connection: &Connection, initialize: bool) -> Result<()> {
@@ -810,6 +879,9 @@ fn require_eof(reader: &mut impl Read) -> Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod fault_tests;
 
 #[cfg(test)]
 mod crash_tests {

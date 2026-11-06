@@ -892,7 +892,9 @@ mod crash_tests {
     fn candidate() -> (Engine, Id) {
         let mut engine = Engine::new();
         let empty = engine.empty().unwrap();
-        let blob = engine.blob(vec![7; INLINE_BYTES + 1]).unwrap();
+        // Fixed fixture payload (matches fault_tests): identical bytes in every
+        // storage variant, so only physical placement may differ.
+        let blob = engine.blob(vec![7; 8192]).unwrap();
         let root = engine
             .edit(
                 empty,

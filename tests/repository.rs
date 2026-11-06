@@ -1,7 +1,7 @@
 use avc::{
     Conflict, Entry, Id, Node, Object, Revision,
     engine::{Edit, Engine, Limits},
-    repository::{Error, INLINE_BYTES, MAX_OBJECT_BYTES, Repository},
+    repository::{Error, MAX_OBJECT_BYTES, Repository},
 };
 use rusqlite::Connection;
 use std::{
@@ -19,6 +19,10 @@ fn file(blob: Id) -> Entry {
         executable: false,
     }
 }
+/// Fixed fixture payload (matches `repository::fault_tests`): well clear of
+/// the inline/external threshold so every storage variant exercises identical
+/// bytes and only physical placement may differ.
+const FIXTURE_PAYLOAD_BYTES: usize = 8192;
 fn path(name: &[u8]) -> Vec<Vec<u8>> {
     vec![name.to_vec()]
 }
@@ -162,7 +166,7 @@ fn reopen_restores_exact_closure_and_receipts_keep_departure_source() {
     let project = tempfile::tempdir().unwrap();
     let mut repository = Repository::init(project.path()).unwrap();
     let initial = repository.status().unwrap();
-    let (mut engine, first, large) = source(vec![3; INLINE_BYTES + 1]);
+    let (mut engine, first, large) = source(vec![3; FIXTURE_PAYLOAD_BYTES]);
     let orphan = engine.blob(b"unrelated secret".to_vec()).unwrap();
     let small = engine.blob(b"small".to_vec()).unwrap();
     let first = put(&mut engine, first, b"small", file(small));
@@ -211,7 +215,7 @@ fn reopen_restores_exact_closure_and_receipts_keep_departure_source() {
     let old = repository.load_root(departure.before.root).unwrap();
     assert_eq!(
         old.object(large).unwrap(),
-        &Object::Blob(vec![3; INLINE_BYTES + 1])
+        &Object::Blob(vec![3; FIXTURE_PAYLOAD_BYTES])
     );
     assert_eq!(old.read(first, &path(b"file")).unwrap(), file(large));
     assert_eq!(repository.receipt("first").unwrap(), Some(receipt));
@@ -270,7 +274,7 @@ fn independent_connections_race_cas_and_immutable_same_content_installation() {
         .into_iter()
         .map(|(repo, key)| {
             let barrier = barrier.clone();
-            let (mut engine, root, blob) = source(vec![9; INLINE_BYTES + 1]);
+            let (mut engine, root, blob) = source(vec![9; FIXTURE_PAYLOAD_BYTES]);
             let root = put(&mut engine, root, key.as_bytes(), Entry::Symlink(blob));
             (repo, engine, root, key, barrier)
         })
@@ -325,7 +329,7 @@ fn concurrent_identical_requests_return_one_receipt() {
             let mut repository = Repository::open(project.path()).unwrap();
             let barrier = barrier.clone();
             thread::spawn(move || {
-                let (engine, root, _) = source(vec![4; INLINE_BYTES + 1]);
+                let (engine, root, _) = source(vec![4; FIXTURE_PAYLOAD_BYTES]);
                 barrier.wait();
                 repository
                     .commit_source(&engine, root, 0, "identical")
@@ -346,7 +350,7 @@ fn corrupt_or_missing_payload_is_refused_on_read_export_and_readmission() {
     for missing in [false, true] {
         let project = tempfile::tempdir().unwrap();
         let mut repository = Repository::init(project.path()).unwrap();
-        let (engine, root, blob) = source(vec![8; INLINE_BYTES + 1]);
+        let (engine, root, blob) = source(vec![8; FIXTURE_PAYLOAD_BYTES]);
         repository
             .commit_source(&engine, root, 0, "original")
             .unwrap();
@@ -380,7 +384,7 @@ fn sealed_header_bounds_and_typed_hash_are_checked_independently_of_checksum() {
     for header_only in [false, true] {
         let project = tempfile::tempdir().unwrap();
         let mut repository = Repository::init(project.path()).unwrap();
-        let (engine, root, blob) = source(vec![5; INLINE_BYTES + 1]);
+        let (engine, root, blob) = source(vec![5; FIXTURE_PAYLOAD_BYTES]);
         repository.commit_source(&engine, root, 0, "first").unwrap();
         let payload_path = sealed_path(project.path(), blob);
         let mut bytes = fs::read(&payload_path).unwrap();
@@ -402,7 +406,7 @@ fn corrupt_unacknowledged_final_name_is_preserved_not_overwritten() {
     let project = tempfile::tempdir().unwrap();
     let mut repository = Repository::init(project.path()).unwrap();
     let initial = repository.status().unwrap();
-    let (engine, root, blob) = source(vec![6; INLINE_BYTES + 1]);
+    let (engine, root, blob) = source(vec![6; FIXTURE_PAYLOAD_BYTES]);
     let payload_path = sealed_path(project.path(), blob);
     fs::write(&payload_path, b"incomplete old installation").unwrap();
     assert!(
@@ -489,7 +493,7 @@ fn stream(root: Id, mut records: Vec<(Id, Vec<u8>)>) -> Vec<u8> {
 fn independent_export_restore_includes_exact_source_closure_not_orphan_revisions() {
     let project = tempfile::tempdir().unwrap();
     let mut repository = Repository::init(project.path()).unwrap();
-    let (mut engine, mut root, blob) = source(vec![2; INLINE_BYTES + 1]);
+    let (mut engine, mut root, blob) = source(vec![2; FIXTURE_PAYLOAD_BYTES]);
     // More than 32 bindings exercises physical closure through radix branches.
     for i in 0..40 {
         root = put(
@@ -598,7 +602,7 @@ fn independent_export_restore_includes_exact_source_closure_not_orphan_revisions
     );
     assert_eq!(
         restored_engine.object(blob).unwrap(),
-        &Object::Blob(vec![2; INLINE_BYTES + 1])
+        &Object::Blob(vec![2; FIXTURE_PAYLOAD_BYTES])
     );
     assert!(restored_engine.object(parent_id).is_err());
     assert!(restored_engine.diff(parent_source, root).unwrap().len() >= 3);

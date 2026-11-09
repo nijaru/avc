@@ -2,6 +2,8 @@
 //! interposition covers observed libc writes, syncs, creates
 //! and truncates under one canonical temporary .avc. It does not emulate lost
 //! kernel/device caches, mmap/SHM stores, unlink/close errors, or raw syscalls.
+//! Vectored/copy writes, rename, O_TMPFILE and deleted-open fds are not modeled;
+//! qualification covers the observed primitives used by the current entry points.
 //! No production environment hooks or public test APIs are involved.
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -199,7 +201,7 @@ fn put(project: &Path, input: &Path) -> Command {
             "--file",
             input.to_str().unwrap(),
             "--expected-generation",
-            "0",
+            "1",
             "--request-key",
             KEY,
         ],
@@ -334,6 +336,10 @@ fn native_shim_scope_abi_and_short_write_contract() {
 }
 use std::os::unix::fs::PermissionsExt;
 
+fn prior_bytes() -> Vec<u8> {
+    (0..12_000).map(|i| (i % 239) as u8).collect()
+}
+
 fn intended(bytes: &[u8]) -> Id {
     // Independent candidate construction, not an authored revision, and not
     // trusting the faulted command's printed root or receipt as the oracle.
@@ -364,7 +370,14 @@ fn check_selected(repository: &Repository, before: Selection, after: Selection, 
     ));
     if selected == before {
         assert_eq!(receipt, None);
-        assert!(engine.list(selected.root, &[]).unwrap().is_empty());
+        let Entry::File { blob, executable } =
+            engine.read(selected.root, &[b"file".to_vec()]).unwrap()
+        else {
+            panic!("acknowledged predecessor lost its file");
+        };
+        assert!(!executable);
+        assert_eq!(engine.list(selected.root, &[]).unwrap().len(), 1);
+        assert_eq!(engine.object(blob).unwrap(), &Object::Blob(prior_bytes()));
     } else {
         assert_eq!(
             receipt,
@@ -397,7 +410,7 @@ fn operations(db: &rusqlite::Connection) -> i64 {
         .unwrap()
 }
 
-fn cli_roundtrip(h: &Harness, project: &Path, root: Id, bytes: Option<&[u8]>) {
+fn cli_roundtrip(h: &Harness, project: &Path, root: Id, bytes: &[u8]) {
     let transfer = tempfile::tempdir().unwrap();
     let bundle = transfer.path().join("source.avc");
     h.success(
@@ -413,7 +426,7 @@ fn cli_roundtrip(h: &Harness, project: &Path, root: Id, bytes: Option<&[u8]>) {
     import_restore(h, &bundle, root, bytes);
 }
 
-fn import_restore(h: &Harness, bundle: &Path, root: Id, bytes: Option<&[u8]>) {
+fn import_restore(h: &Harness, bundle: &Path, root: Id, bytes: &[u8]) {
     let transfer = tempfile::tempdir().unwrap();
     let destination = transfer.path().join("independent");
     fs::create_dir(&destination).unwrap();
@@ -443,13 +456,9 @@ fn import_restore(h: &Harness, bundle: &Path, root: Id, bytes: Option<&[u8]>) {
         &destination,
         &["--experimental", "restore", "--to", fresh.to_str().unwrap()],
     );
-    if let Some(bytes) = bytes {
-        assert_eq!(h.success(&destination, &["show", "file"]).stdout, bytes);
-        assert_eq!(fs::read(fresh.join("file")).unwrap(), bytes);
-        assert_eq!(fs::read_dir(&fresh).unwrap().count(), 1);
-    } else {
-        assert_eq!(fs::read_dir(&fresh).unwrap().count(), 0);
-    }
+    assert_eq!(h.success(&destination, &["show", "file"]).stdout, bytes);
+    assert_eq!(fs::read(fresh.join("file")).unwrap(), bytes);
+    assert_eq!(fs::read_dir(&fresh).unwrap().count(), 1);
 }
 
 fn assert_faulted_prefix(
@@ -499,7 +508,7 @@ fn export_sweep(h: &Harness, seed: &Path, before: Selection, after: Selection, b
     );
     assert_success(&output, "CLI export baseline");
     let bundle = fs::read(&baseline_output).unwrap();
-    import_restore(h, &baseline_output, after.root, Some(bytes));
+    import_restore(h, &baseline_output, after.root, bytes);
     let targets: Vec<_> = baseline
         .iter()
         .filter(|e| e.path == "/exports" || e.path.starts_with("/exports/"))
@@ -544,9 +553,30 @@ fn export_sweep(h: &Harness, seed: &Path, before: Selection, after: Selection, b
         baseline.len(),
         targets.len()
     );
+    assert_eq!(
+        targets
+            .iter()
+            .filter(|e| e.partial_eligible())
+            .map(|e| e.bytes)
+            .sum::<usize>(),
+        bundle.len(),
+        "all export payload bytes must be traced"
+    );
     let mut representatives = BTreeSet::new();
-    for mode in ["eio", "enospc", "exit"] {
+    let mut cases = 0;
+    for mode in [
+        "eio",
+        "enospc",
+        "exit",
+        "partial-eio",
+        "partial-enospc",
+        "partial-exit",
+    ] {
         for target in &targets {
+            if mode.starts_with("partial-") && !target.partial_eligible() {
+                continue;
+            }
+            cases += 1;
             let case = tempfile::tempdir_in(h.scratch.path()).unwrap();
             let project = case.path().join("project");
             copy_tree(&fixture, &project);
@@ -570,10 +600,13 @@ fn export_sweep(h: &Harness, seed: &Path, before: Selection, after: Selection, b
                 output.stdout.is_empty(),
                 "false export acknowledgment: {context}"
             );
-            if mode == "exit" {
+            if mode.ends_with("exit") {
                 assert_eq!(output.status.code(), Some(EXIT), "{context}");
             } else {
                 assert_eq!(output.status.code(), Some(1), "{context}");
+                if mode.starts_with("partial-") {
+                    assert!(trace.iter().any(|e| e.action == "tail-error"), "{context}");
+                }
             }
             let repository = Repository::open(&project).unwrap();
             assert_eq!(repository.status().unwrap(), after, "{context}");
@@ -607,9 +640,9 @@ fn export_sweep(h: &Harness, seed: &Path, before: Selection, after: Selection, b
             assert_success(&h.run(&mut export_command(&project, &retry)), &context);
             assert_eq!(fs::read(&retry).unwrap(), bundle, "{context}");
             if representatives.insert((mode, target.op.as_str(), target.path.as_str())) {
-                import_restore(h, &retry, after.root, Some(bytes));
+                import_restore(h, &retry, after.root, bytes);
             }
-            assert_eq!(operation_count(&project), 1, "{context}");
+            assert_eq!(operation_count(&project), 2, "{context}");
             assert_eq!(
                 fs::read(project.join("user.txt")).unwrap(),
                 b"live user file"
@@ -620,10 +653,7 @@ fn export_sweep(h: &Harness, seed: &Path, before: Selection, after: Selection, b
             );
         }
     }
-    eprintln!(
-        "qualified {} required-output export fault cases",
-        targets.len() * 3
-    );
+    eprintln!("qualified {cases} required-output export fault cases");
 }
 
 // Receipt is a recovery entry point too. Keep an idle SQLite connection alive
@@ -665,9 +695,9 @@ fn receipt_wal_sweeps(
     );
     assert_eq!(output.status.code(), Some(EXIT));
     assert_eq!(trace.last().unwrap().signature(), checkpoint.signature());
-    // The CLI has already acknowledged generation 1; no opener has repaired or
+    // The CLI has already acknowledged generation 2; no opener has repaired or
     // checkpointed this crashed fixture before copies are made for each case.
-    assert!(String::from_utf8_lossy(&output.stdout).contains("generation=1"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("generation=2"));
     assert!(
         fs::metadata(recovered.join(".avc/store.sqlite-wal"))
             .unwrap()
@@ -723,6 +753,10 @@ fn receipt_wal_sweeps(
                 } else {
                     assert!(output.status.code().is_some(), "{context}");
                 }
+                assert!(
+                    output.stdout.is_empty() || output.stdout == baseline_output.stdout,
+                    "torn receipt acknowledgment: {context}"
+                );
                 if output.status.success() {
                     assert_eq!(output.stdout, baseline_output.stdout, "{context}");
                 }
@@ -747,7 +781,7 @@ fn receipt_wal_sweeps(
                     );
                 }
                 assert_success(&h.run(&mut put(&project, input)), &context);
-                assert_eq!(operation_count(&project), 1, "{context}");
+                assert_eq!(operation_count(&project), 2, "{context}");
                 assert_eq!(h.success(&project, &["show", "file"]).stdout, bytes);
                 assert_eq!(
                     fs::read(project.join("user.txt")).unwrap(),
@@ -781,8 +815,26 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
     fs::create_dir(seed.path().join(".git")).unwrap();
     fs::write(seed.path().join(".git/untouched"), b"foreign git").unwrap();
     h.success(seed.path(), &["--experimental", "init"]);
+    let previous_input = h.scratch.path().join("previous-input");
+    fs::write(&previous_input, prior_bytes()).unwrap();
+    h.success(
+        seed.path(),
+        &[
+            "--experimental",
+            "source",
+            "put",
+            "file",
+            "--file",
+            previous_input.to_str().unwrap(),
+            "--expected-generation",
+            "0",
+            "--request-key",
+            "acknowledged-before",
+        ],
+    );
     let before = Repository::open(seed.path()).unwrap().status().unwrap();
-    assert_eq!(before.generation, 0);
+    assert_eq!(before.generation, 1);
+    assert_eq!(before.root, intended(&prior_bytes()));
     let old_export = {
         let repository = Repository::open(seed.path()).unwrap();
         let mut bytes = Vec::new();
@@ -795,7 +847,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
     fs::write(&input, &bytes).unwrap();
     let after = Selection {
         root: intended(&bytes),
-        generation: 1,
+        generation: 2,
     };
     let baseline_project = h.scratch.path().join("baseline");
     copy_tree(seed.path(), &baseline_project);
@@ -911,7 +963,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
             }
             assert_eq!(
                 operation_count(&project),
-                i64::from(repository.receipt(KEY).unwrap().is_some()),
+                1 + i64::from(repository.receipt(KEY).unwrap().is_some()),
                 "{context}"
             );
             let mut exported = Vec::new();
@@ -923,14 +975,14 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
             let old = repository.load_root(before.root).unwrap();
             let restored = case.path().canonicalize().unwrap().join("old-source");
             avc::materialize::restore(&old, before.root, &restored).unwrap();
-            assert_eq!(fs::read_dir(restored).unwrap().count(), 0);
+            assert_eq!(fs::read(restored.join("file")).unwrap(), prior_bytes());
             // One representative of every observed op/path and failure mode
             // crosses CLI export/import/restore before retry, including any
             // committed-but-unacknowledged selected root.
             if representative.insert((mode, target.op.clone(), target.path.clone())) {
-                cli_roundtrip(&h, &project, before.root, None);
+                cli_roundtrip(&h, &project, before.root, &prior_bytes());
                 if repository.status().unwrap() == after {
-                    cli_roundtrip(&h, &project, after.root, Some(&bytes));
+                    cli_roundtrip(&h, &project, after.root, &bytes);
                 }
             }
             drop(repository);
@@ -944,7 +996,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
                 let repository = Repository::open(&project).unwrap();
                 assert_eq!(repository.status().unwrap(), after, "{context}");
                 check_selected(&repository, before, after, &bytes);
-                assert_eq!(operation_count(&project), 1, "duplicate effect: {context}");
+                assert_eq!(operation_count(&project), 2, "duplicate effect: {context}");
             }
             assert_eq!(h.success(&project, &["show", "file"]).stdout, bytes);
             h.success(&project, &["receipt", KEY]);
@@ -959,7 +1011,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
             assert_eq!(fs::read(&input).unwrap(), bytes);
         }
     }
-    cli_roundtrip(&h, &baseline_project, after.root, Some(&bytes));
+    cli_roundtrip(&h, &baseline_project, after.root, &bytes);
     export_sweep(&h, &baseline_project, before, after, &bytes);
     receipt_wal_sweeps(
         &h,

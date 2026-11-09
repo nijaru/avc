@@ -7,8 +7,9 @@
 //! No leases are needed while retained object rows are never removed or changed.
 //!
 //! Requires a trusted administration directory and a local filesystem honoring
-//! SQLite locking, file sync and directory sync. Sync errors
-//! are fatal; OS/device power-loss behavior and hostile directory replacement
+//! SQLite locking, file sync and directory sync. AVC-owned sync failures are
+//! fatal; SQLite may internally fall back from macOS F_FULLFSYNC to fsync.
+//! OS/device power-loss behavior and hostile directory replacement
 //! have not been qualified. macOS uses F_FULLFSYNC as well as SQLite fullfsync.
 //!
 //! Object-only export v1 is `AVCEXP01`, a 33-byte typed root, a little-endian

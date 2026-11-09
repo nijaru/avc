@@ -1,6 +1,6 @@
 # AVC — authoritative architecture
 
-**Design baseline: November 4, 2026; implementation begun November 5; local storage backend resolved to SQLite-only November 9. Not a released or custody-qualified format.** This file owns goals, authority boundaries and non-negotiable architectural decisions. The **normative detail is deliberately split by ownership**: [canonical objects/merge](format.md), [local durability/recovery](storage.md), [native sync](sync.md), [foreign Git adapter](git.md), [user/API workflows](ux.md), [implementation and verification](roadmap.md), and [adversarial rationale](research.md). A future agent must read the relevant owner, not apply an old design from chat or Git history.
+**Design baseline: November 4, 2026; implementation begun November 5; local storage backend resolved to SQLite-only November 9. Not a released format.** This file owns goals, authority boundaries and non-negotiable architectural decisions. The **normative detail is deliberately split by ownership**: [canonical objects/merge](format.md), [local durability/recovery](storage.md), [native sync](sync.md), [foreign Git adapter](git.md), [user/API workflows](ux.md), [implementation and verification](roadmap.md), and [adversarial rationale](research.md). A future agent must read the relevant owner, not apply an old design from chat or Git history.
 
 The November 2 and November 3 implementations/specifications were *unreleased prototypes*. Their code and ~187 KB research corpus are historical evidence in [Git history at af66a638](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72). Nothing there is a compatibility contract. New format objects should have **new IDs and fixtures** rather than shims to obsolete kinds.
 
@@ -39,7 +39,7 @@ Before declaring the selected conflict format stable, **reuse published Jujutsu/
 
 A complete source root uniquely describes one **typed source value**, including unresolved alternatives, independently of its history and physical compression. Two histories can share the same source root. Authored history has ordered parents; unknown foreign/promised ancestors are never fabricated as root revisions. A ChangeId identifies ongoing authored work, not a context-free patch or a permission to apply it to any arbitrary base.
 
-Canonical v1 is precisely specified in [format.md](format.md): typed domain-separated BLAKE3-256 IDs, fixed-width little-endian deterministic payload encoding, path-compressed radix with 32-binding leaves, and flat signed conflict expressions. **Those choices are selected for implementation**, not indefinitely open architecture votes; fix a demonstrable flaw during unreleased qualification and version released changes.
+Canonical v1 is precisely specified in [format.md](format.md): typed domain-separated BLAKE3-256 IDs, fixed-width little-endian deterministic payload encoding, path-compressed radix with 32-binding leaves, and flat signed conflict expressions. **Those choices are selected for implementation**, not indefinitely open architecture votes; fix a demonstrable flaw while the format is unreleased and version released changes.
 
 ## 3. Fundamental invariants
 
@@ -103,14 +103,14 @@ Start with a **thin vertical path**: exact bytes → persistent tree edit → pr
 
 ## 8. Design freeze and falsification
 
-**The architecture is fully selected for implementation.** Remaining work is executable qualification, not a new general architecture contest:
+**The architecture is fully selected for implementation.** Remaining work is feature implementation and bounded executable checks, not a new general architecture contest:
 
 - Independent codec vectors, insertion-order/property/fuzz tests and incremental radix edits.
 - Typed signed-conflict algebra, real text merge, repeated rebase/revert and adversarial file/path/binary cases.
-- Crash/power-failure qualification of the SQLite-only store on macOS/Linux (the hybrid-versus-control comparison is complete: [research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)), plus GC/backup tests when those lifecycles exist.
+- Integration fault coverage of the SQLite-only store's transactions, receipts, CAS and handle retirement (the hybrid-versus-control comparison is complete: [research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)). Durable admission rests on the documented SQLite WAL/FULL contract—the same class of upstream contract Git's `core.fsync`/lockfile discipline and Fossil's SQLite store rely on—so AVC qualifies its integration, not arbitrary OS or hardware, and promises no power-loss immunity. GC and backup tests arrive only with those lifecycles.
 - Real small Git repo round trip; honest huge filtered foreign Git source; native selective clone and conditional agent edits.
 - Measured cold/warm end-to-end tasks vs Git/Jujutsu and representative native workloads.
 
-If one exact counterexample invalidates an invariant or a controlled complete-task comparison exposes an unacceptable design cost, revise the owner and **replace** the unreleased format/code coherently. No stable IDs or claims of safe irreplaceable-source custody before those checks. There is no need to wait for more general research to start implementation.
+If one exact counterexample invalidates an invariant or a controlled complete-task comparison exposes an unacceptable design cost, revise the owner and **replace** the unreleased format/code coherently. No stable released IDs or format freeze before the conformance and interop checks above; the experimental label and independent-backups warning stand while the format is unreleased. There is no need to wait for more general research to start implementation.
 
 **Current repository state:** see [README](../README.md). The superseded experimental codec, its tests/fixtures and associated CI were intentionally retired from the active tree; old code/results are available at [the preserved pre-cleanup commit](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72). The new library, independent reference and experimental source-only repository now implement the current contracts in part. Read the README and roadmap for exact available operations and remaining gates; do not resurrect the obsolete format.

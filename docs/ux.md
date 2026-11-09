@@ -126,7 +126,7 @@ publish(ref,expected_ref_version,revision,request_id)
       -> Accepted | StaleRef | Unauthorized | NeedObjects
 ```
 
-Agents can operate without Git, checkout, shell, or local file copy. An authenticated native path-proof-derived source candidate may be **conditionally valid** despite missing untouched sibling bytes; only a full holder may acknowledge complete source custody/publication. A foreign filtered Git view does **not** have native IDs for its missing blobs and must stay in the Git adapter. Explicit caller permissions and path-scoped disclosure still apply.
+Agents can operate without Git, checkout, shell, or local file copy. An authenticated native path-proof-derived source candidate may be **conditionally valid** despite missing untouched sibling bytes; only a full holder may acknowledge publication of a complete closure. A foreign filtered Git view does **not** have native IDs for its missing blobs and must stay in the Git adapter. Explicit caller permissions and path-scoped disclosure still apply.
 
 ## 8. Fetch, push, verify, export
 
@@ -141,6 +141,6 @@ avc export --full --output backup.avc
 
 ## 9. User and safety acceptance
 
-Test the actual CLI (not just isolated model scripts): standard small Git import/edit/push; native offline work/backup; native path-scoped query/edit under a remote authorized holder; incomplete foreign Git partial fetch; multiple independent/stacked edits; repeated rebase of unresolved conflict; competing agent writes; a changed source during scan; a crashed multistep switch; retention/GC race; and stale publication retry.
+Test the actual CLI (not just isolated model scripts): standard small Git import/edit/push; native offline work/backup; native path-scoped query/edit under a remote authorized holder; incomplete foreign Git partial fetch; multiple independent/stacked edits; repeated rebase of unresolved conflict; competing agent writes; a changed source during scan; a crashed multistep switch; retention/GC race once deletion/GC exists; and stale publication retry.
 
 **Command failures must preserve already acknowledged source and report concrete next action.** No `--force` suppresses hash/closure/path safety requirements, and no import/checkout silently runs untrusted repository hooks.

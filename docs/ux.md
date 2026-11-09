@@ -1,6 +1,6 @@
 # AVC user workflows and command/API contract
 
-**Design baseline 2026-11-04; source-only CLI begun 2026-11-05.** The README lists today's experimental commands. Most workflows below—including authored history, capture/checkpoints, workspaces and synchronization—are **not implemented**. Commands below are **selected target spellings**, subject to usability adjustment *before public release*. The [architecture](design.md) owns invariants, [format](format.md) owns immutable data/merge, [storage](storage.md) owns recovery, [sync](sync.md) owns native remote behavior, and [git](git.md) owns the Git adapter. Do not implement duplicate state machines in the CLI.
+**Design baseline 2026-11-04; authored commit/log slice added 2026-11-09.** The README lists today's experimental commands. Basic authoring and first-parent history are implemented; history rewriting, capture/checkpoints, workspaces and synchronization below remain **target workflows**, not available commands. Commands below are **selected target spellings**, subject to usability adjustment *before public release*. The [architecture](design.md) owns invariants, [format](format.md) owns immutable data/merge, [storage](storage.md) owns recovery, [sync](sync.md) owns native remote behavior, and [git](git.md) owns the Git adapter. Do not implement duplicate state machines in the CLI.
 
 ## 1. User mental model
 
@@ -50,6 +50,10 @@ An unknown remote/recovery state is shown as unknown, never as safely synchroniz
 
 ## 3. Exact authoring and change editing
 
+**Available now:** `avc --experimental commit --author 'Name <email>' -m MESSAGE --expected-generation N --request-key KEY` authors the already-selected source, without scanning or changing files. `AVC_AUTHOR` can supply author identity. Init authors nothing; explicit empty/unchanged-source commits are allowed. Source edits preserve the last authored head, while commit advances it under the same generation. Identical retries return the original Revision/ChangeId/time; changed identity or cross-operation key reuse refuses. `avc log [--revision ID] [--limit N]` shows newest-first first-parent metadata (default 20); `status` shows root, authored head/unborn and generation, never a fabricated filesystem-clean claim. Metadata output escapes terminal controls. Source `export`/`import` does not transfer this history.
+
+**Target capture/editing workflow (not implemented):**
+
 ```sh
 avc status
 avc diff
@@ -61,7 +65,7 @@ avc rebase --onto main
 avc history undo
 ```
 
-Default `commit` selects changed **tracked** files and proven deletions, but requires explicit path/interactive inclusion for **new** files; ignore rules are selection aids, not secret detection. Recursive directory deletion is conspicuously previewed and requires explicit selection. An unreadable path is not proof of deletion. Interactive file/hunk selection constructs and **pins an exact candidate** from captured bytes and recorded expected base; confirmation never rereads the working directory to silently include later edits. Cancellation authors nothing. Unselected edits remain live; unselected observed data may be privately checkpointed under explicit policy but isn't an unbounded permanent commit.
+Once capture exists, the target default `commit` selects changed **tracked** files and proven deletions, but requires explicit path/interactive inclusion for **new** files; ignore rules are selection aids, not secret detection. Recursive directory deletion is conspicuously previewed and requires explicit selection. An unreadable path is not proof of deletion. Interactive file/hunk selection constructs and **pins an exact candidate** from captured bytes and recorded expected base; confirmation never rereads the working directory to silently include later edits. Cancellation authors nothing. Unselected edits remain live; unselected observed data may be privately checkpointed under explicit policy but isn't an unbounded permanent commit.
 
 History rewrite is an immutable new revision. A stable logical ChangeId can follow amend/rebase but `revision` references are exact. A change may become **empty** when its result is already present on the new base: report this explicitly, retain the old immutable revision under scoped undo protection, and do not promise that a later rebase will automatically reconstruct latent edit intent from an empty source diff. Split/fold creates explicit new identities and mappings. Shared refs never automatically follow a local rewrite. `history undo` conditionally returns the scoped *local history selection*; it does not claim to revert current filesystem files or remote publication.
 

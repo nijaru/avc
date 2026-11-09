@@ -1,5 +1,5 @@
 //! Real CLI process failures, NOT power-loss qualification. Runtime-compiled
-//! interposition covers observed libc writes, syncs, creates, hard-link installs
+//! interposition covers observed libc writes, syncs, creates
 //! and truncates under one canonical temporary .avc. It does not emulate lost
 //! kernel/device caches, mmap/SHM stores, unlink/close errors, or raw syscalls.
 //! No production environment hooks or public test APIs are involved.
@@ -241,26 +241,8 @@ impl Event {
             action: fields[5].into(),
         }
     }
-    fn category(&self) -> &str {
-        if self.path.starts_with("/objects/staged/") {
-            "/objects/staged/*"
-        } else {
-            &self.path
-        }
-    }
     fn signature(&self) -> (&str, &str, usize, i64) {
-        // Darwin F_GETPATH may report either name of the same hard-linked
-        // staged/sealed inode. Keep the exact observed path in the trace, but
-        // do not confuse that alias choice with a different sync boundary.
-        let path = if matches!(self.op.as_str(), "fsync" | "fdatasync" | "F_FULLFSYNC")
-            && (self.path.starts_with("/objects/staged/")
-                || self.path.starts_with("/objects/sealed/"))
-        {
-            "/objects/large-object"
-        } else {
-            self.category()
-        };
-        (&self.op, path, self.bytes, self.offset)
+        (&self.op, &self.path, self.bytes, self.offset)
     }
     fn partial_eligible(&self) -> bool {
         matches!(self.op.as_str(), "write" | "pwrite" | "pwrite64") && self.bytes > 1
@@ -293,7 +275,6 @@ fn native_shim_scope_abi_and_short_write_contract() {
             "pwrite",
             "fsync",
             "F_FULLFSYNC",
-            "linkat",
             "mkdirat",
             "ftruncate",
             "fsync",
@@ -304,7 +285,6 @@ fn native_shim_scope_abi_and_short_write_contract() {
             "write",
             "pwrite",
             "fsync",
-            "linkat",
             "mkdirat",
             "ftruncate",
             "fsync",
@@ -315,7 +295,7 @@ fn native_shim_scope_abi_and_short_write_contract() {
         expected
     );
     assert!(trace.iter().all(|e| e.action == "pass"));
-    assert_eq!(fs::read(root.join("installed")).unwrap(), b"abcXYfgh");
+    assert_eq!(fs::read(root.join("probe")).unwrap(), b"abcXYfgh");
     assert_eq!(
         fs::metadata(root.join("probe"))
             .unwrap()
@@ -481,7 +461,6 @@ fn assert_faulted_prefix(
 ) {
     assert!(trace.len() >= target.n, "fault not reached: {context}");
     // Require the entire baseline prefix, not merely an event counter.
-    // Normalize randomized temp names and hard-linked sync aliases.
     for (expected, actual) in baseline.iter().zip(trace).take(target.n) {
         assert_eq!(actual.signature(), expected.signature(), "{context}");
     }
@@ -557,7 +536,7 @@ fn export_sweep(h: &Harness, seed: &Path, before: Selection, after: Selection, b
     let mut counts = BTreeMap::new();
     for target in &targets {
         *counts
-            .entry((target.op.as_str(), target.category()))
+            .entry((target.op.as_str(), target.path.as_str()))
             .or_insert(0) += 1;
     }
     eprintln!(
@@ -717,7 +696,7 @@ fn receipt_wal_sweeps(
         let mut counts = BTreeMap::new();
         for event in &baseline {
             *counts
-                .entry((event.op.as_str(), event.category()))
+                .entry((event.op.as_str(), event.path.as_str()))
                 .or_insert(0) += 1;
         }
         eprintln!(
@@ -858,7 +837,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
     let mut counts = BTreeMap::new();
     for event in &baseline {
         *counts
-            .entry((event.op.as_str(), event.category()))
+            .entry((event.op.as_str(), event.path.as_str()))
             .or_insert(0) += 1;
     }
     eprintln!(
@@ -923,7 +902,8 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
                 );
             }
             if output.status.success() {
-                // Some SQLite close/checkpoint errors are not command errors.
+                // SQLite can recover/fall back from a failed primitive, or
+                // ignore optional close/checkpoint errors after committing.
                 // An acknowledged command must nevertheless be exactly new.
                 successful_error_returns += 1;
                 assert_eq!(repository.status().unwrap(), after, "{context}");
@@ -947,7 +927,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
             // One representative of every observed op/path and failure mode
             // crosses CLI export/import/restore before retry, including any
             // committed-but-unacknowledged selected root.
-            if representative.insert((mode, target.op.clone(), target.category().to_owned())) {
+            if representative.insert((mode, target.op.clone(), target.path.clone())) {
                 cli_roundtrip(&h, &project, before.root, None);
                 if repository.status().unwrap() == after {
                     cli_roundtrip(&h, &project, after.root, Some(&bytes));

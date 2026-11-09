@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
     int escaped = openat(dir, "dangling", O_CREAT | O_WRONLY, 0600);
     assert(escaped >= 0 && write(escaped, "safe", 4) == 4);
     assert(close(escaped) == 0);
-    /* dirfd-relative creation, install, and directory sync. */
+    /* dirfd-relative creation and directory sync. */
     int fd = openat(dir, "probe", O_CREAT | O_EXCL | O_RDWR, 0600);
     assert(fd >= 0);
     assert(write(fd, "abcdefghij", 10) == 10);
@@ -76,7 +76,6 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
     probe_fcntl(fd);
 #endif
-    assert(linkat(dir, "probe", dir, "installed", 0) == 0);
     assert(mkdirat(dir, "directory", 0700) == 0);
     assert(ftruncate(fd, 8) == 0);
     assert(fsync(dir) == 0);
@@ -345,26 +344,6 @@ OPEN(open64);
 OPENAT(openat64);
 #endif
 
-int HOOK(linkat)(int from, const char *src, int to, const char *dst, int flags) {
-    NEXT(linkat);
-    char source[PATH_MAX];
-    int saved = errno;
-    int scoped = trace_fd >= 0 && at_path(from, src, source);
-    errno = saved;
-    if (scoped && path_event("linkat", to, dst)) return -1;
-    return next(from, src, to, dst, flags);
-}
-INTERPOSE(linkat);
-int HOOK(link)(const char *src, const char *dst) {
-    NEXT(link);
-    char source[PATH_MAX];
-    int saved = errno;
-    int scoped = trace_fd >= 0 && at_path(AT_FDCWD, src, source);
-    errno = saved;
-    if (scoped && path_event("link", AT_FDCWD, dst)) return -1;
-    return next(src, dst);
-}
-INTERPOSE(link);
 int HOOK(mkdir)(const char *path, mode_t perm) {
     NEXT(mkdir);
     if (path_event("mkdir", AT_FDCWD, path)) return -1;

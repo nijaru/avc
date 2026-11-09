@@ -1,0 +1,84 @@
+diff --git i/src/repository.rs w/src/repository.rs
+index d9d5ac4..9c7819a 100644
+--- i/src/repository.rs
++++ w/src/repository.rs
+@@ -39 +39,8 @@ pub const MAX_OBJECTS: usize = 100_000;
+-pub const INLINE_BYTES: usize = 1024;
++// CONTROL VARIANT (experimental, not for commit): SQLite-only durability
++// control based on 6ba661a/588614a guards. Every supported payload is stored
++// inline in SQLite and there are no external sealed object files: the inline
++// threshold equals the maximum supported payload and the objects schema
++// accepts only inline rows. Same Repository API, limits and WAL/FULL
++// (+fullfsync) durability settings as the hybrid baseline. Not for commit;
++// revert with `git checkout -- .` or tmp/experiment/control-variant.patch.
++pub const INLINE_BYTES: usize = MAX_OBJECT_BYTES;
+@@ -42 +49,2 @@ const APPLICATION_ID: i64 = 0x41564331;
+-const SCHEMA_VERSION: i64 = 1;
++// Control stores are not interchangeable with baseline stores.
++const SCHEMA_VERSION: i64 = 2;
+@@ -546 +554 @@ CREATE TABLE objects (
+-    CHECK((length <= 1024 AND payload IS NOT NULL AND length(payload) = length) OR (length > 1024 AND payload IS NULL))
++    CHECK(payload IS NOT NULL AND length(payload) = length)
+@@ -1009,0 +1018 @@ mod crash_tests {
++                // CONTROL VARIANT: no external files exist to orphan.
+@@ -1014 +1023 @@ mod crash_tests {
+-                    1
++                    0
+@@ -1026,2 +1035,3 @@ mod crash_tests {
+-            // Pre-commit orphan installation is reusable; post-commit retry does
+-            // not advance the generation or repeat the effect.
++            // Pre-commit work is rolled back; post-commit retry does not
++            // advance the generation or repeat the effect. (CONTROL VARIANT:
++            // no pre-commit external installation to reuse.)
+diff --git i/tests/repository.rs w/tests/repository.rs
+index 09b33ba..06835b4 100644
+--- i/tests/repository.rs
++++ w/tests/repository.rs
+@@ -196 +196,2 @@ fn reopen_restores_exact_closure_and_receipts_keep_departure_source() {
+-    assert!(external);
++    // CONTROL VARIANT: every payload is inline.
++    assert!(!external);
+@@ -201 +202 @@ fn reopen_restores_exact_closure_and_receipts_keep_departure_source() {
+-        1
++        0
+@@ -313,0 +315,2 @@ fn independent_connections_race_cas_and_immutable_same_content_installation() {
++    // CONTROL VARIANT: concurrent same-content publication dedups into one
++    // inline row; no external installation exists to count.
+@@ -318 +321 @@ fn independent_connections_race_cas_and_immutable_same_content_installation() {
+-        1
++        0
+@@ -350 +353,6 @@ fn corrupt_or_missing_payload_is_refused_on_read_export_and_readmission() {
+-    for missing in [false, true] {
++    // CONTROL VARIANT: all payloads are inline, so the baseline's "sealed
++    // file missing" damage has no analog (there is no external payload file
++    // to lose; a deleted objects row is a different tamper the baseline does
++    // not assert either). Inline corruption exercises the identical
++    // read/export/readmission refusal surface.
++    {
+@@ -358,8 +366,8 @@ fn corrupt_or_missing_payload_is_refused_on_read_export_and_readmission() {
+-        let payload_path = sealed_path(project.path(), blob);
+-        if missing {
+-            fs::remove_file(&payload_path).unwrap();
+-        } else {
+-            let mut bytes = fs::read(&payload_path).unwrap();
+-            *bytes.last_mut().unwrap() ^= 1;
+-            fs::write(&payload_path, bytes).unwrap();
+-        }
++        let db = database(project.path());
++        // Deliberately bypass immutability guards to simulate damaged storage.
++        db.execute_batch("DROP TRIGGER objects_no_update").unwrap();
++        db.execute(
++            "UPDATE objects SET payload = zeroblob(length) WHERE id = ?1",
++            [blob.to_bytes().unwrap().as_slice()],
++        )
++        .unwrap();
+@@ -376,3 +383,0 @@ fn corrupt_or_missing_payload_is_refused_on_read_export_and_readmission() {
+-        if missing {
+-            assert!(!payload_path.exists());
+-        }
+@@ -381,0 +387,2 @@ fn corrupt_or_missing_payload_is_refused_on_read_export_and_readmission() {
++// CONTROL VARIANT: sealed-file format has no control analog (excluded).
++#[ignore = "hybrid-only: sealed-file header format"]
+@@ -403,0 +411,2 @@ fn sealed_header_bounds_and_typed_hash_are_checked_independently_of_checksum() {
++// CONTROL VARIANT: the sealed-file installer has no control analog (excluded).
++#[ignore = "hybrid-only: sealed-file no-clobber installer"]

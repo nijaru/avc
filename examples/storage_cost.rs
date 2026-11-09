@@ -11,7 +11,7 @@
 //! Measures acknowledged commit cost (commit_source round trip), read cost
 //! (full verified load after every acknowledged commit), export cost (complete
 //! object-only stream), import cost into a fresh store, reopen cost, and
-//! on-disk bytes/file counts. All workload bytes are deterministic and identical
+//! closed-store file lengths/counts (not allocated filesystem blocks). All workload bytes are deterministic and identical
 //! across runs and storage variants (recorded as a content fingerprint).
 //!
 //! Durability contract is identical in every variant: the repository refuses to
@@ -90,7 +90,7 @@ fn summary(ms: &[f64]) -> serde_json::Value {
     })
 }
 
-/// (bytes, files) under a directory tree.
+/// (sum of file lengths, file count), not allocated filesystem blocks.
 fn disk_usage(dir: &Path) -> (u64, u64) {
     let mut bytes = 0;
     let mut files = 0;

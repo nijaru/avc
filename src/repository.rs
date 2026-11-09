@@ -1,13 +1,13 @@
 //! Experimental local storage, not a qualified source-custody implementation.
 //!
-//! SQLite WAL/FULL owns the selection and immutable receipts. Small canonical
-//! payloads are inline; larger payloads are raw, one per immutable sealed file.
+//! SQLite WAL/FULL owns canonical payloads, the selection and immutable receipts
+//! in the same transaction.
 //! Compression, extents, large-object streaming, deletion and GC are deferred.
 //! All closure operations buffer bounded data (and may hold several copies).
-//! No leases are needed while locations and files are never removed or changed.
+//! No leases are needed while retained object rows are never removed or changed.
 //!
 //! Requires a trusted administration directory and a local filesystem honoring
-//! SQLite locking, atomic hard links, file sync and directory sync. Sync errors
+//! SQLite locking, file sync and directory sync. Sync errors
 //! are fatal; OS/device power-loss behavior and hostile directory replacement
 //! have not been qualified. macOS uses F_FULLFSYNC as well as SQLite fullfsync.
 //!
@@ -36,11 +36,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub const MAX_OBJECT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
-pub const INLINE_BYTES: usize = 1024;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 1;
-const RAW_MAGIC: &[u8; 8] = b"AVCRAW01";
+const SCHEMA_VERSION: i64 = 2;
 const EXPORT_MAGIC: &[u8; 8] = b"AVCEXP01";
 const EXPORT_END: &[u8; 8] = b"AVCEND01";
 
@@ -138,7 +136,6 @@ pub struct Receipt {
 }
 
 pub struct Repository {
-    directory: PathBuf,
     connection: Connection,
 }
 
@@ -155,12 +152,6 @@ impl Repository {
             }
             Err(e) => return Err(e.into()),
         }
-        fs::create_dir(directory.join("objects"))?;
-        fs::create_dir(directory.join("objects/staged"))?;
-        fs::create_dir(directory.join("objects/sealed"))?;
-        sync_directory(&directory.join("objects/staged"))?;
-        sync_directory(&directory.join("objects/sealed"))?;
-        sync_directory(&directory.join("objects"))?;
         let mut connection = Connection::open_with_flags(
             directory.join("store.sqlite"),
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
@@ -185,19 +176,13 @@ impl Repository {
         tx.commit()?;
         sync_repository_installation(&directory, project_dir)?;
         durability_fence(&connection)?;
-        Ok(Self {
-            directory,
-            connection,
-        })
+        Ok(Self { connection })
     }
 
     /// Opens only a recognized existing database; never creates a missing DB.
     pub fn open(project_dir: &Path) -> Result<Self> {
         let directory = project_dir.join(".avc");
         require_directory(&directory)?;
-        require_directory(&directory.join("objects"))?;
-        require_directory(&directory.join("objects/staged"))?;
-        require_directory(&directory.join("objects/sealed"))?;
         require_file(&directory.join("store.sqlite"))?;
         let connection = Connection::open_with_flags(
             directory.join("store.sqlite"),
@@ -205,8 +190,13 @@ impl Repository {
         )?;
         let app: i64 = connection.pragma_query_value(None, "application_id", |r| r.get(0))?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if app != APPLICATION_ID || version != SCHEMA_VERSION {
+        if app != APPLICATION_ID {
             return Err(invalid("unknown database format"));
+        }
+        if version != SCHEMA_VERSION {
+            return Err(Error::Invalid(format!(
+                "unsupported physical schema {version}; expected {SCHEMA_VERSION}; automatic migration is not supported"
+            )));
         }
         configure(&connection, false)?;
         let valid: bool = connection.query_row(
@@ -217,15 +207,12 @@ impl Repository {
         if !valid {
             return Err(invalid("repository instance"));
         }
-        let repo = Self {
-            directory,
-            connection,
-        };
+        let repo = Self { connection };
         repo.status()?;
         // A creator can fail or die after schema commit but before directory
         // installation is synced. Every opener completes that idempotent phase
         // before returning a handle that could acknowledge a new root.
-        sync_repository_installation(&repo.directory, project_dir)?;
+        sync_repository_installation(&directory, project_dir)?;
         durability_fence(&repo.connection)?;
         Ok(repo)
     }
@@ -303,7 +290,7 @@ impl Repository {
     /// the selection and retains before/after roots in a receipt. Request identity
     /// is `(request_key, root, expected_generation)`. A committed retry returns
     /// its original receipt before stale checks or consulting the supplied engine.
-    /// A stale/failed preparation may leave unreachable sealed/staged files.
+    /// Object payloads, selection and receipt commit in one SQLite transaction.
     pub fn commit_source(
         &mut self,
         engine: &Engine,
@@ -358,14 +345,11 @@ impl Repository {
         engine.verify(root, limits())?;
         let mut prepared = Vec::new();
         for (id, payload) in records {
-            if let Some(stored) = read_object_optional(&self.connection, &self.directory, id)? {
+            if let Some(stored) = read_object_optional(&self.connection, id)? {
                 if stored != payload {
                     return Err(invalid("object collision"));
                 }
             } else {
-                if payload.len() > INLINE_BYTES {
-                    install(&self.directory, id, &payload)?;
-                }
                 prepared.push((id, payload));
             }
         }
@@ -395,15 +379,14 @@ impl Repository {
         for (id, payload) in prepared {
             // Recheck concurrent dedup winners rather than accepting a corrupt
             // existing row with INSERT OR IGNORE.
-            if let Some(stored) = read_object_optional(&tx, &self.directory, id)? {
+            if let Some(stored) = read_object_optional(&tx, id)? {
                 if stored != payload {
                     return Err(invalid("object collision"));
                 }
             } else {
-                let inline = (payload.len() <= INLINE_BYTES).then_some(payload.as_slice());
                 tx.execute(
                     "INSERT INTO objects VALUES (?1, ?2, ?3)",
-                    params![id.to_bytes()?.as_slice(), payload.len() as i64, inline],
+                    params![id.to_bytes()?.as_slice(), payload.len() as i64, payload],
                 )?;
             }
         }
@@ -433,7 +416,7 @@ impl Repository {
     }
 
     fn read_object(&self, id: Id) -> Result<Vec<u8>> {
-        read_object_optional(&self.connection, &self.directory, id)?.ok_or(Error::MissingObject(id))
+        read_object_optional(&self.connection, id)?.ok_or(Error::MissingObject(id))
     }
 
     /// Independent object-only v1 binary stream: explicit root and exact sorted
@@ -542,8 +525,7 @@ CREATE TABLE repository (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), ins
 CREATE TABLE objects (
     id BLOB PRIMARY KEY CHECK(length(id) = 33),
     length INTEGER NOT NULL CHECK(length BETWEEN 0 AND 16777216),
-    payload BLOB,
-    CHECK((length <= 1024 AND payload IS NOT NULL AND length(payload) = length) OR (length > 1024 AND payload IS NULL))
+    payload BLOB NOT NULL CHECK(length(payload) = length)
 ) STRICT;
 CREATE TABLE selection (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -570,9 +552,7 @@ fn check_request_key(key: &str) -> Result<()> {
     Ok(())
 }
 fn sync_repository_installation(directory: &Path, project: &Path) -> Result<()> {
-    for suffix in ["objects/staged", "objects/sealed", "objects", ""] {
-        sync_directory(&directory.join(suffix))?;
-    }
+    sync_directory(directory)?;
     sync_directory(project)
 }
 
@@ -598,6 +578,14 @@ fn durability_fence(connection: &Connection) -> Result<()> {
 
 fn configure(connection: &Connection, initialize: bool) -> Result<()> {
     connection.busy_timeout(Duration::from_secs(5))?;
+    // SQLite materializes result rows before Rust can inspect their declared
+    // lengths. Bound that allocation too; allow record-header/ID overhead.
+    let row_limit =
+        i32::try_from(MAX_OBJECT_BYTES + 1024).map_err(|_| Error::Limit("SQLite row bytes"))?;
+    connection.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH, row_limit)?;
+    if connection.limit(rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH)? != row_limit {
+        return Err(invalid("SQLite row limit unavailable"));
+    }
     if initialize {
         connection.pragma_update(None, "journal_mode", "WAL")?;
     }
@@ -752,11 +740,7 @@ fn owning_refs(object: &Object) -> Vec<Id> {
     }
 }
 
-fn read_object_optional(
-    connection: &Connection,
-    directory: &Path,
-    id: Id,
-) -> Result<Option<Vec<u8>>> {
+fn read_object_optional(connection: &Connection, id: Id) -> Result<Option<Vec<u8>>> {
     let mut statement = connection.prepare("SELECT length, payload FROM objects WHERE id = ?1")?;
     let mut rows = statement.query([id.to_bytes()?.as_slice()])?;
     let Some(row) = rows.next()? else {
@@ -764,72 +748,26 @@ fn read_object_optional(
     };
     let length: i64 = row.get(0)?;
     let length = bounded_length(u64::try_from(length).map_err(|_| invalid("object length"))?)?;
-    let payload = match row.get_ref(1)? {
-        rusqlite::types::ValueRef::Blob(payload) => {
-            if length > INLINE_BYTES || payload.len() != length {
-                return Err(invalid("inline length/location"));
-            }
-            payload.to_vec()
-        }
-        rusqlite::types::ValueRef::Null => {
-            if length <= INLINE_BYTES {
-                return Err(invalid("sealed length/location"));
-            }
-            read_sealed(
-                &directory.join("objects/sealed").join(id.to_string()),
-                id,
-                length,
-            )?
-        }
-        _ => return Err(invalid("object payload storage type")),
+    let rusqlite::types::ValueRef::Blob(payload) = row.get_ref(1)? else {
+        return Err(invalid("object payload storage type"));
     };
-    Object::decode(id, &payload)?;
-    Ok(Some(payload))
-}
-fn read_sealed(path: &Path, id: Id, length: usize) -> Result<Vec<u8>> {
-    require_file(path)?;
-    let mut file = File::open(path)?;
-    if file.metadata()?.len() != (48 + length) as u64 {
-        return Err(invalid("sealed file length"));
+    if payload.len() != length {
+        return Err(invalid("object payload length"));
     }
-    let mut header = [0; 48];
-    file.read_exact(&mut header)?;
-    if &header[..8] != RAW_MAGIC || header[8..16] != (length as u64).to_le_bytes() {
-        return Err(invalid("sealed version/codec/length"));
+    // Retained objects must already own a complete closure. A missing dependency
+    // is damaged storage, not a cache miss that admission may silently repair.
+    let references = owning_refs(&Object::decode(id, payload)?);
+    for reference in references {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM objects WHERE id = ?1)",
+            [reference.to_bytes()?.as_slice()],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(Error::MissingObject(reference));
+        }
     }
-    let mut payload = vec![0; length];
-    file.read_exact(&mut payload)?;
-    require_eof(&mut file)?;
-    if header[16..48] != *blake3::hash(&payload).as_bytes() {
-        return Err(invalid("sealed checksum"));
-    }
-    Object::decode(id, &payload)?;
-    Ok(payload)
-}
-fn install(directory: &Path, id: Id, payload: &[u8]) -> Result<()> {
-    let sealed = directory.join("objects/sealed");
-    let final_path = sealed.join(id.to_string());
-    let mut staged = tempfile::NamedTempFile::new_in(directory.join("objects/staged"))?;
-    staged.write_all(RAW_MAGIC)?;
-    staged.write_all(&(payload.len() as u64).to_le_bytes())?;
-    staged.write_all(blake3::hash(payload).as_bytes())?;
-    staged.write_all(payload)?;
-    sync_file(staged.as_file())?;
-    // Atomic no-clobber installation. Competing writers can only publish complete
-    // files; a leftover final name must verify, never be overwritten/repaired.
-    match fs::hard_link(staged.path(), &final_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e.into()),
-    }
-    if read_sealed(&final_path, id, payload.len())? != payload {
-        return Err(invalid("sealed collision"));
-    }
-    // Even a dedup winner may not have synced its new directory entry yet.
-    sync_file(&File::open(&final_path)?)?;
-    sync_directory(&sealed)?;
-    sync_file(&File::open(&final_path)?)?;
-    Ok(())
+    Ok(Some(payload.to_vec()))
 }
 fn require_file(path: &Path) -> Result<()> {
     if !fs::symlink_metadata(path)?.file_type().is_file() {
@@ -957,7 +895,7 @@ mod crash_tests {
     }
 
     // The only fault hooks are SQLite hooks on this test's private connection.
-    // process::exit bypasses Connection/TempFile destructors and SQLite close.
+    // process::exit bypasses Connection destructors and SQLite close.
     #[test]
     fn crash_child() {
         let Some(path) = std::env::var_os("AVC_TEST_CRASH_PROJECT") else {
@@ -1007,12 +945,6 @@ mod crash_tests {
                     .query_row("SELECT count(*) FROM objects", [], |r| r.get(0))
                     .unwrap();
                 assert_eq!(count, 1);
-                assert_eq!(
-                    fs::read_dir(project.path().join(".avc/objects/sealed"))
-                        .unwrap()
-                        .count(),
-                    1
-                );
             } else {
                 assert_eq!(selected.root, root);
                 assert!(restored.read(root, &[b"payload".to_vec()]).is_ok());
@@ -1023,8 +955,8 @@ mod crash_tests {
                     prior
                 );
             }
-            // Pre-commit orphan installation is reusable; post-commit retry does
-            // not advance the generation or repeat the effect.
+            // Pre-commit payload inserts roll back; post-commit retry does not
+            // advance the generation or repeat the effect.
             assert_eq!(
                 repo.commit_source(&engine, root, 0, "crash-request")
                     .unwrap()

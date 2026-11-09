@@ -10,7 +10,7 @@
 //!
 //! Measures acknowledged commit cost (commit_source round trip), read cost
 //! (full verified load after every acknowledged commit), export cost (complete
-//! object-only stream), import/restore cost into a fresh store, reopen cost, and
+//! object-only stream), import cost into a fresh store, reopen cost, and
 //! on-disk bytes/file counts. All workload bytes are deterministic and identical
 //! across runs and storage variants (recorded as a content fingerprint).
 //!
@@ -124,8 +124,8 @@ fn main() {
         .parse()
         .expect("integer rep");
     let label = args.next().unwrap_or_else(|| "unlabeled".to_owned());
-    let source_rev =
-        std::env::var("AVC_STORAGE_COST_REV").unwrap_or_else(|_| "unrecorded".to_owned());
+    let source_rev = std::env::var("AVC_STORAGE_COST_REV")
+        .expect("set AVC_STORAGE_COST_REV to the measured source revision");
 
     let w = &spec;
     let mut fingerprint = blake3::Hasher::new();
@@ -136,7 +136,7 @@ fn main() {
     for i in 0..w.file_count {
         let bytes = content(i as u64 * 2 + 1, w.file_bytes[i]);
         fingerprint.update(&bytes);
-        let blob = engine.blob(bytes.clone()).unwrap();
+        let blob = engine.blob(bytes).unwrap();
         root = engine
             .edit(
                 root,
@@ -251,12 +251,17 @@ fn main() {
     let Object::Blob(got) = restored_engine.object(blob).unwrap() else {
         panic!("expected blob object");
     };
-    assert_eq!(got.len(), w.file_bytes[last_changed]);
+    assert_eq!(
+        got,
+        &content(
+            last_changed as u64 * 2 + 1 + w.revisions as u64 * 1_000_003,
+            w.file_bytes[last_changed],
+        )
+    );
     let restore_load_ms = start.elapsed().as_secs_f64() * 1e3;
     drop(restored);
 
     let (disk_bytes, disk_files) = disk_usage(&project.path().join(".avc"));
-    let (sealed_bytes, sealed_files) = disk_usage(&project.path().join(".avc/objects/sealed"));
     let db_bytes = ["store.sqlite", "store.sqlite-wal", "store.sqlite-shm"]
         .iter()
         .map(|n| named_file_size(&project.path().join(".avc"), n))
@@ -319,8 +324,6 @@ fn main() {
             "bytes": disk_bytes,
             "files": disk_files,
             "db_bytes": db_bytes,
-            "sealed_bytes": sealed_bytes,
-            "sealed_files": sealed_files,
             "object_rows": object_rows,
         },
     });

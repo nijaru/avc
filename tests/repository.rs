@@ -19,9 +19,7 @@ fn file(blob: Id) -> Entry {
         executable: false,
     }
 }
-/// Fixed fixture payload (matches `repository::fault_tests`): well clear of
-/// the inline/external threshold so every storage variant exercises identical
-/// bytes and only physical placement may differ.
+/// Fixed payload shared with the storage fault and historical control fixtures.
 const FIXTURE_PAYLOAD_BYTES: usize = 8192;
 fn path(name: &[u8]) -> Vec<Vec<u8>> {
     vec![name.to_vec()]
@@ -58,10 +56,6 @@ fn object_ids(project: &Path) -> BTreeSet<Id> {
         .map(|r| Id::from_bytes(&r.unwrap()).unwrap())
         .collect()
 }
-fn sealed_path(project: &Path, id: Id) -> std::path::PathBuf {
-    project.join(".avc/objects/sealed").join(id.to_string())
-}
-
 #[test]
 fn init_is_an_empty_source_pin_and_open_never_creates_a_database() {
     let project = tempfile::tempdir().unwrap();
@@ -100,10 +94,43 @@ fn init_is_an_empty_source_pin_and_open_never_creates_a_database() {
     );
 
     let missing_db = tempfile::tempdir().unwrap();
-    fs::create_dir_all(missing_db.path().join(".avc/objects/staged")).unwrap();
-    fs::create_dir(missing_db.path().join(".avc/objects/sealed")).unwrap();
+    fs::create_dir(missing_db.path().join(".avc")).unwrap();
     assert!(Repository::open(missing_db.path()).is_err());
     assert!(!missing_db.path().join(".avc/store.sqlite").exists());
+}
+
+#[test]
+fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
+    let project = tempfile::tempdir().unwrap();
+    drop(Repository::init(project.path()).unwrap());
+    let db = database(project.path());
+    assert_eq!(
+        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+            .unwrap(),
+        2
+    );
+    db.pragma_update(None, "user_version", 1).unwrap();
+    drop(db);
+    // Retain a witness in the obsolete raw-file layout as well as the database.
+    let objects = project.path().join(".avc/objects/sealed");
+    fs::create_dir_all(&objects).unwrap();
+    let witness = objects.join("old-object");
+    fs::write(&witness, b"preserve old payload").unwrap();
+    let database_path = project.path().join(".avc/store.sqlite");
+    let before = fs::read(&database_path).unwrap();
+    let error = match Repository::open(project.path()) {
+        Ok(_) => panic!("old schema accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 1"))
+    );
+    assert_eq!(fs::read(&database_path).unwrap(), before);
+    assert_eq!(fs::read(witness).unwrap(), b"preserve old payload");
+    assert!(matches!(
+        Repository::init(project.path()),
+        Err(Error::AlreadyExists(_))
+    ));
 }
 
 #[test]
@@ -186,20 +213,15 @@ fn reopen_restores_exact_closure_and_receipts_keep_departure_source() {
         )
         .unwrap();
     assert_eq!(inline, b"small");
-    let external: bool = db
+    let payload: Vec<u8> = db
         .query_row(
-            "SELECT payload IS NULL FROM objects WHERE id = ?1",
+            "SELECT payload FROM objects WHERE id = ?1",
             [large.to_bytes().unwrap().as_slice()],
             |r| r.get(0),
         )
         .unwrap();
-    assert!(external);
-    assert_eq!(
-        fs::read_dir(project.path().join(".avc/objects/sealed"))
-            .unwrap()
-            .count(),
-        1
-    );
+    assert_eq!(payload, vec![3; FIXTURE_PAYLOAD_BYTES]);
+    assert!(!project.path().join(".avc/objects").exists());
     drop(db);
     let second = put(&mut engine, first, b"file", Entry::Absent);
     let departure = repository
@@ -262,11 +284,10 @@ fn lost_response_retry_precedes_stale_and_engine_checks_and_key_identity_is_perm
 }
 
 #[test]
-fn independent_connections_race_cas_and_immutable_same_content_installation() {
+fn independent_connections_race_cas_and_same_content_admission() {
     let project = tempfile::tempdir().unwrap();
     drop(Repository::init(project.path()).unwrap());
-    // Both roots share a large object, so the no-clobber file installer must also
-    // tolerate concurrent publication of the same content.
+    // Both roots share a payload; the loser must admit no candidate-only rows.
     let mut a = Repository::open(project.path()).unwrap();
     let mut b = Repository::open(project.path()).unwrap();
     let barrier = Arc::new(Barrier::new(2));
@@ -310,13 +331,15 @@ fn independent_connections_race_cas_and_immutable_same_content_installation() {
     let winner = outcomes.into_iter().find_map(Result::ok).unwrap();
     assert_eq!(a.status().unwrap(), winner.after);
     assert_eq!(b.status().unwrap(), winner.after);
-    assert!(a.load().is_ok());
-    assert_eq!(
-        fs::read_dir(project.path().join(".avc/objects/sealed"))
-            .unwrap()
-            .count(),
-        1
-    );
+    let retained = object_ids(project.path());
+    let selected = a.load_root(winner.after.root).unwrap();
+    let initial = a.load_root(winner.before.root).unwrap();
+    let expected: BTreeSet<_> = selected
+        .objects()
+        .map(|(id, _)| id)
+        .chain(initial.objects().map(|(id, _)| id))
+        .collect();
+    assert_eq!(retained, expected);
 }
 
 #[test]
@@ -346,114 +369,45 @@ fn concurrent_identical_requests_return_one_receipt() {
 }
 
 #[test]
-fn corrupt_or_missing_payload_is_refused_on_read_export_and_readmission() {
-    for missing in [false, true] {
+fn damaged_objects_are_refused_without_silent_readmission_repair() {
+    for damage in ["hash", "negative", "oversized", "mismatch", "missing"] {
         let project = tempfile::tempdir().unwrap();
         let mut repository = Repository::init(project.path()).unwrap();
         let (engine, root, blob) = source(vec![8; FIXTURE_PAYLOAD_BYTES]);
         repository
             .commit_source(&engine, root, 0, "original")
             .unwrap();
-        drop(repository);
-        let payload_path = sealed_path(project.path(), blob);
-        if missing {
-            fs::remove_file(&payload_path).unwrap();
-        } else {
-            let mut bytes = fs::read(&payload_path).unwrap();
-            *bytes.last_mut().unwrap() ^= 1;
-            fs::write(&payload_path, bytes).unwrap();
-        }
-        let mut repository = Repository::open(project.path()).unwrap();
-        assert!(repository.load().is_err());
-        assert!(repository.export(root, Vec::new()).is_err());
+        let db = database(project.path());
+        // Simulate damaged storage, not a supported mutation interface.
+        db.execute_batch("DROP TRIGGER objects_no_update; DROP TRIGGER objects_no_delete; PRAGMA ignore_check_constraints = ON").unwrap();
+        let sql = match damage {
+            "hash" => "UPDATE objects SET payload = zeroblob(length) WHERE id = ?1",
+            "negative" => "UPDATE objects SET length = -1 WHERE id = ?1",
+            "oversized" => "UPDATE objects SET length = 16777217 WHERE id = ?1",
+            "mismatch" => "UPDATE objects SET length = length - 1 WHERE id = ?1",
+            "missing" => "DELETE FROM objects WHERE id = ?1",
+            _ => unreachable!(),
+        };
+        db.execute(sql, [blob.to_bytes().unwrap().as_slice()])
+            .unwrap();
+        drop(db);
+        let before = object_ids(project.path());
+        assert!(repository.load().is_err(), "{damage}");
+        assert!(repository.export(root, Vec::new()).is_err(), "{damage}");
         assert!(
             repository
                 .commit_source(&engine, root, 1, "no-repair")
-                .is_err()
+                .is_err(),
+            "{damage}"
         );
         assert_eq!(repository.status().unwrap().generation, 1);
         assert!(repository.receipt("no-repair").unwrap().is_none());
-        if missing {
-            assert!(!payload_path.exists());
-        }
+        assert_eq!(object_ids(project.path()), before);
     }
 }
 
 #[test]
-fn sealed_header_bounds_and_typed_hash_are_checked_independently_of_checksum() {
-    for header_only in [false, true] {
-        let project = tempfile::tempdir().unwrap();
-        let mut repository = Repository::init(project.path()).unwrap();
-        let (engine, root, blob) = source(vec![5; FIXTURE_PAYLOAD_BYTES]);
-        repository.commit_source(&engine, root, 0, "first").unwrap();
-        let payload_path = sealed_path(project.path(), blob);
-        let mut bytes = fs::read(&payload_path).unwrap();
-        if header_only {
-            bytes[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
-        } else {
-            bytes[48] ^= 1;
-            let checksum = blake3::hash(&bytes[48..]);
-            bytes[16..48].copy_from_slice(checksum.as_bytes());
-        }
-        fs::write(&payload_path, bytes).unwrap();
-        assert!(repository.load().is_err());
-        assert_eq!(repository.status().unwrap().generation, 1);
-    }
-}
-
-#[test]
-fn corrupt_unacknowledged_final_name_is_preserved_not_overwritten() {
-    let project = tempfile::tempdir().unwrap();
-    let mut repository = Repository::init(project.path()).unwrap();
-    let initial = repository.status().unwrap();
-    let (engine, root, blob) = source(vec![6; FIXTURE_PAYLOAD_BYTES]);
-    let payload_path = sealed_path(project.path(), blob);
-    fs::write(&payload_path, b"incomplete old installation").unwrap();
-    assert!(
-        repository
-            .commit_source(&engine, root, 0, "refuse")
-            .is_err()
-    );
-    assert_eq!(repository.status().unwrap(), initial);
-    assert!(repository.receipt("refuse").unwrap().is_none());
-    assert_eq!(object_ids(project.path()).len(), 1);
-    assert_eq!(
-        fs::read(payload_path).unwrap(),
-        b"incomplete old installation"
-    );
-}
-
-#[test]
-fn inline_corruption_and_missing_metadata_dependency_are_not_cache_misses() {
-    for missing in [false, true] {
-        let project = tempfile::tempdir().unwrap();
-        let mut repository = Repository::init(project.path()).unwrap();
-        let (engine, root, blob) = source(b"small payload".to_vec());
-        repository.commit_source(&engine, root, 0, "first").unwrap();
-        let db = database(project.path());
-        // Deliberately bypass immutability guards to simulate damaged storage.
-        if missing {
-            db.execute_batch("DROP TRIGGER objects_no_delete").unwrap();
-            db.execute(
-                "DELETE FROM objects WHERE id = ?1",
-                [blob.to_bytes().unwrap().as_slice()],
-            )
-            .unwrap();
-        } else {
-            db.execute_batch("DROP TRIGGER objects_no_update").unwrap();
-            db.execute(
-                "UPDATE objects SET payload = zeroblob(length) WHERE id = ?1",
-                [blob.to_bytes().unwrap().as_slice()],
-            )
-            .unwrap();
-        }
-        assert!(repository.load().is_err());
-        assert!(repository.export(root, Vec::new()).is_err());
-    }
-}
-
-#[test]
-fn object_limit_refuses_before_selection_or_payload_installation() {
+fn object_limit_refuses_before_selection_or_payload_admission() {
     let project = tempfile::tempdir().unwrap();
     let mut repository = Repository::init(project.path()).unwrap();
     let initial = repository.status().unwrap();
@@ -464,12 +418,42 @@ fn object_limit_refuses_before_selection_or_payload_installation() {
     ));
     assert_eq!(repository.status().unwrap(), initial);
     assert_eq!(object_ids(project.path()).len(), 1);
-    assert_eq!(
-        fs::read_dir(project.path().join(".avc/objects/sealed"))
-            .unwrap()
-            .count(),
-        0
+    assert!(repository.receipt("too-large").unwrap().is_none());
+}
+
+#[test]
+fn maximum_payload_fits_but_sqlite_rejects_oversized_rows_before_materialization() {
+    let project = tempfile::tempdir().unwrap();
+    let mut repository = Repository::init(project.path()).unwrap();
+    let (engine, root, blob) = source(vec![42; MAX_OBJECT_BYTES]);
+    let receipt = repository
+        .commit_source(&engine, root, 0, "maximum")
+        .unwrap();
+    let loaded = repository.load_root(root).unwrap();
+    assert_eq!(loaded.object(blob).unwrap(), engine.object(blob).unwrap());
+    drop(loaded);
+    let db = database(project.path());
+    db.execute_batch("DROP TRIGGER objects_no_update; PRAGMA ignore_check_constraints = ON")
+        .unwrap();
+    db.execute(
+        "UPDATE objects SET length = ?1, payload = zeroblob(?1) WHERE id = ?2",
+        rusqlite::params![
+            (MAX_OBJECT_BYTES + 2048) as i64,
+            blob.to_bytes().unwrap().as_slice()
+        ],
+    )
+    .unwrap();
+    drop(db);
+    assert!(
+        matches!(repository.load_root(root), Err(Error::Sqlite(rusqlite::Error::SqliteFailure(error, _))) if error.code == rusqlite::ErrorCode::TooBig)
     );
+    assert_eq!(repository.status().unwrap(), receipt.after);
+    assert!(
+        repository
+            .commit_source(&engine, root, 1, "no-repair")
+            .is_err()
+    );
+    assert!(repository.receipt("no-repair").unwrap().is_none());
 }
 
 // Independent fixture encoder for the documented object-only binary layout.

@@ -1,8 +1,8 @@
 # AVC — adversarial architecture decisions and evidence
 
-**Reconciled 2026-11-05.** This is a **decision and falsification record**, not a second source/specification. Authoritative logic: [design](design.md), [canonical format](format.md), [storage](storage.md), [native protocol](sync.md), [Git bridge](git.md), [UX](ux.md), and [roadmap](roadmap.md). The extensive older research corpus, independent prototypes and their full measurements are [preserved in Git history](https://github.com/nijaru/avc/blob/af66a63898f383b596e4828199dc625a80e28a72/docs/research.md); the historical experiment source is [also preserved](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72/docs/experiments). **Do not reinstate old code/fixtures as normative simply because they existed.**
+**Reconciled 2026-11-09.** This is a **decision and falsification record**, not a second source/specification. Authoritative logic: [design](design.md), [canonical format](format.md), [storage](storage.md), [native protocol](sync.md), [Git bridge](git.md), [UX](ux.md), and [roadmap](roadmap.md). The extensive older research corpus, independent prototypes and their full measurements are [preserved in Git history](https://github.com/nijaru/avc/blob/af66a63898f383b596e4828199dc625a80e28a72/docs/research.md); the historical experiment source is [also preserved](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72/docs/experiments). **Do not reinstate old code/fixtures as normative simply because they existed.**
 
-Sections 1–12 synthesize upstream documentation and earlier bounded experiments, not new AVC performance or durability evidence. Section 13 records the first new implementation checks and their limits.
+Sections 1–12 synthesize upstream documentation and earlier bounded experiments, not new AVC performance or durability evidence. Section 13 records the first new implementation checks and their limits; section 14 records the storage backend decision and its equivalent-work control.
 
 ## 1. Strongest alternative: don't build a new VCS at all
 
@@ -54,7 +54,7 @@ These were **Python/surrogate structures using SHA-256 refs**, not native BLAKE3
 
 [SQLite WAL/synchronous documentation](https://www.sqlite.org/pragma.html#pragma_synchronous) supports simple reliable local transactions, especially under FULL durability. A SQLite-only blob store would minimize trusted code and cross-file recovery states. On the other hand, immutable segment storage avoids writing large compressed objects into SQLite WAL pages, supports streaming, compaction, and cheap transfers. [Zstandard specification](https://github.com/facebook/zstd/blob/dev/doc/zstd_compression_format.md) defines portable compressed frames/dictionaries; this does **not** prove per-object compression beats Git's delta-packed blobs.
 
-**Selected:** SQLite metadata/ref authority plus durably sealed immutable segments for payload, with small-inline storage as a physical optimization. [Storage contract](storage.md) fixes ordering, crash cases, reader leases, GC and independent export. A SQLite-only control is a **qualification reference**. If hybrid durability cannot be proven under representative fault tests and the actual performance gains are small, replace physical storage with SQLite-only **without changing canonical ObjectIds**.
+**Selected (updated 2026-11-09):** one SQLite WAL/FULL store holds every bounded canonical payload as an immutable row, with the selection and receipts in the same transaction. The hybrid (SQLite metadata plus sealed raw payload files, with a small-inline threshold) was implemented first and then **replaced** after the equivalent-work control in [§14](#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026) found it justified none of its extra physical complexity at the supported bounds. Segments, extents and compression are deferred to measured need; canonical ObjectIds never depended on this choice. [Storage contract](storage.md) fixes ordering, crash cases and independent export.
 
 [BLAKE3 specification](https://github.com/BLAKE3-team/BLAKE3-specs) supports fast parallel hashing with domain separation; it does not remove the need for verification, authentication, caching, bounded decompression or careful sync. Modern primitives should improve whole-task costs, not be used as marketing substitutes for measurement.
 
@@ -101,7 +101,7 @@ The crucial operational failure would be two independently writable repositories
 | **DeltaDB** | Causal character-level deltas, continuous agent-session history, replication and worktree materialization between Git commits; Git remains the shared authored state. | Lower-cost arbitrary-file source custody and capability without mandatory Git or continuous conversation capture. A source-only VCS loses Delta's fine-grained intention/provenance UX; integrations must remain possible. |
 | **Entire** | Git-compatible distributed mirrors aimed explicitly at agent-scale read/push traffic; integrated agent checkpoints, explainable blame and review. Direct competition for "agent Git backend" and remote context services. | Native transactional source work without Git object/partial-clone constraints. **Do not compete on raw Git hosting throughput alone.** Their published performance claims are vendor-specific load tests, not AVC baseline targets. |
 | **OpenAI Pando and GitHub's new infrastructure** | Mature Git and ecosystem compatibility alongside independent per-ref write coordination, immutable reusable pack transfers, compaction, regional caches and elastic Git serving. | New **source semantics**, no-checkout queries and safer multi-agent edit/integration, rather than another faster Git transport layer. Protocol compatibility alone is not differentiation. |
-| **Fossil** | Reliable portable SQLite repository and independently verified atomic source transactions, without dual physical-store complexity. | AVC must justify its SQLite + sealed-segment durability/GC/backup burden against a simpler single-database baseline. Native physical speed alone is not a safety argument. |
+| **Fossil** | Reliable portable SQLite repository and independently verified atomic source transactions, without dual physical-store complexity. | AVC must justify its SQLite + sealed-segment durability/GC/backup burden against a simpler single-database baseline (resolved November 6: the single-store control won the equivalent-work comparison, §14). Native physical speed alone is not a safety argument. |
 
 **Current primary references:**
 [Jujutsu architecture](https://www.jj-vcs.dev/latest/technical/architecture/),
@@ -130,7 +130,7 @@ A second Git-backed AVC engine would remove some migration friction but create t
 1. **Ecosystem and trust:** Git has decades of interoperability, integrations and production failure testing. The AVC format, conflict algebra and cross-store durability are unimplemented and may contain subtle data-loss cases. No presumed correctness advantage until faults are verified.
 2. **Migration cliff:** a normal Git import needs the complete selected current source to compute native hashes; a filtered Git foreign view retains Git identities but cannot use AVC's full native authored feature set. This can neutralize AVC's biggest value proposition exactly for the largest monorepos.
 3. **Causal composition:** Pijul/DeltaDB retain edit intent unavailable from plain snapshots; AVC's signed conflict expressions preserve source alternatives but cannot guarantee future rebases recover latent intent discarded by a clean merge. This matters when many agents repeatedly restack.
-4. **Scope/maintenance:** source engine, portable safe filesystem operations, hybrid storage, Git conversion, native partial protocol, sophisticated UX and optional Git hosting is a formidable maintenance surface. Pando/Entire/GitHub already invest heavily in scalable Git hosting; AVC should not try to equal all of them before demonstrating one compelling user workflow.
+4. **Scope/maintenance:** source engine, portable safe filesystem operations, storage, Git conversion, native partial protocol, sophisticated UX and optional Git hosting is a formidable maintenance surface. Pando/Entire/GitHub already invest heavily in scalable Git hosting; AVC should not try to equal all of them before demonstrating one compelling user workflow.
 
 ### Falsifiable product wager and benchmark gate
 
@@ -197,7 +197,7 @@ An overturn requires one specific violated invariant, an essential workflow that
 
 ### What genuinely still needs AVC tests
 
-**Essential:** exact v1 object/typed conflict conformance and property counterexamples; incremental radix edit/verification cost; crash-safe SQLite+segment admission/GC and backup; foreign Git round-trip correctness; native Merkle proof authorization/closure handling; one realistic end-to-end parallel-source task compared with mature Git+jj once the AVC task actually works.
+**Essential:** exact v1 object/typed conflict conformance and property counterexamples; incremental radix edit/verification cost; crash-safe SQLite-store admission/GC and backup; foreign Git round-trip correctness; native Merkle proof authorization/closure handling; one realistic end-to-end parallel-source task compared with mature Git+jj once the AVC task actually works.
 
 **Not essential as new tests:** proving that checkout-free source edits exist; replaying hundreds of thousands of existing merges in a new custom harness; implementing Pijul's entire causal algebra only to compare; repeating GitHub's generic shallow/partial clone study; measuring a nonfunctional AVC against feature-complete competitors.
 
@@ -240,4 +240,38 @@ Further Stage 2 review found a distinct failure: if both COMMIT and destructor R
 
 Recovered WAL visibility is not durability. SQLite writes complete commit frames before final sync; recovery can read them without syncing. A shared checked FULL-checkpoint fence now gates reopen and receipt acknowledgement; a pinned older reader reproduces incomplete backfill and requires `DurabilityPending`, not a receipt. A separate exec'd POSIX lock probe also proved the old raw main-database open/close released SQLite's locks; SQLite now exclusively owns those descriptors. These conclusions were checked against bundled SQLite 3.53.2 and its [checkpoint contract](https://sqlite.org/c3ref/wal_checkpoint_v2.html), [transaction error semantics](https://sqlite.org/lang_transaction.html#response_to_errors_within_a_transaction) and [POSIX-close warning](https://sqlite.org/howtocorrupt.html#posix_advisory_locks_canceled_by_a_separate_thread_doing_close_). The availability trade-off is explicit: a recognized opener or receipt query may wait/refuse behind a reader, even though ordinary metadata inspection does not alter source selection.
 
-These tests do **not** qualify disk-full at every write/sync, GC/compaction/reader retirement, supported-filesystem power loss or normal workspace recovery. The [storage owner](storage.md) distinguishes the bounded implemented subset from its release gates.
+These tests do **not** qualify disk-full at every write/sync, GC/compaction/reader retirement, supported-filesystem power loss or normal workspace recovery. The [storage owner](storage.md) distinguishes the bounded implemented subset from its release gates. (The storage checks in this section exercised physical schema 1, the hybrid store since replaced; see §14.)
+
+## 14. SQLite-only storage decision and equivalent-work control (November 6, 2026)
+
+**Decision: physical schema 2 stores every bounded canonical payload in one SQLite WAL/FULL store; the schema-1 hybrid is replaced, not kept as a second backend.** This is the experiment record; [storage](storage.md) owns the resulting contract. Canonical v1 IDs and the `AVCEXP01` stream are unchanged by the physical choice.
+
+**Question and variants.** At the bounded model (16 MiB payload / 256 MiB closure / 100k objects), does the hybrid justify its physical complexity? Both variants are the same hardened base — `588614a` including the `6ba661a` guard/fence repair and the fixture pin `fc3245a`, plus the equivalent-work probe `773885e`. The control applied a **disposable** patch, never committed and not the permanent cleanup: inline threshold raised to the 16 MiB payload maximum, objects schema accepting only `BLOB NOT NULL` rows, `SCHEMA_VERSION = 2`. Same `Repository` API, same limits, same durability settings (WAL + `synchronous=FULL` + macOS `fullfsync`/`checkpoint_fullfsync` verified on open; checked `FULL` checkpoint fence on open and receipt acknowledgement). Common debug/release builds, cross-language Python vectors and the quota/rollback-failure/checkpoint-fence/POSIX-lock fault tests pass on both variants. The only exclusions were two hybrid-only raw-file tests (sealed header framing, sealed no-clobber installer) inside the disposable variant; the permanent cleanup deletes that machinery and its tests rather than carrying ignored assertions into production.
+
+**Method.** Seven interleaved repetitions per variant and workload with alternating order — 28 runs, one process per run on fresh stores. Workload bytes are deterministic xorshift content, identical in every run and both variants (asserted per workload by content fingerprint). Conditions: 2026-11-06 UTC, Apple M3 Max 128 GiB, arm64 macOS 26.7.2, APFS 82% full (346 GiB free), Rust 1.99.1, SQLite 3.53.2. Workloads: **small-churn** — 200 files (64 B–4 KiB), 30 acknowledged commits each replacing 20 files; **binary-churn** — 8 files × 4 MiB, 10 acknowledged commits each replacing 2 files (28 blobs constructed; 26 admitted, the two files first replaced before any commit).
+
+**Medians across repetitions** (ms). `commit` is the acknowledged `commit_source` round trip; `read` is full verified load plus an exact byte check after every commit; `export` is the complete object-only stream; `import` is **fresh-store object-stream admission only** — verified reload was sampled separately (28.2/3.5 and 100.5/67.8 ms for hybrid/control), and **no filesystem materialization was measured**; `reopen` is open plus the recovery fence on a closed store.
+
+| workload | variant | commit p50 | commit p95 | commit total | read p50 | export | import | reopen | closed store | files |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| small-churn | hybrid | 122.7 | 146.8 | 4675 | 23.2 | 15.6 | 1103.4 | 6.9 | 1.4 MB | 313 |
+| small-churn | SQLite-only | 8.0 | 8.9 | 249 | 3.1 | 4.0 | 18.2 | 6.4 | 1.6 MB | 1 |
+| binary-churn | hybrid | 107.7 | 186.0 | 1162 | 100.9 | 130.8 | 265.3 | 5.0 | 109.1 MB | 27 |
+| binary-churn | SQLite-only | 76.8 | 131.1 | 832 | 73.5 | 102.0 | 212.1 | 5.4 | 109.2 MB | 1 |
+
+**Findings.** Commit p50 is 1.4–15x lower and per-repetition commit totals 1.4–19x lower in the SQLite-only variant; reads, exports and imports are uniformly faster. Small-churn import drops 1103.4 → 18.2 ms because the hybrid pays 312 sealed-file installs, each with double `F_FULLFSYNC`, directory sync and verification. File count collapses 313 → 1 and 27 → 1. On-disk bytes are **not** better: the SQLite-only small-churn store is ~200 KB *larger* (1.6 vs 1.4 MB, SQLite page overhead) and binary is 109.2 vs 109.1 MB. The safety surface shrinks: no raw file framing/headers, no atomic no-clobber hard-link installer, no staged/sealed directory-sync ordering, and durable-data-before-durable-reference is one SQLite transaction. A single store file simplifies inspection but is **not** by itself a backup: an active WAL may own commits not present in the main file.
+
+**Limits on claims.** These are historical control measurements, **not** measurements of the final reimplemented schema-2 backend; the permanent cleanup removes the threshold machinery entirely and differs from the disposable control patch. One macOS/APFS machine where `F_FULLFSYNC` penalizes per-file syncs hardest (the gap on Linux is unmeasured); single process, no concurrent load. Nothing here speaks to Linux performance, RSS, power loss, GC, streaming beyond the bounds, or competitor systems. It is an equivalent-work control comparison, not a competitor benchmark.
+
+**Reproduction.** The probe source is committed (`773885e`, landing on main) and the raw per-run scratch was disposable. From that commit the control is reproduced by this minimum patch — three runtime lines plus the schema — with the two hybrid-only tests ignored and placement assertions flipped to inline placement:
+
+```diff
+-pub const INLINE_BYTES: usize = 1024;
++pub const INLINE_BYTES: usize = MAX_OBJECT_BYTES;   // every payload inline
+-const SCHEMA_VERSION: i64 = 1;
++const SCHEMA_VERSION: i64 = 2;                      // stores not interchangeable
+-    CHECK((length <= 1024 AND payload IS NOT NULL AND length(payload) = length) OR (length > 1024 AND payload IS NULL))
++    CHECK(payload IS NOT NULL AND length(payload) = length)
+```
+
+Run `cargo test` (debug and release) and the probe (`examples/storage_cost.rs`) on both variants with `AVC_STORAGE_COST_REV` set; interleave repetitions at the runner level. An earlier worker report's "equal or better" disk claim, its 28-blob file count, and its combined "import/restore" label are corrected above.

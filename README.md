@@ -4,11 +4,11 @@
 
 AVC is building immutable persistent source trees, editable history, offline recovery, selective native clones, checkout-free conditional edits and permanent Git interoperability—without a Git-backed native engine.
 
-## Status — November 5, 2026
+## Status — November 9, 2026
 
 The new Rust library implements the current v1 canonical objects, BLAKE3 IDs, persistent radix edits, queries, Merkle diffs, witnessed moves/copies, bounded text merging and signed source conflicts. An independent Python codec checks fresh vectors and malformed objects; the old prototype and its format have not been reinstated.
 
-An **experimental source-only repository and CLI** now support SQLite-backed conditional source selection, immutable retry receipts, reopening, verification, self-contained object export/import and no-clobber materialization into a fresh directory. Repository mutations and fresh materialization require `--experimental`. These commands do **not** scan or modify an existing working tree, author revisions, register workspaces, checkpoint editor work, import Git history, or provide a qualified backup service. The physical store is deliberately bounded and currently revalidates complete closures on load/admission; pure-engine incremental costs are not CLI performance claims.
+An **experimental source-only repository and CLI** now support SQLite-backed conditional source selection, immutable retry receipts, reopening, verification, self-contained object export/import and no-clobber materialization into a fresh directory. Repository mutations and fresh materialization require `--experimental`. These commands do **not** scan or modify an existing working tree, author revisions, register workspaces, checkpoint editor work, import Git history, or provide a qualified backup service. The physical store is a single bounded SQLite database—payloads, the selection and retry receipts commit in one transaction—and currently revalidates complete closures on load/admission; pure-engine incremental costs are not CLI performance claims. A closed database file is not a safe online backup: the supported transfer is `export`/`import` of one exact source.
 
 **Do not entrust irreplaceable source to AVC.** The format remains unreleased and unfrozen. Full fault injection, power-loss/platform qualification, GC, compression/large-file streaming, working-directory capture/recovery, authored history and Git/native synchronization remain incomplete. Keep independent backups. Existing Git repositories and legacy `.avc` data are never automatically converted or removed.
 

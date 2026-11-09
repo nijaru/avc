@@ -1,6 +1,6 @@
 # AVC — authoritative architecture
 
-**Design baseline: November 4, 2026; implementation begun November 5. Not a released or custody-qualified format.** This file owns goals, authority boundaries and non-negotiable architectural decisions. The **normative detail is deliberately split by ownership**: [canonical objects/merge](format.md), [local durability/recovery](storage.md), [native sync](sync.md), [foreign Git adapter](git.md), [user/API workflows](ux.md), [implementation and verification](roadmap.md), and [adversarial rationale](research.md). A future agent must read the relevant owner, not apply an old design from chat or Git history.
+**Design baseline: November 4, 2026; implementation begun November 5; local storage backend resolved to SQLite-only November 9. Not a released or custody-qualified format.** This file owns goals, authority boundaries and non-negotiable architectural decisions. The **normative detail is deliberately split by ownership**: [canonical objects/merge](format.md), [local durability/recovery](storage.md), [native sync](sync.md), [foreign Git adapter](git.md), [user/API workflows](ux.md), [implementation and verification](roadmap.md), and [adversarial rationale](research.md). A future agent must read the relevant owner, not apply an old design from chat or Git history.
 
 The November 2 and November 3 implementations/specifications were *unreleased prototypes*. Their code and ~187 KB research corpus are historical evidence in [Git history at af66a638](https://github.com/nijaru/avc/tree/af66a63898f383b596e4828199dc625a80e28a72). Nothing there is a compatibility contract. New format objects should have **new IDs and fixtures** rather than shims to obsolete kinds.
 
@@ -56,11 +56,11 @@ Canonical v1 is precisely specified in [format.md](format.md): typed domain-sepa
 
 ## 4. Selected storage architecture
 
-**Selected local backend:** one transactional SQLite (WAL/FULL) metadata/root authority plus immutable, bounded staged payload segments; small objects may reside in SQLite. Logical hashes are computed from canonical uncompressed bytes. Physical segments can use raw or Zstandard, grouping and chunking independently of canonical IDs.
+**Selected local backend (physical schema 2, resolved 2026-11-09):** one transactional SQLite (WAL/FULL) store owns everything physical: bounded canonical payloads as immutable rows, the CAS selection, and immutable before/after receipts **in the same transaction**. Logical hashes are computed from canonical payload bytes; canonical v1 IDs are independent of physical storage. Bounds are explicit: 16 MiB per payload, 256 MiB per closure, 100,000 objects.
 
-A durable write makes **object data and segment locations durable before a short SQLite root/pin CAS commit**; acknowledgement follows the completed transaction. Crash before metadata commit may leave unreachable staged/sealed bytes, never a published root with missing dependencies. Readers pin immutable segment generations; compaction changes object locations atomically and retires old segments only after readers/backup/GC protections release. GC traces exact owning roots and uses generation fencing. A full export follows a pinned owning closure and independently restores without a service. The detailed failure windows, SQLite authority records, reader leases and filesystem protocols are [in storage.md](storage.md).
+A durable write is one SQLite transaction—payload rows, selection CAS and receipt commit together; acknowledgement follows the completed transaction. Crash before commit leaves nothing; a lost response is reconciled by retrying the stable request key. A checked `FULL` WAL-checkpoint fence gates reopen and receipt acknowledgement, and a handle with a surviving transaction is retired, never self-reported. A full export follows a pinned owning closure and independently restores without a service. The detailed failure windows, SQLite authority records and filesystem protocols are [in storage.md](storage.md).
 
-A SQLite-only comparison backend remains a *qualification control*, not a second persistent production architecture. If the hybrid cannot meet equivalent durability at acceptable maintenance/performance cost, replace it coherently **before custody release** without changing canonical source objects.
+The earlier hybrid (SQLite metadata plus sealed raw payload files) was **replaced after an equivalent-work control comparison** found it justified none of its extra physical complexity at the supported bounds ([research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)). Segments, extents, compression and streaming beyond the bounds are **deferred to measured need**, not a mandatory architecture; there is no second backend, backend flag or provider trait. Physical schema 1 stores and other unrecognized stores are refused with no automatic migration, and canonical IDs/export framing are unchanged.
 
 ## 5. Source edits, conflicts, history and parallel work
 
@@ -94,7 +94,7 @@ The Rust implementation should have one owner for each concern, organized by **c
 
 - Canonical codec/ID and persistent source tree library.
 - Pure conditional source editing, diff, merge, revision and conflict logic.
-- Physical object backend + local SQLite root/operation authority, reader leases and GC.
+- Physical object store + local SQLite root/operation authority; deletion/GC lifecycles only when a measured reclamation need requires them.
 - Filesystem capture/guarded materializer, private recovery and local workspace selection.
 - Native object/proof/remote and separate foreign Git adapter.
 - Thin CLI/TUI/agent bindings that call the same library rather than reimplementing semantics.
@@ -107,7 +107,7 @@ Start with a **thin vertical path**: exact bytes → persistent tree edit → pr
 
 - Independent codec vectors, insertion-order/property/fuzz tests and incremental radix edits.
 - Typed signed-conflict algebra, real text merge, repeated rebase/revert and adversarial file/path/binary cases.
-- Crash/power-failure and GC/read-lease/backup tests of the chosen physical store versus a SQLite-only control.
+- Crash/power-failure qualification of the SQLite-only store on macOS/Linux (the hybrid-versus-control comparison is complete: [research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)), plus GC/backup tests when those lifecycles exist.
 - Real small Git repo round trip; honest huge filtered foreign Git source; native selective clone and conditional agent edits.
 - Measured cold/warm end-to-end tasks vs Git/Jujutsu and representative native workloads.
 

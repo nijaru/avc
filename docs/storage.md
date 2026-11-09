@@ -1,120 +1,122 @@
 # AVC local storage, durability, recovery and GC
 
-**Implementation contract, 2026-11-04.** Owns *physical storage and mutable local authority*, not canonical source encoding ([format](format.md)), network semantics ([sync](sync.md)) or CLI policy ([UX](ux.md)). This is a chosen design, **not proven crash-safe until implementation/fault injection**.
+**Implementation contract, updated 2026-11-09.** Owns *physical storage and mutable local authority*, not canonical source encoding ([format](format.md)), network semantics ([sync](sync.md)) or CLI policy ([UX](ux.md)). This is a chosen design, **not crash-safe qualified**: the remaining gates are listed in §9 and the [roadmap](roadmap.md).
 
-## Current implementation boundary (November 5, 2026)
+## Current implementation boundary (November 2026)
 
-`src/repository.rs` implements an **experimental source-root-only subset**: SQLite WAL/FULL selection and immutable retry receipts, inline payloads through 1 KiB, raw immutable files above that threshold, complete-closure validation, conditional admission, reopening and object-only export/import. Receipts retain both source selections; no objects or receipts are deleted. There are no reader-expiry/GC races yet because no GC, compaction or location replacement API exists. This is not a substitute for qualifying those future lifecycles.
+`src/repository.rs` implements an **experimental source-root-only subset** on **physical schema 2: one SQLite WAL/FULL store is the entire physical store**. Every bounded canonical payload is an immutable `BLOB NOT NULL` row (typed ID, canonical length, payload); the CAS selection and immutable before/after receipts commit **in the same SQLite transaction** as new payload rows. There is no inline threshold, no raw payload header/framing, no `objects/staged`/`objects/sealed` directories and no per-file hard-link installer; there is no backend flag, trait or second store. Database triggers make object rows and receipts immutable, and receipts retain both source selections. Nothing is ever deleted: there is no GC, compaction or location replacement, so no reader-expiry/GC races exist and no reader leases are needed while retained rows are never removed. This is not a substitute for qualifying future deletion lifecycles when they are designed (§5).
 
-Physical limits are explicit: 16 MiB per canonical payload, 256 MiB per owning closure, 100,000 objects. Operations buffer bounded closures and may hold multiple copies. Compression, segment packing/extents, streaming large files, incremental persisted verification, authored refs, observation/checkpoints and in-place materialization remain unimplemented. Current loads/admissions revalidate complete closures, not just changed paths. Administration directories are assumed trusted against hostile concurrent replacement; project source and imported object streams are not trusted. Process termination around SQLite commit, concurrent CAS/dedup, corruption and independent-store round trips are tested; the complete fault matrix and OS/device power-loss behavior are **not qualified**.
+Physical limits are explicit: 16 MiB per canonical payload, 256 MiB per owning closure, 100,000 objects. Operations buffer bounded closures and may hold multiple copies. The SQL engine's row-length limit is set to 16 MiB + 1024 bytes of record overhead on every open (and verified after setting), bounding BLOB materialization inside SQLite before Rust validation. Compression, segments/extents, streaming beyond these bounds, incremental persisted verification, authored refs, observation/checkpoints and in-place materialization remain unimplemented or deferred (§5). Current loads/admissions revalidate complete closures, not just changed paths. Administration directories are assumed trusted against hostile concurrent replacement; project source and imported object streams are not trusted. Process termination around SQLite commit, concurrent CAS/dedup, corruption and independent-store round trips have passing tests on both November 6 control variants ([research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)); the complete fault matrix, final qualification of the schema-2 store and OS/device power-loss behavior are **not qualified** (§9).
 
-Initialization and every recognized reopen complete directory installation sync and a checked SQLite `FULL` WAL checkpoint before returning a write-capable handle. Receipt replay uses the same fence: a visible recovered commit is not enough to acknowledge durability. A busy or incomplete checkpoint returns `DurabilityPending`; it can reduce availability while another reader/writer holds a snapshot. SQLite alone owns database/WAL descriptors—opening and closing an unrelated descriptor for its database can release POSIX locks. Request preparation still reads prior receipt and selection in one SQLite snapshot.
+Initialization and every recognized reopen complete directory installation sync and a checked SQLite `FULL` WAL checkpoint before returning a write-capable handle. Receipt replay uses the same fence: a visible recovered commit is not enough to acknowledge durability. A busy or incomplete checkpoint returns `DurabilityPending`; it can reduce availability while another reader/writer holds a snapshot. SQLite alone owns database/WAL descriptors—**nothing outside SQLite opens and syncs `store.sqlite`**; opening and closing an unrelated descriptor for its database can release POSIX locks. Request preparation reads prior receipt and selection in one SQLite snapshot.
 
 Every operation on a repository handle rejects a surviving transaction with `RecoveryRequired`. COMMIT failure does not imply rollback succeeded: if cleanup also fails, the handle must be dropped before reopening, never allowed to report its own uncommitted receipt. The library-owned `export_file` completes exclusive creation, checked platform file sync (including macOS F_FULLFSYNC), parent-directory sync and a final file/device flush; the generic writer export leaves publication to its caller.
 
+Reading an existing immutable object verifies its typed hash and canonical length **and the presence of a row for every direct owned dependency**. A deleted payload row is damaged storage reported as `MissingObject`, never a cache miss that admission silently repairs by re-inserting. A regression permitting such silent repair failed before its fix and now passes.
+
+One closed `store.sqlite` file is **not a safe online copy**: an active WAL may own committed transactions the main file does not contain. The supported transfer is the object-only export below, which carries one exact source root and never receipts or local state.
+
 `src/materialize.rs` and `restore` implement fresh-directory output only: preflight the complete source and resource/platform bounds, exclusively create the destination, use anchored Unix directory handles without following symlink parents, and sync output files/directories. Preserve exact file bytes, executable bits, symlinks and empty directories. Conflicts refuse before creation. An error can leave an incomplete new directory, retained for inspection; there is no automatic cleanup, resume journal, workspace registration or overwrite of an existing destination. This is not the in-place materialization/recovery protocol below.
 
-The target protocols below remain release requirements, not guarantees inferred from this subset. The CLI requires explicit `--experimental` for repository mutations and makes no important-source custody claim.
+The target protocols below remain release requirements, not guarantees inferred from this subset. The CLI requires explicit `--experimental` for repository mutations and makes **no claims** of authored history, workspace capture, qualified custody, OS/device power-loss survival or native hosting.
 
-## 1. Chosen engine and directory ownership
+## 1. Chosen engine and store ownership
 
-- Rust library with one **SQLite WAL/FULL metadata authority**, short transactions and process-safe writer coordination; no mandatory daemon.
-- Immutable physically compressed **object segment files** for large data, optional small objects stored inline in SQLite. This is a storage implementation choice, **not a canonical format restriction**. No Git packfiles in native identity.
-- Stable object IDs are hashes of canonical *uncompressed* payloads. Physical coding can use raw or Zstandard; the initial policy uses raw below 1 KiB, Zstd level 1 otherwise only when compressed output saves meaningful bytes. A future measured policy can change this without changing source IDs.
-- Segments are immutable, addressed through SQLite object-location rows. A physical segment can contain many small objects; large Blob data can be streamed into multiple **physical extents** without changing one logical BlobId. Each extent carries length and checksum, and the ordered index reconstructs exact logical payload bytes. A partial extent/range read is not independently authenticated by the whole-Blob BLAKE3 ID until the complete Blob has been reconstructed and hashed, unless separately checked via an authorized trusted manifest; do not label it fully verified prematurely.
-- Physical target: approximately 64 MiB of compressed payload per sealed segment with bounded memory buffering, but never require a whole large file or whole segment in RAM. Targets and compression levels are **tunable storage policy**, not canonical wire bytes.
+- Rust library with one **SQLite WAL/FULL store** owning canonical payload rows, the selection and immutable receipts, short transactions and process-safe writer coordination; no mandatory daemon. No backend flag, provider trait or alternate physical store.
+- Every supported bounded payload lives in one `objects` row. Stable object IDs are typed hashes of canonical payload bytes. **Canonical v1 IDs and the `AVCEXP01` object-only stream are independent of physical storage and unchanged by schema 2.** No Git packfiles in native identity.
+- Physical compression, segments/extents and streaming beyond the 16 MiB payload bound are **deferred**, to be introduced only on measured need (for example bounded-RAM streaming of larger payloads, or demonstrated WAL/checkpoint amplification at sustained multi-GiB scale). They would be physical choices that cannot change canonical IDs. The November 6 equivalent-work control ([research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)) found no measured benefit for the hybrid at the supported bounds; segments are not part of the selected architecture.
 - Initial repository layout (implementation may change cosmetic paths only before release):
 
 ```text
 .avc/
-  store.sqlite                # SQLite authority; WAL/SHM files managed by SQLite
-  objects/
-    staged/                   # unacknowledged physical segments
-    sealed/                   # immutable, durably installed segments
-  tmp/                        # recovery and materialization staging, explicitly tracked
-  lock                        # local segment installer/GC coordination, not source identity
+  store.sqlite                # the whole physical store; WAL/SHM files managed by SQLite
 ```
 
-Repository format/schema version and instance ID belong to SQLite (`application_id`, `user_version` and the repository row), not a competing mutable manifest. Paths under `.avc` are excluded from source capture even when users pass broad patterns. Never silently import, overwrite or delete a preexisting old `.avc` layout. `init` refuses unknown/legacy content unless an explicit, separately qualified migration or fresh path is chosen. Avoid storing credentials in source or diagnostic dumps.
+Repository format/schema version and instance ID belong to SQLite (`application_id`, `user_version` and the repository row), not a competing mutable manifest. **Physical schema 2** (`user_version = 2`) is current. Opening any other schema version or an unrecognized database is a clear refusal with **no automatic migration**; `init` refuses any existing `.avc`, including an earlier schema-1 hybrid layout or any other unsupported store. Paths under `.avc` are excluded from source capture even when users pass broad patterns. Never silently import, overwrite or delete a preexisting `.avc` layout. Avoid storing credentials in source or diagnostic dumps.
 
 ## 2. SQLite authority and local record model
 
-This is the **minimum logical schema**; indexes and row normalization are implementation choices as long as constraints are preserved transactionally.
+This is the **minimum logical schema**; indexes and row normalization are implementation choices as long as constraints are preserved transactionally. Schema 2 implements:
 
 | Record | Key and important fields | Protected effect |
 | --- | --- | --- |
-| `objects` | typed ObjectId, canonical length, location (inline or segment/extents), validated codec/version, verification state | Exact physical source bytes and dedup |
-| `segments` | segment ID, immutable path, length/checksum, state, generation | Which physical payloads may be read/retired |
+| `repository` | singleton row, 16-byte instance ID | Store identity |
+| `objects` | typed ObjectId primary key (33 bytes), canonical length 0..=16 MiB, `payload BLOB NOT NULL` with `length(payload) = length` | Exact canonical source bytes and dedup; immutable by trigger |
+| `selection` | singleton row, root ObjectId, monotonic generation | Atomic CAS selection advance |
+| `operations` | request key (1..=1024 bytes), before/after roots and consecutive generations | Immutable idempotent retry receipts; before/after source in one transaction |
+
+Later metadata remains future planning owned here; none of it exists today:
+
+| Record | Key and important fields | Protected effect |
+| --- | --- | --- |
 | `refs` | scoped ref name, target RevisionId, monotonic generation, retention policy | Atomic local published/draft/work selections |
 | `workspace` | identity, path binding, selected revision/base, generation, active work association | Which source a directory is intended to show |
 | `work` | stable local work ID, current base/candidate, protection state, owner workspace, generation | Resume unfinished work without a fake authored commit |
 | `checkpoints` | capture ID, base, protected exact source root or captured entries, path/origin scope, exclusions, expiry or explicit pin | Private recovery with truthful retention |
-| `operations` | op ID, kind, scope, expected generations, before/after metadata, state, idempotency key | Local undo and interrupted effects |
+| `operations` (extended) | kind, scope, expected generations, state beyond the retry receipt | Local undo and interrupted effects |
 | `materializations` | op ID, exact before-image witnesses, planned path writes/removes, staged output and reconciliation state | Safe non-atomic multi-file checkout/restore |
-| `reader_leases` | unique session, protected segments/generation, liveness heartbeat or lock proof | Prevent deletion while readers use immutable files |
 | `remote_tracking` | remote/ref, foreign/native identity mapping, fetched frontier/availability, last known remote generation | Git/native sync is not an extra source authority |
 | `object_promises` | authenticated native holder, target IDs/root, expiry/availability scope | Distinguish intentional missing objects from corruption |
-| `gc_state` | generation, pending retired segments and root-sweep cursor | Incremental safe reclamation |
+
+Deletion/GC state and reader-lease records do not exist and are not required while nothing is ever removed; they arrive only with a measured reclamation need and a reviewed lifecycle (§5).
 
 A transaction updates all *local mutable metadata* it owns under expected generation checks. SQLite is the single local ref/receipt authority; do not introduce independent authoritative JSON manifests or a second on-disk ref store.
 
-**Concurrency:** multiple read transactions and immutable object readers operate concurrently. A local short `BEGIN IMMEDIATE` transaction serializes metadata writes (appropriate on a single device); logical independent workspaces still advance via per-workspace/ref generation checks, not a global mutable `HEAD` inferred from content. A failed expected-generation CAS returns `Stale` with no ref change and retains any prepared objects under their stated temporary protection. Never automatically retry an effectful operation against a newly observed revision without recomputing/representing the new plan.
+**Concurrency:** multiple read transactions and immutable object readers operate concurrently. A local short `BEGIN IMMEDIATE` transaction serializes metadata writes (appropriate on a single device); there is no separate filesystem installer lock because there is no filesystem installation. Logical independent workspaces still advance via per-workspace/ref generation checks, not a global mutable `HEAD` inferred from content. A failed expected-generation CAS returns `Stale` with no ref change and retains any prepared objects under their stated temporary protection. Never automatically retry an effectful operation against a newly observed revision without recomputing/representing the new plan.
 
 ## 3. Exact durable admission state machine
 
-An operation involving a protected new root uses the following order. The invariant is **durable data before durable references**:
+An operation involving a protected new root uses the following order. The invariant is **durable data before durable references**; in schema 2 both live in one SQLite transaction:
 
 ```text
 Prepare (no acknowledgement)
   -> Capture exact input bytes; compute typed BLAKE3 IDs and canonical objects
   -> Validate new nodes/edges, expected base, and relevant owning closure
-  -> Write bounded payload extents to staged segments; verify their checksums
-  -> fsync each new segment; install immutable final segment names
-  -> fsync the sealed/ directory (and new parent directory when created)
+  -> Verify already-retained objects: typed hash/length and owned dependency rows
   -> BEGIN IMMEDIATE SQLite transaction
-       install object locations and sealed segment rows
-       atomically CAS local expected ref/workspace generations
-       create retained root/pin and idempotent operation receipt
-       mark applicable old roots for later GC
-     COMMIT with synchronous=FULL
+       insert new bounded payload rows (typed ID, length, BLOB NOT NULL)
+       atomically CAS the selection generation
+       insert the immutable before/after receipt
+     COMMIT with WAL synchronous=FULL
   -> Acknowledge success
 ```
 
-Set and verify `journal_mode=WAL`, `synchronous=FULL`, `foreign_keys=ON`; use platform-appropriate sync calls and fail when the filesystem/VFS cannot honor declared durability. On macOS evaluate `fullfsync`/F_FULLFSYNC availability; on Linux evaluate file/parent-directory fsync behavior. SQLite protects the metadata transaction but **does not automatically make separate segment files durable**. This ordering is part of the API contract.
+Payload rows, the selection CAS and the receipt commit or roll back together. Concurrent same-content writers dedup into one immutable row; a recheck under the write transaction refuses a colliding row rather than accepting `INSERT OR IGNORE` results blindly.
 
-**Recovery/retry fence:** a complete WAL commit record may be visible after a failed final sync. Before acknowledging a recovered receipt, use SQLite's checked `PRAGMA main.wal_checkpoint(FULL)`: require no busy result and complete backfill, accepting the documented no-WAL counters only on a recognized WAL-configured handle. Release any local transaction before this fence. Do not substitute an empty transaction, a partial PASSIVE checkpoint or a raw `fsync` of the main database. A successful own FULL COMMIT already establishes its transaction's durability. A failed COMMIT/ROLLBACK leaving the connection non-autocommit retires that handle.
+Set and verify `journal_mode=WAL`, `synchronous=FULL`, `foreign_keys=ON`; on macOS also set and verify `fullfsync` and `checkpoint_fullfsync`. Use platform-appropriate sync calls and fail when the filesystem/VFS cannot honor declared durability. On Linux evaluate file/parent-directory fsync behavior. There is no second durability domain outside the SQLite transaction.
 
-Object hash input is streaming over canonical uncompressed bytes. The physical payload header/index includes codec ID, encoded and decoded length, checksum and bounded count; on read, check lengths and frame bounds before allocating, verify physical checksums, then canonical BLAKE3 ID. A corrupt segment is not a normal cache miss for a retained locally complete root.
+**Recovery/retry fence:** a complete WAL commit record may be visible after a failed final sync. Before acknowledging a recovered receipt, use SQLite's checked `PRAGMA main.wal_checkpoint(FULL)`: require no busy result and complete backfill, accepting the documented no-WAL counters only on a recognized WAL-configured handle. Release any local transaction before this fence. Do not substitute an empty transaction, a partial PASSIVE checkpoint or a raw `fsync` of the main database (which would also violate SQLite's descriptor ownership). A successful own FULL COMMIT already establishes its transaction's durability. A failed COMMIT/ROLLBACK leaving the connection non-autocommit retires that handle.
+
+On read, check declared lengths and bounds before allocating, then verify the canonical typed BLAKE3 ID and the presence of direct owned dependency rows. A corrupt or incomplete row is not a normal cache miss for a retained locally complete root.
 
 **Crash outcomes:**
 
 | Crash point | Acceptable recovery |
 | --- | --- |
-| Before seal+directory sync | Staged/truncated objects untrusted; no acknowledged root; cleanup only after checking pins and active sessions |
-| After physical seal, before SQLite commit | Extra unreachable sealed object bytes can be reclaimed later; refs unchanged |
+| Before SQLite COMMIT | Prepared inserts roll back; no acknowledged root; nothing to clean up |
 | During SQLite transaction | Transaction fully committed or rolled back per verified SQLite guarantees |
-| After SQLite commit, before client response | Operation **may have succeeded**; retry by stable idempotency key to obtain exact result; never execute an unknown-effect repeat |
-| During compaction or segment retirement | Either old complete location or new complete location remains readable through active leases; no acknowledged root loses closure |
+| After SQLite commit, before client response | Operation **may have succeeded**; retry by stable request key returns the exact original receipt; never execute an unknown-effect repeat |
+| COMMIT and ROLLBACK both failing | Handle reports `RecoveryRequired`; drop and reopen before any acknowledgement |
 
-Allow concurrent staging, but serialize sealing/location installation/retirement with a short process-safe lock. Do not rely solely on PID numbers for stale-lock/lease detection. Filesystem durability assumptions and unsupported network/overlay filesystems must be explicit; if they cannot be checked, refuse a **durable guarantee** rather than quietly weaken it.
+Filesystem durability assumptions and unsupported network/overlay filesystems must be explicit; if they cannot be checked, refuse a **durable guarantee** rather than quietly weaken it.
 
 ## 4. Verification, closure and physical identity
 
 **Full ownership closure** of a protected local **complete** revision includes its root tree, every map node, referenced Blob, Conflict terms and revision ancestors. A checkpoint may own a specific captured candidate source and its recorded base; an operation in progress owns exact before-images and staged outputs until resolution. Source metadata pointing to an unrelated input by ID is not automatically an owning retention edge; label non-owning audit commitments separately.
 
+Reading any retained immutable object verifies its typed hash and canonical length and requires a row for every direct owned dependency; a missing dependency row is damaged storage, not a cache miss and not something admission may silently repair by re-inserting.
+
 Object admission need not *re-hash or traverse* every unchanged subtree on every edit: immutable verified base roots and trusted cached node summaries can establish ownership of already retained subtrees. Newly admitted objects and all changed owning links must be validated. **Importing untrusted roots** requires full verification or a verified trusted authority with explicit signed/path commitments. Never use a borrowed verification flag from a different codec version/authority.
 
 A thin local repository has **incomplete custody** even if its selected root hash is authentic. Promised objects can be deleted from a disposable *cache* when redownloadable and policy allows; they cannot be deleted from a declared complete offline root. For `verify`, report `complete`, `partial-promised`, `missing-unexpected`, `corrupt`, or `denied`, not one misleading green result.
 
-## 5. Reader isolation, compaction and GC
+## 5. Deletion, GC and deferred physical work
 
-- A reader obtains an immutable snapshot of logical object locations/ref generations and pins the physical segments it may access, using an OS/process-safe lease or a bounded SQLite read transaction. A segment cannot be retired until all readers with an applicable snapshot are released. Readers must not depend on a lease that can silently expire mid-read without notice.
-- Compaction writes a **new sealed immutable segment** containing equivalent canonical payloads (possibly reencoded or deduplicated), validates it, fsyncs it, atomically changes object-location rows, then waits for older readers before deleting old segments. Old and new physical payloads have the same canonical ObjectIds. Compaction failure leaves old location authoritative.
-- GC uses a mark-and-sweep root set of all retained authored refs, pinned checkpoints, active unfinished work, materialization receipts/before-images, exports in flight, remote outbox roots, and active query leases. Separate **unreachable** payloads from promised-but-not-local remote objects. Do not use non-owning change lineage or mere mention in an audit report as an indefinite retention pin.
-- Mark over exact owning edges with resource-bounded resumable traversal and protected-root generation fencing. If roots change while a sweep runs, restart/extend marking or fence all newly added roots before retirement; never collect on an obsolete root snapshot alone.
-- Quota exhaustion or missing payload during a protected operation **refuses before destructive filesystem writes**. Background cleanup may not silently weaken an acknowledged explicit pin. Retention policies are disclosed; no claim about indefinite retention after an acknowledged expiration.
+Nothing is deleted today: no GC, compaction, vacuum policy, location replacement or reader leases exist, and retained rows are immutable and never removed. Concurrent readers need no lease while that holds.
 
-**Checkpoint defaults:** explicitly pinned checkpoints stay until explicit discard; automatically generated *routine* protection may expire after **seven days**, but only when its exact expiry was disclosed at acknowledgement. Preserved unfinished work survives ordinary checkpoint expiry until successful verified resume or explicit discard. The user can inspect and extend protection; GC of an expired checkpoint doesn't delete bytes still protected by another root or export. Change history retained by refs stays until refs/pins are deliberately moved/removed and GC actually reclaims it.
+Deletion/GC, compression, segments/extents and streaming beyond the bounded model are **deferred to measured need**, not part of the selected architecture. When such a need is demonstrated (reclaiming unreachable rows, bounded-RAM streaming past 16 MiB payloads, sustained large-blob WAL/checkpoint pressure), write and qualify the lifecycle here first: mark-and-sweep over exact owning edges from retained refs, pinned checkpoints, active unfinished work, materialization receipts/before-images and exports in flight; generation fencing against concurrent root changes; separation of unreachable payloads from promised-but-not-local remote objects; and refusal before destructive filesystem or row effects under quota exhaustion or missing payload. Do not use non-owning change lineage or mere mention in an audit report as an indefinite retention pin. Background cleanup may not silently weaken an acknowledged explicit pin.
+
+**Checkpoint defaults (future policy):** explicitly pinned checkpoints stay until explicit discard; automatically generated *routine* protection may expire after **seven days**, but only when its exact expiry was disclosed at acknowledgement. Preserved unfinished work survives ordinary checkpoint expiry until successful verified resume or explicit discard. The user can inspect and extend protection; reclaiming an expired checkpoint doesn't delete bytes still protected by another root or export. Change history retained by refs stays until refs/pins are deliberately moved/removed and any future GC actually reclaims it.
 
 ## 6. Filesystem observation and materialization
 
@@ -148,7 +150,7 @@ A **native self-contained export** chooses exact roots/ref generations and an ex
 
 An export manifest includes format/protocol version, chosen refs/roots, source repo instance ID, exact protected histories, foreign import metadata when selected, object count/checksums, and proof that EOF/manifest was completed. Do not include excluded private checkpoints or credentials by default. A backup includes mutable local refs/operation state only if explicitly requested; restoring shared Git identities or local filesystem locations may require a separate remap and does not grant publication permissions. An object-only export is not a complete workstation-environment snapshot.
 
-Validate backup by independently restoring into an empty store and checking source bytes, revision ancestry and manifest integrity; then run representative local clone, read and diff without contacting the source. Snapshotting only `store.sqlite` or only `objects/sealed` is not acceptable.
+Validate backup by independently restoring into an empty store and checking source bytes, revision ancestry and manifest integrity; then run representative local clone, read and diff without contacting the source. **Copying `store.sqlite` is not an acceptable backup**, even one "closed" file: an active WAL may own committed transactions the main file lacks, and an online copy races writers. Use a quiesced checked `FULL` checkpoint or SQLite's own backup mechanism for database-level snapshots; the object-only export below remains the supported source transfer.
 
 ### Experimental object-only source stream
 
@@ -173,6 +175,8 @@ Verify the outer completion hash **and** each canonical typed ID/context/complet
 
 ## 9. Engineering/qualification gates
 
-A Rust implementation needs deterministically injected failures at every file create/write/sync/seal, SQLite commit, rename, compaction location swap, reader release, GC deletion, materialization step, backup and restore stage. Check power-loss persistence with platform-specific tests **and** ordinary process crash/cancellation tests, not only symbolic lifecycle models. Verify against a second, SQLite-only durability control; retain the simpler implementation if hybrid costs outweigh real benefits at equivalent guarantees. Security checks include untrusted compressed lengths, path traversal, symlink parent attacks, permission failures, crash immediately after acknowledgement and stale readers.
+A Rust implementation needs deterministically injected failures at every SQLite begin/commit, quota/disk-full condition, sync call, ref CAS, backup and restore stage, and every filesystem step of fresh-directory materialization. Check power-loss persistence with platform-specific tests **and** ordinary process crash/cancellation tests, not only symbolic lifecycle models. Security checks include oversized declared lengths and payloads (including hostile import streams), path traversal, symlink parent attacks, permission failures and crash immediately after acknowledgement.
 
-**No claims of source custody until the real CLI entry point and independent restore pass these gates.**
+**Current qualification status:** common debug/release builds, cross-language Python vectors and the quota, rollback-failure, checkpoint-fence, POSIX-lock and process-crash suites passed on both variants of the November 6 control ([research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)). The deterministic native fault suite completed on macOS against the previous schema-1 hybrid (child `d05db92`: 210 source, 117 receipt, 51 export cases); **Linux runs and final qualification against the schema-2 store are pending and not claimed**. Still open: OS/device power-loss behavior, disk-full at every write/sync, and GC/workspace-protection/backup lifecycles when they are implemented. See the [roadmap](roadmap.md) for the live gate list.
+
+**No claims of source custody until the real CLI entry point and independent restore pass these gates.** The format remains unfrozen.

@@ -18,15 +18,15 @@ impl Repository {
     ) -> Result<Receipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
+        let mutation = Mutation::Commit { author, message };
+        if let Some(prior) = self.receipt(request_key)? {
+            return self.reconcile(prior, expected_generation, mutation);
+        }
         if author.trim().is_empty() {
             return Err(invalid("author must not be blank"));
         }
         if author.len() > crate::codec::MAX_AUTHOR || message.len() > crate::codec::MAX_MESSAGE {
             return Err(Error::Limit("revision metadata"));
-        }
-        let mutation = Mutation::Commit { author, message };
-        if let Some(prior) = self.receipt(request_key)? {
-            return self.reconcile(prior, expected_generation, mutation);
         }
         let current = self.status()?;
         if current.generation != expected_generation {

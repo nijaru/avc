@@ -350,14 +350,7 @@ impl Repository {
         if let Some(prior) = self.receipt(request_key)? {
             return self.reconcile(prior, expected_generation, mutation);
         }
-        if !matches!(
-            root.kind,
-            crate::MAP_LEAF_KIND | crate::MAP_BRANCH_KIND | crate::CONFLICT_KIND
-        ) {
-            return Err(invalid(
-                "selection requires a source root, not a revision or blob",
-            ));
-        }
+        require_source_root(root)?;
         i64::try_from(expected_generation).map_err(|_| Error::Limit("generation"))?;
         // Refuse known stale work before preparing data. Recheck under the write
         // transaction, including a receipt created by a concurrent same request.
@@ -511,11 +504,7 @@ impl Repository {
     /// The caller owns output flush/sync and atomic publication, if required.
     pub fn export(&self, root: Id, mut writer: impl Write) -> Result<()> {
         self.ensure_idle()?;
-        if root.kind == crate::REVISION_KIND {
-            return Err(invalid(
-                "source export does not include authored history; select a source root",
-            ));
-        }
+        require_source_root(root)?;
         let engine = self.load_root(root)?;
         let records = collect_closure(root, |id| encode_bounded(engine.object(id)?))?;
         let mut hash = blake3::Hasher::new();
@@ -544,6 +533,7 @@ impl Repository {
     /// leaves the incomplete output for inspection; existing paths are refused.
     pub fn export_file(&self, root: Id, path: &Path) -> Result<()> {
         self.ensure_idle()?;
+        require_source_root(root)?;
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -707,6 +697,18 @@ fn configure(connection: &Connection, initialize: bool) -> Result<()> {
     let foreign: bool = connection.pragma_query_value(None, "foreign_keys", |r| r.get(0))?;
     if sync != 2 || !foreign {
         return Err(invalid("SQLite FULL/foreign_keys unavailable"));
+    }
+    Ok(())
+}
+
+fn require_source_root(root: Id) -> Result<()> {
+    if !matches!(
+        root.kind,
+        crate::MAP_LEAF_KIND | crate::MAP_BRANCH_KIND | crate::CONFLICT_KIND
+    ) {
+        return Err(invalid(
+            "requires a source Map or root Conflict, not a Revision or Blob; authored history is not included in source transfers",
+        ));
     }
     Ok(())
 }

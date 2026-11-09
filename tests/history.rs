@@ -110,6 +110,12 @@ fn commit_retries_preserve_generated_identity_and_reject_cross_operation_key_reu
         original
     );
     assert_eq!(repo.status().unwrap(), latest.after);
+    for (author, message) in [("", "".to_owned()), ("Author", "x".repeat(1024 * 1024 + 1))] {
+        assert!(matches!(
+            repo.commit(author, &message, 0, "one"),
+            Err(Error::RequestKeyReuse(_))
+        ));
+    }
     for (author, message, generation) in [
         ("Other", "", 0),
         ("Author", "different", 0),
@@ -237,6 +243,17 @@ fn metadata_limits_and_source_only_transfer_have_explicit_boundaries() {
     let mut rejected = Vec::new();
     assert!(repo.export(revision, &mut rejected).is_err());
     assert!(rejected.is_empty());
+    let Entry::File { blob, .. } = engine.read(root, &[b"file".to_vec()]).unwrap() else {
+        panic!()
+    };
+    for id in [revision, blob] {
+        let path = project.path().join("must-not-create.avc");
+        assert!(repo.export_file(id, &path).is_err());
+        assert!(
+            !path.exists(),
+            "invalid source kind must refuse before creating an export"
+        );
+    }
     let mut bytes = Vec::new();
     repo.export(root, &mut bytes).unwrap();
     let fresh = tempfile::tempdir().unwrap();

@@ -10,8 +10,8 @@ pub const CONFLICT_KIND: u8 = 0x04;
 pub const REVISION_KIND: u8 = 0x05;
 const HASH_DOMAIN: &[u8] = b"AVC-OBJECT\0v1\0";
 const MAX_NIBBLES: usize = 510;
-const MAX_AUTHOR: usize = 4 * 1024;
-const MAX_MESSAGE: usize = 1024 * 1024;
+pub(crate) const MAX_AUTHOR: usize = 4 * 1024;
+pub(crate) const MAX_MESSAGE: usize = 1024 * 1024;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

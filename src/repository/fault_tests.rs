@@ -128,6 +128,20 @@ fn failed_commit_and_failed_rollback_cannot_acknowledge_own_uncommitted_receipt(
         repo.import(std::io::empty(), "must-not-read"),
         Err(Error::RecoveryRequired)
     ));
+    assert!(matches!(
+        repo.commit(
+            "Author",
+            "must not write",
+            before.generation,
+            "must-not-author"
+        ),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(
+        repo.revision(next_root),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(repo.log(None, 20), Err(Error::RecoveryRequired)));
     assert_restorable(&observer, before.root, 17);
     drop(repo);
     drop(observer);

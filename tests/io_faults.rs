@@ -10,7 +10,7 @@
 use avc::{
     Entry, Id, Object,
     engine::{Edit, Engine},
-    repository::{Receipt, Repository, Selection},
+    repository::{Operation, Receipt, Repository, Selection},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -382,6 +382,7 @@ fn check_selected(repository: &Repository, before: Selection, after: Selection, 
         assert_eq!(
             receipt,
             Some(Receipt {
+                operation: Operation::Source,
                 request_key: KEY.into(),
                 before,
                 after,
@@ -848,6 +849,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
     let after = Selection {
         root: intended(&bytes),
         generation: 2,
+        revision: None,
     };
     let baseline_project = h.scratch.path().join("baseline");
     copy_tree(seed.path(), &baseline_project);
@@ -1018,6 +1020,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
         seed.path(),
         &input,
         &Receipt {
+            operation: Operation::Source,
             request_key: KEY.into(),
             before,
             after,

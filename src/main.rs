@@ -1,4 +1,4 @@
-//! Thin experimental source CLI; no workspace scanner or implicit authoring.
+//! Thin experimental CLI; source selection and authored history are explicit.
 use avc::engine::{Edit, Engine, Limits, MergeBudget, Relocate};
 use avc::repository::{Receipt, Repository, Selection};
 use avc::{Entry, Id, Object};
@@ -10,7 +10,7 @@ use std::{
 use usage_rs::{Args, Cli, Subcommands};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// Experimental native source control. Not qualified for important-source custody.
+/// Experimental native version control. Unreleased format; keep independent backups.
 #[derive(Cli)]
 #[usage(bin = "avc", version)]
 struct CommandLine {
@@ -35,6 +35,8 @@ enum Command {
     Restore(Restore),
     Receipt(ReceiptArgs),
     Source(Source),
+    Commit(Commit),
+    Log(Log),
 }
 /// Initialize without reading or changing existing project files.
 #[derive(Args)]
@@ -55,7 +57,7 @@ struct Diff {
     left: Id,
     right: Id,
 }
-/// Verify complete selected source closure (not power-loss qualification).
+/// Verify the selected source or an explicit source/revision owning closure.
 #[derive(Args)]
 struct Verify {
     #[usage(long)]
@@ -89,6 +91,27 @@ struct Restore {
 #[derive(Args)]
 struct ReceiptArgs {
     request_key: String,
+}
+/// Author the selected source, not live filesystem files. Does not scan a workspace.
+#[derive(Args)]
+struct Commit {
+    /// Author identity, supplied explicitly or through AVC_AUTHOR.
+    #[usage(long, env = "AVC_AUTHOR")]
+    author: String,
+    #[usage(long, short = 'm')]
+    message: String,
+    #[usage(long)]
+    expected_generation: u64,
+    #[usage(long)]
+    request_key: String,
+}
+/// Show newest-first first-parent history; source edits are not commits.
+#[derive(Args)]
+struct Log {
+    #[usage(long)]
+    revision: Option<Id>,
+    #[usage(long, default = "20")]
+    limit: usize,
 }
 /// Checkout-free conditional source operations. These do not author revisions.
 #[derive(Args)]
@@ -189,9 +212,17 @@ fn display_path(path: &[Vec<u8>]) -> String {
         .join("/")
 }
 fn print_receipt(receipt: &Receipt) {
+    let revision = receipt
+        .after
+        .revision
+        .map(|id| format!(" revision={id}"))
+        .unwrap_or_default();
     println!(
-        "root={} generation={} request={}",
-        receipt.after.root, receipt.after.generation, receipt.request_key
+        "root={} generation={} request={}{}",
+        receipt.after.root,
+        receipt.after.generation,
+        receipt.request_key.escape_debug(),
+        revision
     );
 }
 fn mutation_base(
@@ -331,15 +362,22 @@ fn relocate(repo: &mut Repository, args: Move, copy: bool) -> Result<Receipt> {
 fn run(cli: CommandLine) -> Result<()> {
     let mutating = matches!(
         cli.command,
-        Command::Init(_) | Command::Import(_) | Command::Source(_) | Command::Restore(_)
+        Command::Init(_)
+            | Command::Import(_)
+            | Command::Source(_)
+            | Command::Restore(_)
+            | Command::Commit(_)
     );
     if mutating && !cli.experimental {
-        return Err("writes require --experimental; keep independent backups (format and source custody are unqualified)".into());
+        return Err(
+            "writes require --experimental; the format is unreleased, so keep independent backups"
+                .into(),
+        );
     }
     if let Command::Init(_) = cli.command {
         Repository::init(&cli.repository)?;
         println!(
-            "Initialized experimental native source store; no revision authored; project files untouched."
+            "Initialized experimental native repository; no revision authored; project files untouched."
         );
         return Ok(());
     }
@@ -347,9 +385,16 @@ fn run(cli: CommandLine) -> Result<()> {
     match cli.command {
         Command::Init(_) => unreachable!(),
         Command::Status(_) => {
-            let Selection { root, generation } = repo.status()?;
+            let Selection {
+                root,
+                generation,
+                revision,
+            } = repo.status()?;
+            let revision = revision
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "unborn".to_owned());
             println!(
-                "Experimental native source store\nRoot: {root}\nGeneration: {generation}\nFilesystem: not scanned\nCustody: unqualified; run verify for present closure integrity only"
+                "Experimental native repository\nRoot: {root}\nRevision: {revision}\nGeneration: {generation}\nFilesystem: not scanned"
             );
         }
         Command::Show(args) => {
@@ -406,9 +451,7 @@ fn run(cli: CommandLine) -> Result<()> {
         Command::Verify(args) => {
             let root = selected(&repo, args.root)?;
             repo.load_root(root)?;
-            println!(
-                "Complete present closure verified: {root}\nNot a power-loss or source-custody qualification."
-            );
+            println!("Complete present closure verified: {root}");
         }
         Command::Export(args) => {
             let root = selected(&repo, args.root)?;
@@ -435,6 +478,38 @@ fn run(cli: CommandLine) -> Result<()> {
             print_receipt(&receipt);
         }
         Command::Source(args) => source(&mut repo, args.command)?,
+        Command::Commit(args) => {
+            let receipt = repo.commit(
+                &args.author,
+                &args.message,
+                args.expected_generation,
+                &args.request_key,
+            )?;
+            print_receipt(&receipt);
+        }
+        Command::Log(args) => {
+            let records = repo.log(args.revision, args.limit)?;
+            let mut output = std::io::stdout().lock();
+            for (id, revision) in records {
+                let change: String = revision
+                    .change
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                writeln!(
+                    output,
+                    "Revision: {id}\nChange: {change}\nSource: {}\nAuthor: {}\nTime: {} ns UTC (offset {} minutes)",
+                    revision.root,
+                    revision.author.escape_debug(),
+                    revision.time_ns,
+                    revision.timezone_minutes
+                )?;
+                for parent in revision.parents {
+                    writeln!(output, "Parent: {parent}")?;
+                }
+                writeln!(output, "Message: {}\n", revision.message.escape_debug())?;
+            }
+        }
     }
     Ok(())
 }

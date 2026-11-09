@@ -1,4 +1,4 @@
-//! Experimental local storage, not a qualified source-custody implementation.
+//! Experimental local storage and authored history, using SQLite WAL/FULL.
 //!
 //! SQLite WAL/FULL owns canonical payloads, the selection and immutable receipts
 //! in the same transaction.
@@ -39,7 +39,9 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+
+mod history;
 const EXPORT_MAGIC: &[u8; 8] = b"AVCEXP01";
 const EXPORT_END: &[u8; 8] = b"AVCEND01";
 
@@ -120,18 +122,48 @@ fn limits() -> Limits {
     }
 }
 
-/// A source-root-only local pin, not an authored revision. Authored revision
-/// admission and selection are deferred; initialization creates no revision.
+/// The selected source and last authored revision share one CAS generation.
+/// Source edits preserve the revision; initialization authors no revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Selection {
     pub root: Id,
     pub generation: u64,
+    pub revision: Option<Id>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Operation {
+    Source,
+    Commit,
+}
+impl Operation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Mutation<'a> {
+    Source { root: Id, empty_only: bool },
+    Commit { author: &'a str, message: &'a str },
+}
+impl Mutation<'_> {
+    fn operation(self) -> Operation {
+        match self {
+            Self::Source { .. } => Operation::Source,
+            Self::Commit { .. } => Operation::Commit,
+        }
+    }
 }
 
 /// Immutable private retention of both selections. Not exported by `export`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Receipt {
     pub request_key: String,
+    pub operation: Operation,
     pub before: Selection,
     pub after: Selection,
 }
@@ -171,7 +203,7 @@ impl Repository {
             params![root.to_bytes()?.as_slice(), payload.len() as i64, payload],
         )?;
         tx.execute(
-            "INSERT INTO selection VALUES (1, ?1, 0)",
+            "INSERT INTO selection VALUES (1, ?1, 0, NULL)",
             [root.to_bytes()?.as_slice()],
         )?;
         tx.commit()?;
@@ -255,7 +287,9 @@ impl Repository {
         let tx = self.connection.unchecked_transaction()?;
         let previous = match receipt(&tx, request_key)? {
             Some(prior) => {
-                if prior.before.generation != expected_generation {
+                if prior.operation != Operation::Source
+                    || prior.before.generation != expected_generation
+                {
                     return Err(Error::RequestKeyReuse(request_key.to_owned()));
                 }
                 prior.before
@@ -299,10 +333,10 @@ impl Repository {
         expected_generation: u64,
         request_key: &str,
     ) -> Result<Receipt> {
-        self.commit(engine, root, expected_generation, request_key, false)
+        self.admit_source(engine, root, expected_generation, request_key, false)
     }
 
-    fn commit(
+    fn admit_source(
         &mut self,
         engine: &Engine,
         root: Id,
@@ -312,8 +346,9 @@ impl Repository {
     ) -> Result<Receipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
+        let mutation = Mutation::Source { root, empty_only };
         if let Some(prior) = self.receipt(request_key)? {
-            return same_request(prior, root, expected_generation);
+            return self.reconcile(prior, expected_generation, mutation);
         }
         if !matches!(
             root.kind,
@@ -323,16 +358,14 @@ impl Repository {
                 "selection requires a source root, not a revision or blob",
             ));
         }
-        let expected =
-            i64::try_from(expected_generation).map_err(|_| Error::Limit("generation"))?;
+        i64::try_from(expected_generation).map_err(|_| Error::Limit("generation"))?;
         // Refuse known stale work before preparing data. Recheck under the write
         // transaction, including a receipt created by a concurrent same request.
         let current = self.status()?;
         if current.generation != expected_generation || (empty_only && current.generation != 0) {
-            // A concurrent identical request may have committed between the
-            // first receipt lookup and the selection read.
+            // Reconcile an identical request that won the race to selection.
             if let Some(prior) = self.receipt(request_key)? {
-                return same_request(prior, root, expected_generation);
+                return self.reconcile(prior, expected_generation, mutation);
             }
             if empty_only {
                 return Err(Error::NotEmpty);
@@ -354,16 +387,35 @@ impl Repository {
                 prepared.push((id, payload));
             }
         }
+        self.publish(expected_generation, request_key, prepared, mutation)
+    }
+
+    fn publish(
+        &mut self,
+        expected_generation: u64,
+        request_key: &str,
+        prepared: Vec<(Id, Vec<u8>)>,
+        mutation: Mutation<'_>,
+    ) -> Result<Receipt> {
+        let expected =
+            i64::try_from(expected_generation).map_err(|_| Error::Limit("generation"))?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if let Some(prior) = receipt(&tx, request_key)? {
             tx.rollback()?;
             durability_fence(&self.connection)?;
-            return same_request(prior, root, expected_generation);
+            return self.reconcile(prior, expected_generation, mutation);
         }
         let before = selection(&tx)?;
-        if empty_only && before.generation != 0 {
+        if matches!(
+            mutation,
+            Mutation::Source {
+                empty_only: true,
+                ..
+            }
+        ) && before.generation != 0
+        {
             return Err(Error::NotEmpty);
         }
         if before.generation != expected_generation {
@@ -377,43 +429,75 @@ impl Repository {
             .ok_or(Error::Limit("generation exhausted"))?;
         // Previously verified rows cannot change or disappear. Keep full reads
         // outside the write transaction except for new concurrent dedup winners.
-        for (id, payload) in prepared {
-            // Recheck concurrent dedup winners rather than accepting a corrupt
-            // existing row with INSERT OR IGNORE.
-            if let Some(stored) = read_object_optional(&tx, id)? {
-                if stored != payload {
-                    return Err(invalid("object collision"));
+        insert_objects(&tx, prepared)?;
+        let after = match mutation {
+            Mutation::Source { root, .. } => Selection {
+                root,
+                generation: next as u64,
+                revision: before.revision,
+            },
+            Mutation::Commit { author, message } => {
+                let (id, payload) = history::prepare(&tx, before, author, message)?;
+                insert_objects(&tx, [(id, payload)])?;
+                Selection {
+                    root: before.root,
+                    generation: next as u64,
+                    revision: Some(id),
                 }
-            } else {
-                tx.execute(
-                    "INSERT INTO objects VALUES (?1, ?2, ?3)",
-                    params![id.to_bytes()?.as_slice(), payload.len() as i64, payload],
-                )?;
             }
-        }
-        let changed = tx.execute("UPDATE selection SET root = ?1, generation = ?2 WHERE singleton = 1 AND generation = ?3", params![root.to_bytes()?.as_slice(), next, expected])?;
+        };
+        let before_revision = before.revision.map(Id::to_bytes).transpose()?;
+        let after_revision = after.revision.map(Id::to_bytes).transpose()?;
+        let changed = tx.execute(
+            "UPDATE selection SET root = ?1, generation = ?2, revision = ?3 WHERE singleton = 1 AND generation = ?4",
+            params![after.root.to_bytes()?.as_slice(), next, after_revision.as_ref().map(|id| id.as_slice()), expected],
+        )?;
         if changed != 1 {
             return Err(invalid("selection singleton/CAS invariant"));
         }
         tx.execute(
-            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 request_key,
+                mutation.operation().as_str(),
                 before.root.to_bytes()?.as_slice(),
                 expected,
-                root.to_bytes()?.as_slice(),
-                next
+                before_revision.as_ref().map(|id| id.as_slice()),
+                after.root.to_bytes()?.as_slice(),
+                next,
+                after_revision.as_ref().map(|id| id.as_slice())
             ],
         )?;
         tx.commit()?;
         Ok(Receipt {
             request_key: request_key.to_owned(),
+            operation: mutation.operation(),
             before,
-            after: Selection {
-                root,
-                generation: next as u64,
-            },
+            after,
         })
+    }
+
+    fn reconcile(&self, prior: Receipt, expected: u64, mutation: Mutation<'_>) -> Result<Receipt> {
+        let same = prior.operation == mutation.operation() && prior.before.generation == expected;
+        let same = same
+            && match mutation {
+                Mutation::Source { root, .. } => prior.after.root == root,
+                Mutation::Commit { author, message } => {
+                    let id = prior
+                        .after
+                        .revision
+                        .ok_or_else(|| invalid("commit receipt has no revision"))?;
+                    let revision = history::read_revision(&self.connection, id)?;
+                    revision.author == author
+                        && revision.message == message
+                        && revision.root == prior.after.root
+                        && revision.parents == prior.before.revision.into_iter().collect::<Vec<_>>()
+                }
+            };
+        if !same {
+            return Err(Error::RequestKeyReuse(prior.request_key));
+        }
+        Ok(prior)
     }
 
     fn read_object(&self, id: Id) -> Result<Vec<u8>> {
@@ -426,6 +510,12 @@ impl Repository {
     /// Failure can leave a partial output; only the complete stream is importable.
     /// The caller owns output flush/sync and atomic publication, if required.
     pub fn export(&self, root: Id, mut writer: impl Write) -> Result<()> {
+        self.ensure_idle()?;
+        if root.kind == crate::REVISION_KIND {
+            return Err(invalid(
+                "source export does not include authored history; select a source root",
+            ));
+        }
         let engine = self.load_root(root)?;
         let records = collect_closure(root, |id| encode_bounded(engine.object(id)?))?;
         let mut hash = blake3::Hasher::new();
@@ -517,7 +607,7 @@ impl Repository {
         if exact.len() as u64 != count {
             return Err(invalid("export contains non-owning objects"));
         }
-        self.commit(&engine, root, 0, request_key, true)
+        self.admit_source(&engine, root, 0, request_key, true)
     }
 }
 
@@ -531,14 +621,20 @@ CREATE TABLE objects (
 CREATE TABLE selection (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     root BLOB NOT NULL REFERENCES objects(id),
-    generation INTEGER NOT NULL CHECK(generation >= 0)
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    revision BLOB REFERENCES objects(id)
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit')),
     before_root BLOB NOT NULL REFERENCES objects(id),
     before_generation INTEGER NOT NULL CHECK(before_generation >= 0),
+    before_revision BLOB REFERENCES objects(id),
     after_root BLOB NOT NULL REFERENCES objects(id),
-    after_generation INTEGER NOT NULL CHECK(after_generation = before_generation + 1)
+    after_generation INTEGER NOT NULL CHECK(after_generation = before_generation + 1),
+    after_revision BLOB REFERENCES objects(id),
+    CHECK((kind = 'source' AND before_revision IS after_revision) OR
+          (kind = 'commit' AND before_root = after_root AND after_revision IS NOT NULL AND before_revision IS NOT after_revision))
 ) STRICT;
 CREATE TRIGGER objects_no_update BEFORE UPDATE ON objects BEGIN SELECT RAISE(ABORT, 'immutable object'); END;
 CREATE TRIGGER objects_no_delete BEFORE DELETE ON objects BEGIN SELECT RAISE(ABORT, 'retained object'); END;
@@ -615,46 +711,85 @@ fn configure(connection: &Connection, initialize: bool) -> Result<()> {
     Ok(())
 }
 
-fn selection(connection: &Connection) -> Result<Selection> {
-    let (root, generation): (Vec<u8>, i64) = connection.query_row(
-        "SELECT root, generation FROM selection WHERE singleton = 1",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+type StoredSelection = (Vec<u8>, i64, Option<Vec<u8>>);
+
+fn decode_selection((root, generation, revision): StoredSelection) -> Result<Selection> {
+    let root = Id::from_bytes(&root)?;
+    if !matches!(
+        root.kind,
+        crate::MAP_LEAF_KIND | crate::MAP_BRANCH_KIND | crate::CONFLICT_KIND
+    ) {
+        return Err(invalid("selection requires a source root"));
+    }
+    let revision = revision.map(|id| Id::from_bytes(&id)).transpose()?;
+    if revision.is_some_and(|id| id.kind != crate::REVISION_KIND) {
+        return Err(invalid("selection revision kind"));
+    }
     Ok(Selection {
-        root: Id::from_bytes(&root)?,
+        root,
+        revision,
         generation: generation
             .try_into()
             .map_err(|_| invalid("negative generation"))?,
     })
 }
+fn selection(connection: &Connection) -> Result<Selection> {
+    decode_selection(connection.query_row(
+        "SELECT root, generation, revision FROM selection WHERE singleton = 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?)
+}
 fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
-    let row: Option<(Vec<u8>, i64, Vec<u8>, i64)> = connection.query_row("SELECT before_root, before_generation, after_root, after_generation FROM operations WHERE request_key = ?1", [key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).optional()?;
-    row.map(|(before, bg, after, ag)| {
-        let before_generation = u64::try_from(bg).map_err(|_| invalid("receipt generation"))?;
-        let after_generation = u64::try_from(ag).map_err(|_| invalid("receipt generation"))?;
-        if before_generation.checked_add(1) != Some(after_generation) {
+    let row: Option<(String, StoredSelection, StoredSelection)> = connection.query_row(
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision FROM operations WHERE request_key = ?1",
+        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?))),
+    ).optional()?;
+    row.map(|(kind, before, after)| {
+        let before = decode_selection(before)?;
+        let after = decode_selection(after)?;
+        if before.generation.checked_add(1) != Some(after.generation) {
             return Err(invalid("receipt generation step"));
         }
+        let operation = match kind.as_str() {
+            "source" if before.revision == after.revision => Operation::Source,
+            "commit"
+                if before.root == after.root
+                    && after.revision.is_some()
+                    && before.revision != after.revision =>
+            {
+                Operation::Commit
+            }
+            _ => return Err(invalid("receipt operation")),
+        };
         Ok(Receipt {
             request_key: key.to_owned(),
-            before: Selection {
-                root: Id::from_bytes(&before)?,
-                generation: before_generation,
-            },
-            after: Selection {
-                root: Id::from_bytes(&after)?,
-                generation: after_generation,
-            },
+            operation,
+            before,
+            after,
         })
     })
     .transpose()
 }
-fn same_request(prior: Receipt, root: Id, expected: u64) -> Result<Receipt> {
-    if prior.after.root != root || prior.before.generation != expected {
-        return Err(Error::RequestKeyReuse(prior.request_key));
+
+fn insert_objects(
+    connection: &Connection,
+    records: impl IntoIterator<Item = (Id, Vec<u8>)>,
+) -> Result<()> {
+    for (id, payload) in records {
+        // Do not accept corrupt dedup winners or overwrite immutable objects.
+        if let Some(stored) = read_object_optional(connection, id)? {
+            if stored != payload {
+                return Err(invalid("object collision"));
+            }
+        } else {
+            connection.execute(
+                "INSERT INTO objects VALUES (?1, ?2, ?3)",
+                params![id.to_bytes()?.as_slice(), payload.len() as i64, payload],
+            )?;
+        }
     }
-    Ok(prior)
+    Ok(())
 }
 
 fn encode_bounded(object: &Object) -> Result<Vec<u8>> {

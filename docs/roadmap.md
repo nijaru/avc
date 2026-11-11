@@ -13,7 +13,15 @@
 
 - **Stage 3, first slice:** explicit `commit` of selected source, random ChangeIds, immutable parent-linked Revisions, first-parent `log`, status with authored head/unborn state and typed idempotent receipts. Source and authored head share one CAS generation. Actual CLI tests independently verify generated revision ancestry with Python; retry/concurrent-writer/rollback tests cover publication. Source export remains source-only, not authored-history backup.
 
-**Next implementation:** amend/rebase with stable ChangeIds and scoped undo, and the first Git interoperability round trip—not another storage qualification project. Git onboarding need not wait for capture, in-place overwrite or GC. The existing native fault suite exercises the common SQLite publication path; [Storage §9](storage.md#9-engineering-checks-and-scope) records its finite scope. Durable admission relies on SQLite WAL/FULL, not hardware certification. Further fault cases follow the features they protect; compression/streaming requires measured need. The storage-control comparison is complete ([research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)); SQLite-only remains the one backend. Stage 3 is partial, Stages 4–7 unimplemented, and the format is not frozen.
+### Delivery order from the current implementation
+
+1. **Portable authored history:** export selected revisions and their source/ancestor closure; restore exact IDs, parents and ChangeIds into a fresh store. This is a new history-transfer feature, not another storage qualification exercise.
+2. **Basic history editing:** amend the selected tip and add scoped metadata undo, then rebase one change onto an exact known revision. Retain old revisions and handle selected-but-uncommitted source explicitly.
+3. **Small Git round trip:** import one exact Git tip, author natively, export a representable child and independently verify its Git source and parent. This can land before all of Stage 3; it does not depend on advanced restacking or filtered Git support.
+4. **Ordinary filesystem capture:** support the human edit/select/commit path with pinned observed bytes and truthful scope. In-place switching and automatic checkpoints remain separate lifecycles.
+5. **Broaden supported workflows:** upstream Git synchronization, named refs/independent work selections, richer history editing and foreign partial views, then native partial clients and hosting.
+
+The stage numbers below group concerns, not a requirement to finish every feature in one stage before starting the next. SQLite-only remains the one backend; no hardware-certification, GC, compression or hosting prerequisite is added. Further checks follow the features they protect. Stage 3 is partial, Stages 4–7 unimplemented, and the format is not frozen.
 
 Current canonical checks are in the README. The independent reference's `--vectors` checks both byte grammar and rooted closure; `AVC_REFERENCE_CHECK=1 cargo test --locked --offline` also checks newly generated Rust roots against Python. The pure cost probe is `cargo run --release --locked --example source_cost -- 10000 [shared]`, not an end-to-end VCS benchmark.
 
@@ -32,7 +40,7 @@ Build immutable content objects and path-copy tree edits, not in-memory `FlatMap
 
 Use the **selected radix/32-leaf format**. No whole-system A/B architecture vote remains. Benchmark wide and shared-prefix directory edits, random insertion orders, empty directory retention, moves with/without trusted cached bound summary, cold lookups, Rust allocation, and incremental edit bytes. If real results expose an unacceptable failure, **change the unreleased format coherently**, not preserve a flawed threshold to match this plan.
 
-**Gate:** exact source equivalence to an independent flat-path oracle across randomized operation sequences; order-independent canonical roots; typed invalid input rejection; no need for full-tree walks on a normal one-file edit.
+**Pure-engine gate:** exact source equivalence to an independent flat-path oracle across randomized operation sequences; order-independent canonical roots; typed invalid input rejection; no full-tree walk for a normal in-memory one-file edit. This does not establish incremental repository-command performance; that remains work under Stage 2.
 
 ## Stage 1A: Research resolved
 
@@ -54,23 +62,59 @@ Fresh-directory materialization is implemented. When adding filesystem capture, 
 
 **Fault coverage:** deterministic failures at SQLite begin/commit boundaries, quota/disk-full conditions, sync calls, ref CAS, backup and restore stages, and materialization rename/removal steps, verifying byte-perfect restore after crash for every acknowledged root. Test corrupt/unexpectedly missing object rows, denied mutation boundaries, concurrent reader/writer, and case/symlink escape. This is scoped integration fault testing of AVC's own code paths, not OS/hardware power-loss certification. The equivalent-work control comparison decided the physical backend ([research §14](research.md#14-sqlite-only-storage-decision-and-equivalent-work-control-november-6-2026)); there is exactly one store, and no second physical backend is maintained.
 
-**Gate:** full native offline recovery independent of any server. The source slice meets it via independently checked export/import/restore (see README); commands remain labeled `--experimental` and the README's independent-backups warning stands while the format is unreleased.
+**Implemented acceptance:** independent offline source export/import/restore. This does **not** establish authored-history backup: current export omits Revisions and the authored head. Stage 3's portable-history slice closes that functional gap. Commands remain `--experimental` while the format is unreleased.
+
+**Repository incrementality remains incomplete:** source-edit/commit paths still load/verify complete source closures. Add store-backed object access and reuse of validated unchanged subtrees under [storage §4](storage.md#4-verification-closure-and-physical-identity), without another backend. Measure one-file edits through the real CLI; keep explicit full verification and untrusted-import validation. Separate per-object, source-operation, metadata-page and history-transfer budgets: current closure limits must not become a lifetime repository-size rule. Initial feature slices may retain declared aggregate limits and refuse oversized work, never truncate a purported complete result.
 
 ## Stage 3 — authoring, history and first-class conflicts
 
-**Implemented:** initial authoring, immutable single-parent ancestry, random ChangeIds, selection CAS, typed retry receipts and first-parent log. **Remaining:** use the Stage 1A change/merge counterexamples for amend/rebase/restack, named refs, exact lineage and scoped local operation-log undo. Implement recursive known-base merge and the selected normalized signed conflict objects, with lossless alternate binary/path/type/source values, bounded deterministic text driver, resolution, revert and repeated conflict rebase.
+**Implemented:** initial authoring, immutable single-parent ancestry, random ChangeIds, selection CAS, typed retry receipts and first-parent log. Deliver the remaining capabilities in small slices:
 
-Test incomplete/promised ancestry, **typed `AmbiguousMergeBase` refusal and explicit verified base selection** on multiple maximal bases, simultaneous conditional subtree moves and path-witness collisions, partial path edits, overlapping same-file hunks, symlink and directory transitions, merge of conflict-valued source, `absorb` suggestions on clearly attributable versus ambiguous hunks, and resource-failure-as-pending (not fabricated conflict).
+### Portable authored history — next
 
-**Gate:** repeated history rewrite and merge cannot silently discard source alternatives or invent parents; exact revision selection remains recoverable across interruption, and across GC if deletion is later added.
+Implement the selected-history transfer contract in [storage §8](storage.md#8-export-backup-and-disaster-recovery). Preserve canonical Revision IDs, ordered parents, ChangeIds, metadata and all owned source objects. Import into a fresh store, select the declared head/source and verify that history is usable without the original store or Git. Keep source-only transfer explicitly distinct; do not silently reinterpret `AVCEXP01` as a history bundle. Final framing/CLI spelling belongs to implementation of that contract, not a second specification here.
+
+**Acceptance:** fresh-store restore has identical revisions, ancestry and bytes; missing dependencies, corrupt payloads and incomplete completion records refuse without publishing a restored selection. Scope is selected history, not every receipt, private root or workstation setting.
+
+### Basic history editing
+
+First add tip amend and scoped metadata undo, then single-change rebase against fully known ancestry. Follow [UX §3](ux.md#3-exact-authoring-and-change-editing) for selected-source behavior and [storage §7](storage.md#7-operation-journal-and-retryundo) for publication/undo. Preserve ChangeId across rewrites, retain exact predecessor revisions, and commit new objects, selection and typed receipt together. Undo is a new generation-checked operation, never a rewind of generation counters or a filesystem restore.
+
+**Acceptance:** amend/rebase preserves identity and intended source; changed inputs and stale generations refuse; retry returns the original rewrite; undo restores the recorded source/head values under a new generation. Include unchanged/empty outcomes and divergent resolutions of a conflicted base. Keep `UnresolvedBase` where required: refusal is preferable to false-clean source loss. Do not claim arbitrary conflicted-history rebase is solved by the existing pure-source tests.
+
+### Ordinary filesystem capture
+
+After the initial Git round trip, add the ordinary edit/select/commit workflow using [storage §6](storage.md#6-filesystem-observation-and-materialization) and [UX §3](ux.md#3-exact-authoring-and-change-editing). Capture bytes once, preview/select that pinned candidate, report omitted/unreadable/raced paths and never infer deletion from a failed read. Capture alone need not implement in-place checkout, background checkpoints or a full workspace manager.
+
+**Acceptance:** a file changed after preview cannot silently enter the commit; cancellation authors nothing; unselected files stay untouched; observation scope is not represented as an atomic filesystem snapshot.
+
+### Later history capabilities
+
+Named refs and independent work selections need scoped generations, not additional names for the singleton global selection ([storage §2](storage.md#2-sqlite-authority-and-local-record-model)). Add descendant restacking, merge-parent authoring, exact split/fold/divergence lineage and richer resolution as their workflows are implemented. `absorb` and stack composition remain Stage 6, not prerequisites for Git onboarding.
+
+Use Stage 1A's exact counterexamples for known-base merges, ambiguous ancestry, move/path collisions, binary/type/symlink transitions and repeated conflicted rebase. Unknown ancestry and resource refusal must not become fabricated parents, clean values or semantic conflicts. Deletion/GC retention checks arrive only if deletion is implemented.
 
 ## Stage 4 — Git onboarding early
 
-Build on established Git partial-clone documentation and the bounded Stage 1A source-identity check. Implement [git.md](git.md) against mature Git client/library code, not a new Git pack protocol: exact selected-tip source conversion to native, **deterministic import anchor identical across two clients given the same Git commit/source**, foreign ancestry frontier, remote tracking, safe Git commit/tree export, push with lease and lost-response reconciliation. Validate with *actual Git* on a real small repository, not just AVC oracles.
+Use mature Git subprocess/library support and the boundary in [git.md](git.md), not a new pack protocol. Split ordinary onboarding from massive filtered repositories:
 
-Provide an **explicit** foreign partial view for massive filtered Git repos, including Git-relative path queries and conditional Git-native commits/push that reuse unchanged Git object IDs without full native import. Do not claim source-specific BLAKE3 IDs for unfetched blobs. Full native import from foreign view is a separately invoked hydrate/convert action. **Later hosting option:** if repeated clients suffer from full-tip native conversion, evaluate a shared, cacheable Git→AVC conversion service that reads/verifies all necessary Git bytes once and supplies authenticated native roots/objects to thin clients. This does not eliminate conversion work or create a second native history authority.
+### Small local round trip
 
-**Gate:** Git clone→native edit→native commit→Git push→independent Git byte/parent verification→upstream change→safe fetch/rebase/push; a blobless foreign agent can do Git-relative work without a false native root.
+Import a complete selected tip from an isolated small Git repository, create the deterministic native anchor and durable foreign-origin mapping, author a native child, then export a Git child of the exact original Git tip. Use a declared representable subset and report unsupported source/metadata before publication. No network hosting, sophisticated rewrite UX or foreign partial mode is needed for this slice.
+
+**Acceptance:** two imports of the same supported Git commit/source converge to the same anchor; stock Git independently verifies the exported bytes, executable/symlink modes and parent. Repeated translation does not duplicate imports or advance an unrelated ref.
+
+### Ordinary remote collaboration
+
+Add guarded tracking/fetch/push and lost-response reconciliation. Then exercise upstream advancement and a safe fetch/rebase/push cycle. Refuse stale leases and disclose foreign ancestry; never invent a native merge base across an unknown frontier.
+
+**Acceptance:** an isolated Git remote round trip preserves bytes and ancestry; an upstream race or unknown push response cannot silently overwrite remote work or duplicate publication.
+
+### Foreign partial views and broader compatibility
+
+Add explicitly foreign filtered views for huge Git sources separately. Reuse unchanged Git OIDs without claiming native BLAKE3 IDs for unfetched bytes; hydration/conversion stays explicit. Cover both Git hash algorithms, merge ancestry and other representability cases as support is added; unsupported cases must remain explicit refusals.
+
+A blobless foreign agent should eventually edit/push without a false native-root claim. The optional shared Git→AVC conversion cache remains deferred to demonstrated repeated conversion cost or hosted demand; it is not needed for ordinary local Git onboarding.
 
 ## Stage 5 — native partial-clone and checkout-free agent API
 
@@ -97,13 +141,12 @@ Only then profile hosting throughput and implement derived path history, blame, 
 
 ## Release standards and evidence
 
-Before a public stable format and release, require:
+Before declaring the supported format and workflows stable, require the checks below for that declared feature set. Later partial-client, hosted, GC and in-place-switching features bring their own checks; they are not prerequisites for delivering the earlier local/Git slices.
 
 - Independent codec vectors plus malformed inputs, fuzz and property oracles, including signed expression normalization, branch split/collapse and revision ancestry.
-- Durable complete-root acknowledgement, exact backup/restore and interrupted file switching under the declared failure model (documented SQLite WAL/FULL plus scoped syscall/process-crash tests—the ordinary VCS durability contract, not certification of every device or fault). GC safety joins the gate only when deletion/GC is implemented.
-- Explicit partial/foreign/missing/unauthorized states; authenticated membership/absence and no sibling-name leakage for restricted clients.
-- **Comparative product gate:** compare AVC against modern Git+Jujutsu, GitButler/Graphite stacks, and relevant Pijul/DeltaDB agent-edit models where task semantics overlap. Trial at least (a) normal Git clone/edit/push, (b) huge current-source path-scoped agents, (c) multiple concurrent source edits and restacks, and (d) interruption/recovery. Capture **time to first useful edit, complete-task p50/p95, network bytes, RAM/SSD, manual conflict fixes, false-clean results and safe recovery** under matched conditions. Judge foreign partial Git mode separately from native AVC. See [competitive falsification record](research.md#10-november-4-competitor-steelman-after-the-one-native-backend-decision). An incremental Merkle microbenchmark alone cannot justify an independent VCS.
-- Representative human and agent tasks against Git/Jujutsu where semantics match, cold/warm cache, SSD/RAM/CPU/network bytes, p50/p95, later history deepening and change-conflict burden.
+- Durable complete-root acknowledgement and exact backup/restore under the declared SQLite WAL/FULL plus scoped syscall/process-crash model, not device certification. Interrupted switching and GC safety join when overwrite and deletion are supported.
+- Explicit partial/foreign/missing/unauthorized states when those modes are supported; authenticated membership/absence and sibling-name confidentiality when restricted clients are supported.
+- **Comparative product evidence:** use existing research, then compare representative supported human/agent tasks against Git+Jujutsu and relevant stack/causal-edit tools where semantics match. Cover ordinary Git collaboration, path-scoped agents, concurrent edits/restacks and recovery as each workflow becomes available—not a blanket prerequisite to implement all of them first. Measure complete-task latency, resource use, conflict burden and recovery under matched cold/warm conditions before claiming comparative gains. Judge foreign partial Git separately from native AVC. See the [competitive falsification record](research.md#10-november-4-competitor-steelman-after-the-one-native-backend-decision); an incremental Merkle microbenchmark alone does not demonstrate product advantage.
 - Git interoperability with documented supported subset and exact refusal of lossy states; no silent move of foreign or public refs.
 - No implicit execution of untrusted source hooks or unsafe symlink/path traversal.
 

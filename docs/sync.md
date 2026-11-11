@@ -8,6 +8,10 @@ A clone chooses (1) exact requested ref/revision, (2) history horizon, (3) which
 
 Native default `avc clone URL`: resolve and pin the remote's advertised default ref (or requested ref) at one exact version; obtain its current logical tree and **full ordinary working directory** for typical repositories. Initially fetch **up to 64 first-parent revision metadata records**, not every old blob or every side-branch history. Ancestors outside the fetched horizon remain *promised*, not fabricated roots. A path-scoped or `--no-checkout` clone may skip unrelated current blobs; `--history=all` deepens the requested ancestry; `--full` hydrates **the complete owning closure of explicitly selected refs** and proves offline reconstructability.
 
+These are target clone semantics, not current repository behavior: today's complete-only reader requires referenced dependency rows. Partial metadata must instead carry explicit promises for unavailable source/ancestry; merely omitting blobs from the current store is corruption, not a thin clone. Reuse the same canonical objects and SQLite authority when adding promise-aware reads.
+
+History horizon, per-object size, transfer working memory and total retained history are separate bounds ([storage §4](storage.md#resource-scope-and-repository-incrementality)). Fetching 64 metadata records does not require all of their old source blobs, and a complete history transfer must not inherit a per-source 256 MiB lifetime limit. Declared resource refusal remains valid; silently truncating a complete export or rewriting missing ancestors as roots does not.
+
 For large monorepos, prioritize requested source paths and metadata-first queries; do not require a virtual filesystem, daemon, or whole checkout. For small projects, first useful source and normal editor compatibility matter more than minimizing transferred bytes. An exact pinned ref version never silently changes mid-fetch; an explicit later pull can choose a newer tip.
 
 ## 2. Availability and proof states

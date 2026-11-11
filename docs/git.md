@@ -74,7 +74,7 @@ The bridge may use `git` subprocesses because that delegates object/pack/negotia
 
 ## Long-term Git compatibility: one engine, multiple protocols
 
-**Permanent product direction:** Retain Git import/export and remote synchronization for as long as AVC supports existing Git-hosted users. When AVC hosts its own native repositories, add an **optional Git smart-protocol frontend** that serves ordinary Git clients from **the same native source and ref authority**. **Do not build or maintain a second Git-backed AVC storage/revision/working-copy backend.** This hosting frontend is a future capability; it is not part of the current unimplemented core.
+**Permanent product direction:** Retain Git import/export and remote synchronization for as long as AVC supports existing Git-hosted users. When AVC hosts its own native repositories, add an **optional Git smart-protocol frontend** that serves ordinary Git clients from **the same native source and ref authority**. **Do not build or maintain a second Git-backed AVC storage/revision/working-copy backend.** The native source/history core is partially implemented; the Git adapter and hosting frontend are not.
 
 ### Trust and representation boundaries
 
@@ -89,17 +89,22 @@ The bridge may use `git` subprocesses because that delegates object/pack/negotia
 
 ### Delivery sequence
 
-1. **Local Git remote bridge (early):** clone/import verified current Git tips, track foreign ancestry, author native revisions, export/push representable commits and reconcile remote changes. Support foreign Git partial views for huge Git sources without claiming a native root.
-2. **Native hosting foundation:** native object/proof API, authenticated refs, durable owning closure and exact CAS. No Git smart protocol is required for native-only users.
-3. **Git fetch frontend (later):** implement the necessary Git smart HTTP protocol v2 fetch/ls-refs, deterministic Git objects/pack production, stable mappings, ref visibility rules and cache correctness. Validate with unmodified Git clients and a range of repository shapes.
-4. **Git push frontend (after fetch qualification):** parse/verify received Git objects, convert representable ancestry/source to native revisions, enforce single-ref native CAS and Git fast-forward/force-lease authorization. Cover concurrent native/Git pushes, rewrites, lost acknowledgements and GC.
-5. **Optimize adoption-sensitive features:** partial clone filters, shallow/deepen behavior, multiple hash-algorithm repositories, annotated tags and caching only as demand justifies. Do not conflate limited interoperability with full parity across Git's entire object/protocol ecosystem.
+The [roadmap](roadmap.md#stage-4--git-onboarding-early) owns cross-project ordering. Git delivery is incremental, not an all-features gate:
+
+1. **Small local round trip (first):** import a verified complete Git tip into its deterministic native anchor, retain foreign-origin mapping, author a native child and export it with the exact original Git parent. Verify independently with stock Git. Declare the supported metadata/hash/source subset and refuse unsupported cases before effects. Existing native authoring is sufficient; advanced rewrite UX, filesystem capture, remote hosting and foreign partial mode are not prerequisites.
+2. **Ordinary remote collaboration:** guarded remote tracking/fetch/push, idempotent translation and lost-response reconciliation; then upstream advancement and safe fetch/rebase/push. Use isolated Git stores, not competing Git/AVC ownership of one working tree.
+3. **Foreign partial views and compatibility expansion:** support huge filtered Git sources separately, with explicit foreign identities and hydrate/convert boundaries. Add additional hash-algorithm, metadata and ancestry cases as supported; never present the initial subset as full Git parity.
+4. **Native hosting foundation:** native object/proof API, authenticated refs, durable owning closure and exact CAS. No Git smart protocol is required for native-only users.
+5. **Git fetch frontend (later):** necessary Git smart HTTP protocol v2 fetch/ls-refs, deterministic Git objects/packs, stable mappings, ref visibility and cache correctness. Validate with unmodified Git clients.
+6. **Git push frontend:** verify received Git objects, convert supported source/history and enforce native CAS plus Git old-OID/lease checks. Extend concurrency, response-loss and retention checks with this lifecycle.
+7. **Optimize on demand:** protocol partial-clone/shallow capabilities, tags and caching where actual adoption needs justify them.
 
 **Compatibility statement:** Users should eventually be able to collaborate with Git clients and Git hosts around representable history, not assume `git` commands can directly manipulate a local `.avc` database. GitHub/GitLab PRs and CI continue to operate on **exported Git commits**, not native-only objects. A Git frontend on AVC hosting does not automatically make AVC-hosted native-only revisions meaningful to ordinary Git tooling.
 
 ## Testable adoption contract
 
-- Clone a small normal Git repository, verify exact current source, amend/rebase natively, export and push, and independently verify the resulting source and Git ancestry.
+- First slice: import a small complete Git tip, author natively and export locally; stock Git verifies exact source and the original Git parent. Re-importing the same supported tip converges to the same native anchor.
+- Remote collaboration slice: add push, upstream advancement and native amend/rebase, independently verifying source and ancestry. This is not required to declare the first local translation slice complete.
 - Repeat import/export without duplicating native commits or advancing the wrong remote ref; handle an upstream force push and a lost push response.
 - Test merge parents, executable/symlink semantics, non-UTF8 metadata, Git LFS pointers, submodules, empty directories, signed objects, and both Git hash algorithms.
 - Clone a blobless/shallow *large* Git repository and perform a foreign patch/push without claiming native custody. Later convert to native only after full selected current source hydration.

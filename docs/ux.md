@@ -52,7 +52,11 @@ An unknown remote/recovery state is shown as unknown, never as safely synchroniz
 
 **Available now:** `avc --experimental commit --author 'Name <email>' -m MESSAGE --expected-generation N --request-key KEY` authors the already-selected source, without scanning or changing files. `AVC_AUTHOR` can supply author identity. Init authors nothing; explicit empty/unchanged-source commits are allowed. Source edits preserve the last authored head, while commit advances it under the same generation. Identical retries return the original Revision/ChangeId/time; changed identity or cross-operation key reuse refuses. `avc log [--revision ID] [--limit N]` shows newest-first first-parent metadata (default 20); `status` shows root, authored head/unborn and generation, never a fabricated filesystem-clean claim. Metadata output escapes terminal controls. Source `export`/`import` does not transfer this history.
 
-**Target capture/editing workflow (not implemented):**
+**Initial history-editing target (not implemented):** tip amend intentionally authors the selected source into a new Revision with the current change's ChangeId and parent list; it does not add the old tip as an extra parent. Single-change rebase applies that authored change against an exact new base, preserves its ChangeId and records the new parent. Initially require fully known supported ancestry and selected source equal to the authored head's source for rebase; otherwise refuse without changing either selection. Do not silently drop selected-but-uncommitted source, auto-stash it or include it in a replay. Descendant restacking and interactive capture are later capabilities.
+
+A rewrite reports an unchanged/empty result explicitly. A differing conflicted comparison base may return `UnresolvedBase` without publishing an output; do not imply that arbitrary conflicted histories can already be rebased. Scoped history undo restores recorded selection values under a new generation, not old generation counters, filesystem bytes or remote refs ([storage §7](storage.md#7-operation-journal-and-retryundo)).
+
+**Later capture/interactive workflow (not implemented):**
 
 ```sh
 avc status
@@ -67,7 +71,7 @@ avc history undo
 
 Once capture exists, the target default `commit` selects changed **tracked** files and proven deletions, but requires explicit path/interactive inclusion for **new** files; ignore rules are selection aids, not secret detection. Recursive directory deletion is conspicuously previewed and requires explicit selection. An unreadable path is not proof of deletion. Interactive file/hunk selection constructs and **pins an exact candidate** from captured bytes and recorded expected base; confirmation never rereads the working directory to silently include later edits. Cancellation authors nothing. Unselected edits remain live; unselected observed data may be privately checkpointed under explicit policy but isn't an unbounded permanent commit.
 
-History rewrite is an immutable new revision. A stable logical ChangeId can follow amend/rebase but `revision` references are exact. A change may become **empty** when its result is already present on the new base: report this explicitly, retain the old immutable revision under scoped undo protection, and do not promise that a later rebase will automatically reconstruct latent edit intent from an empty source diff. Split/fold creates explicit new identities and mappings. Shared refs never automatically follow a local rewrite. `history undo` conditionally returns the scoped *local history selection*; it does not claim to revert current filesystem files or remote publication.
+History rewrite is an immutable new revision. Amend/rebase preserves the logical ChangeId while `revision` references remain exact. A change may become **empty** when its result is already present on the new base: report this explicitly, retain the old immutable revision under scoped undo protection, and do not promise that a later rebase will automatically reconstruct latent edit intent from an empty source diff. Split/fold creates explicit new identities and mappings. Shared refs never automatically follow a local rewrite. `history undo` conditionally returns the scoped *local history selection*; it does not claim to revert current filesystem files or remote publication.
 
 ## 4. Switching, checkpointing and recovering
 

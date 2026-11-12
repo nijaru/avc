@@ -186,6 +186,210 @@ fn author(repo: &mut Repository, who: &str, key: &str) -> Id {
         .unwrap()
 }
 #[test]
+fn native_born_history_exports_into_empty_git_and_restores_without_private_origins() {
+    let native = tempfile::tempdir().unwrap();
+    let targets = tempfile::tempdir().unwrap();
+    let target = targets.path().join("first.git");
+    git(
+        targets.path(),
+        &["init", "--bare", target.to_str().unwrap()],
+        b"",
+    );
+    let mut repo = Repository::init(native.path()).unwrap();
+    let root = author(&mut repo, "Native <native@example.test>", "empty root");
+    put(&mut repo, "source", b"binary", &[0, 255, 13, 10]);
+    let head = author(&mut repo, "Native <native@example.test>", "child");
+    let selected = repo.status().unwrap();
+    let before = counts(native.path());
+    let candidate = repo.export_git(&target, head).unwrap();
+    let oid = candidate.to_string().replace("sha1:", "");
+    let parent = text(git(&target, &["rev-parse", &format!("{oid}^")], b""));
+    assert_eq!(
+        text(git(&target, &["show", "-s", "--format=%P", &parent], b"")),
+        ""
+    );
+    assert_eq!(text(git(&target, &["rev-list", "--count", &oid], b"")), "2");
+    assert_eq!(
+        git(&target, &["show", &format!("{oid}:binary")], b""),
+        [0, 255, 13, 10]
+    );
+    assert_eq!(
+        text(git(
+            &target,
+            &["rev-parse", &format!("{parent}^{{tree}}")],
+            b""
+        )),
+        text(git(&target, &["mktree"], b""))
+    );
+    git(
+        &target,
+        &["fsck", "--strict", "--no-reflogs", "--no-dangling", &oid],
+        b"",
+    );
+    assert_eq!(text(git(&target, &["for-each-ref"], b"")), "");
+    assert_eq!(
+        repo.export_git(&target, root)
+            .unwrap()
+            .to_string()
+            .replace("sha1:", ""),
+        parent
+    );
+    assert_eq!(repo.export_git(&target, head).unwrap(), candidate);
+    assert!(repo.git_origins(head).unwrap().is_empty());
+    assert_eq!(repo.status().unwrap(), selected);
+    assert_eq!(counts(native.path()), before);
+
+    // Derived Git mappings neither become origins nor prevent portable native history.
+    let mut portable = Vec::new();
+    repo.export_history(&mut portable).unwrap();
+    let restored = tempfile::tempdir().unwrap();
+    let mut restored_repo = Repository::init(restored.path()).unwrap();
+    restored_repo
+        .import_history(portable.as_slice(), "restore")
+        .unwrap();
+    let second = targets.path().join("second.git");
+    git(
+        targets.path(),
+        &["init", "--bare", second.to_str().unwrap()],
+        b"",
+    );
+    assert_eq!(restored_repo.export_git(&second, head).unwrap(), candidate);
+    assert_eq!(objects(&second), objects(&target));
+
+    // Audit headers are not proof of native ancestry when the candidate is reimported.
+    let reimported = tempfile::tempdir().unwrap();
+    let mut reimported_repo = Repository::init(reimported.path()).unwrap();
+    let imported = reimported_repo
+        .import_git(&target, candidate, "foreign")
+        .unwrap();
+    assert_eq!(imported.after.root, selected.root);
+    assert_ne!(imported.after.revision, Some(head));
+    let anchor = imported.after.revision.unwrap();
+    assert!(reimported_repo.revision(anchor).unwrap().parents.is_empty());
+    assert_eq!(
+        reimported_repo.git_origin(anchor).unwrap().unwrap().parents,
+        vec![parent.parse().unwrap()]
+    );
+}
+
+#[test]
+fn native_born_invalid_ancestor_refuses_before_any_git_write() {
+    let native = tempfile::tempdir().unwrap();
+    let targets = tempfile::tempdir().unwrap();
+    let target = targets.path().join("target.git");
+    git(
+        targets.path(),
+        &["init", "--bare", target.to_str().unwrap()],
+        b"",
+    );
+    let mut repo = Repository::init(native.path()).unwrap();
+    author(&mut repo, "not a Git identity", "root");
+    put(&mut repo, "source", b"new-payload", b"never written to Git");
+    let head = author(&mut repo, "Native <native@example.test>", "valid child");
+    let selected = repo.status().unwrap();
+    let before = objects(&target);
+    let error = repo.export_git(&target, head).unwrap_err().to_string();
+    assert!(error.contains("identity"), "{error}");
+    assert_eq!(objects(&target), before);
+    assert_eq!(repo.status().unwrap(), selected);
+    let db = rusqlite::Connection::open(native.path().join(".avc/store.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row::<i64, _, _>("SELECT count(*) FROM git_exports", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn native_history_with_multiple_roots_exports_exact_ordered_merge_parents() {
+    use std::collections::BTreeMap;
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let mut records: BTreeMap<_, _> = engine
+        .objects()
+        .map(|(id, object)| (id, object.encode().unwrap()))
+        .collect();
+    let mut revision = |parents, change| {
+        let object = Object::Revision(avc::Revision {
+            root: empty,
+            parents,
+            change: [change; 16],
+            author: "Native <native@example.test>".into(),
+            message: "root or merge".into(),
+            time_ns: 1700000000123456789,
+            timezone_minutes: -150,
+        });
+        let id = object.id().unwrap();
+        records.insert(id, object.encode().unwrap());
+        id
+    };
+    let left = revision(vec![], 1);
+    let right = revision(vec![], 2);
+    let head = revision(vec![right, left], 3);
+    let mut portable = b"AVCHIS01".to_vec();
+    portable.extend(empty.to_bytes().unwrap());
+    portable.push(1);
+    portable.extend(head.to_bytes().unwrap());
+    portable.extend((records.len() as u64).to_le_bytes());
+    for (id, bytes) in records {
+        portable.extend(id.to_bytes().unwrap());
+        portable.extend((bytes.len() as u64).to_le_bytes());
+        portable.extend(bytes);
+    }
+    portable.extend(b"AVCHEND1");
+    portable.extend(blake3::hash(&portable).as_bytes());
+    let native = tempfile::tempdir().unwrap();
+    let targets = tempfile::tempdir().unwrap();
+    let target = targets.path().join("target.git");
+    git(
+        targets.path(),
+        &["init", "--bare", target.to_str().unwrap()],
+        b"",
+    );
+    let mut repo = Repository::init(native.path()).unwrap();
+    repo.import_history(portable.as_slice(), "native graph")
+        .unwrap();
+    let candidate = repo
+        .export_git(&target, head)
+        .unwrap()
+        .to_string()
+        .replace("sha1:", "");
+    let left_oid = repo
+        .export_git(&target, left)
+        .unwrap()
+        .to_string()
+        .replace("sha1:", "");
+    let right_oid = repo
+        .export_git(&target, right)
+        .unwrap()
+        .to_string()
+        .replace("sha1:", "");
+    assert_eq!(
+        text(git(
+            &target,
+            &["show", "-s", "--format=%P", &candidate],
+            b""
+        )),
+        format!("{right_oid} {left_oid}")
+    );
+    assert_eq!(
+        text(git(&target, &["rev-list", "--count", &candidate], b"")),
+        "3"
+    );
+    git(
+        &target,
+        &[
+            "fsck",
+            "--strict",
+            "--no-reflogs",
+            "--no-dangling",
+            &candidate,
+        ],
+        b"",
+    );
+}
+
+#[test]
 fn deterministic_anchor_and_native_children_roundtrip_with_exact_foreign_parent() {
     let f = Fixture::new();
     let refs = git(
@@ -678,6 +882,104 @@ fn missing_foreign_ancestors_are_frontiers_not_fake_native_parents() {
         "parent {}\n",
         f.commit.to_string().replace("sha1:", "")
     )));
+}
+
+#[test]
+fn actual_cli_native_born_export_guards_unborn_dirty_and_explicit_revision_selection() {
+    let native = tempfile::tempdir().unwrap();
+    let targets = tempfile::tempdir().unwrap();
+    let target = targets.path().join("target.git");
+    git(
+        targets.path(),
+        &["init", "--bare", target.to_str().unwrap()],
+        b"",
+    );
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_avc"))
+            .arg("--repository")
+            .arg(native.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let success = |output: std::process::Output| {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    success(run(&["--experimental", "init"]));
+    let dir = target.to_str().unwrap();
+    assert!(
+        !run(&["--experimental", "git", "export", "--git-dir", dir])
+            .status
+            .success()
+    );
+    assert!(objects(&target).is_empty());
+    success(run(&[
+        "--experimental",
+        "commit",
+        "--author",
+        "Native <native@example.test>",
+        "--message",
+        "native root",
+        "--expected-generation",
+        "0",
+        "--request-key",
+        "root",
+    ]));
+    assert!(!run(&["git", "export", "--git-dir", dir]).status.success());
+    let exported = success(run(&["--experimental", "git", "export", "--git-dir", dir]));
+    assert!(exported.contains("policy=avc.git.export/v1 publication=objects-only"));
+    let oid = exported
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("commit=sha1:"))
+        .unwrap();
+    assert_eq!(
+        text(git(&target, &["show", "-s", "--format=%P", oid], b"")),
+        ""
+    );
+    let supplier = native.path().join("bytes");
+    fs::write(&supplier, b"uncommitted selected bytes").unwrap();
+    success(run(&[
+        "--experimental",
+        "source",
+        "put",
+        "dirty",
+        "--file",
+        supplier.to_str().unwrap(),
+        "--expected-generation",
+        "1",
+        "--request-key",
+        "source",
+    ]));
+    let repo = Repository::open(native.path()).unwrap();
+    let selected = repo.status().unwrap();
+    let revision = selected.revision.unwrap().to_string();
+    let before = objects(&target);
+    assert!(
+        !run(&["--experimental", "git", "export", "--git-dir", dir])
+            .status
+            .success()
+    );
+    assert_eq!(objects(&target), before);
+    assert_eq!(
+        success(run(&[
+            "--experimental",
+            "git",
+            "export",
+            "--git-dir",
+            dir,
+            "--revision",
+            &revision
+        ])),
+        exported
+    );
+    assert_eq!(objects(&target), before);
+    assert_eq!(repo.status().unwrap(), selected);
+    assert_eq!(text(git(&target, &["for-each-ref"], b"")), "");
 }
 
 #[test]

@@ -111,9 +111,11 @@ impl Repository {
     }
 
     /// Export an exact authored native graph as local candidate Git objects.
-    /// Stops only at retained origins, never inventing a Git root when an origin
-    /// was not transferred. All representability and mapping checks precede any
-    /// Git writes. Later I/O failure can leave unreferenced immutable objects;
+    /// Parentless native history exports as Git roots. Known import anchors
+    /// instead require their retained exact origins; missing boundary metadata
+    /// never falls back to native-root translation. All representability and
+    /// mapping checks precede Git writes. Later I/O failure can leave unreferenced
+    /// immutable objects;
     /// neither native selection nor any Git ref/index/worktree is changed.
     pub fn export_git(&mut self, git_dir: &Path, revision: Id) -> Result<GitOid> {
         self.ensure_idle()?;
@@ -162,11 +164,6 @@ impl Repository {
                     }
                     mapped.insert(id, origin.commit);
                 } else {
-                    if value.parents.is_empty() {
-                        return Err(invalid(
-                            "Git export requires a retained foreign-origin boundary; refusing to invent a Git root",
-                        ));
-                    }
                     // Preflight source before any writes, even for a revision
                     // already translated on a previous export.
                     plan.tree(&git, &engine, value.root)?;

@@ -91,6 +91,31 @@ impl Engine {
         self.roots.insert(id, Bounds::default());
         Ok(id)
     }
+    /// Builds one complete directory from logical raw-byte basenames, without
+    /// retaining intermediate edit roots. Child source values must already be
+    /// admitted so the resulting root gets the same bounds as incremental edits.
+    pub(crate) fn directory(&mut self, mut entries: Vec<(Vec<u8>, Entry)>) -> Result<Id> {
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for (index, (name, entry)) in entries.iter().enumerate() {
+            validate_name(name)?;
+            if index != 0 && entries[index - 1].0 == *name {
+                return Err(invalid("duplicate directory basename"));
+            }
+            if *entry == Entry::Absent {
+                return Err(invalid("Absent is not a directory binding"));
+            }
+            self.check_entry(entry, std::slice::from_ref(name))?;
+        }
+        let entries = entries
+            .into_iter()
+            .map(|(name, entry)| (nibbles(&name), entry))
+            .collect();
+        let root = self.build_node(entries)?;
+        let bounds = self.map_bounds(root)?;
+        self.roots.insert(root, bounds);
+        Ok(root)
+    }
+
     pub(crate) fn store(&mut self, object: Object) -> Result<Id> {
         let id = object.id()?;
         if let Some(previous) = self.objects.get(&id) {

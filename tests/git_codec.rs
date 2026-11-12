@@ -72,7 +72,7 @@ fn revision(root: avc::Id) -> Revision {
         change: [9; 16],
         author: "Native Name <native@example.test>".into(),
         message: "message without newline".into(),
-        time_ns: -1,
+        time_ns: 1_234_567_890,
         timezone_minutes: -1439,
     }
 }
@@ -182,7 +182,7 @@ fn exact_git_source_roundtrip_and_native_child_metadata() {
     plan.write(&store).unwrap();
     let actual = git(dir.path(), &["cat-file", "commit", &bare(exported)], &[]);
     let expected = format!(
-        "tree {}\nparent {}\nauthor Native Name <native@example.test> -1 -2359\ncommitter Native Name <native@example.test> -1 -2359\navc-revision {child_id}\navc-time-ns -1\n\nmessage without newline",
+        "tree {}\nparent {}\nauthor Native Name <native@example.test> 1 -2359\ncommitter Native Name <native@example.test> 1 -2359\navc-revision {child_id}\navc-time-ns 1234567890\n\nmessage without newline",
         bare(tree),
         bare(parent)
     );
@@ -192,7 +192,7 @@ fn exact_git_source_roundtrip_and_native_child_metadata() {
         raw
     );
     let imported = store.read_commit(exported).unwrap();
-    assert_eq!(imported.time_ns, -1_000_000_000); // audit header is not identity input
+    assert_eq!(imported.time_ns, 1_000_000_000); // audit header is not identity input
     assert_eq!(imported.parents, [parent]);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("HEAD"))
@@ -202,6 +202,7 @@ fn exact_git_source_roundtrip_and_native_child_metadata() {
         1
     );
     assert!(git(dir.path(), &["for-each-ref"], &[]).is_empty());
+    git(dir.path(), &["fsck", "--strict", "--no-reflogs"], &[]);
 }
 
 #[test]
@@ -384,7 +385,13 @@ fn all_preflight_errors_precede_writes_and_poison_plan() {
     assert!(plan.commit(&store, id, &r, &[]).is_err());
     assert!(plan.write(&store).is_err());
     assert_eq!(object_files(dir.path()), 0);
-    assert!(GitPlan::new().tree(&store, &engine, empty).is_err());
+    assert_eq!(
+        GitPlan::new()
+            .tree(&store, &engine, empty)
+            .unwrap()
+            .to_string(),
+        "sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    );
     let root = engine
         .edit(
             root,
@@ -597,6 +604,307 @@ fn empty_git_tree_import_and_actual_depth_path_bounds() {
         tree = put(dir.path(), "tree", &raw);
     }
     assert!(store.import_source(tree, &mut Engine::new()).is_err());
+}
+
+#[test]
+fn deep_git_radix_import_on_two_megabyte_stack() {
+    const CASE: &str = "deep_git_radix_import_on_two_megabyte_stack";
+    if std::env::var("AVC_GIT_CODEC_STACK_CHILD").as_deref() != Ok(CASE) {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env("AVC_GIT_CODEC_STACK_CHILD", CASE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .status()
+            .unwrap();
+        assert!(status.success(), "deep Git radix child: {status}");
+        return;
+    }
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let (dir, store) = init();
+            let blob = put(dir.path(), "blob", b"shared");
+            let base = vec![b'a'; 255];
+            let mut names = vec![base.clone()];
+            for i in 0..510 {
+                let mut name = base.clone();
+                name[i / 2] = if i % 2 == 0 { b'q' } else { b'b' };
+                names.push(name);
+            }
+            names.sort();
+            let mut raw = Vec::new();
+            for name in &names {
+                tree_entry(&mut raw, b"100644", name, blob);
+            }
+            let tree = put(dir.path(), "tree", &raw);
+            let mut engine = Engine::new();
+            let root = store.import_source(tree, &mut engine).unwrap();
+            let mut expected = Engine::new();
+            let empty = expected.empty().unwrap();
+            let native_blob = expected.blob(b"shared".to_vec()).unwrap();
+            let file = Entry::File {
+                blob: native_blob,
+                executable: false,
+            };
+            let edits: Vec<_> = names
+                .iter()
+                .map(|name| Edit {
+                    path: vec![name.clone()],
+                    expected: Entry::Absent,
+                    value: file.clone(),
+                })
+                .collect();
+            assert_eq!(root, expected.edit(empty, &edits).unwrap());
+            assert_eq!(
+                engine.list(root, &[]).unwrap(),
+                names
+                    .into_iter()
+                    .map(|name| (name, file.clone()))
+                    .collect::<Vec<_>>()
+            );
+            engine.verify(root, Default::default()).unwrap();
+            assert_eq!(GitPlan::new().tree(&store, &engine, root).unwrap(), tree);
+            let mut pending = vec![root];
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(id) = pending.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                match engine.object(id).unwrap() {
+                    Object::Blob(_) => {}
+                    Object::Map(avc::Node::Leaf(entries)) => {
+                        for (_, entry) in entries {
+                            let Entry::File { blob, .. } = entry else {
+                                panic!("fixture is files only")
+                            };
+                            pending.push(*blob);
+                        }
+                    }
+                    Object::Map(avc::Node::Branch {
+                        terminal, children, ..
+                    }) => {
+                        if let Some(Entry::File { blob, .. }) = terminal {
+                            pending.push(*blob);
+                        }
+                        pending.extend(children.values());
+                    }
+                    _ => panic!("unexpected fixture object"),
+                }
+            }
+            assert_eq!(
+                seen.len(),
+                engine.object_count(),
+                "bulk import must not retain orphan intermediate maps"
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn negative_dates_and_nul_messages_are_refused_before_writes() {
+    let (dir, store) = init();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let blob = engine.blob(b"file".to_vec()).unwrap();
+    let root = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b"file".to_vec()],
+                expected: Entry::Absent,
+                value: Entry::File {
+                    blob,
+                    executable: false,
+                },
+            }],
+        )
+        .unwrap();
+    for (time_ns, message) in [(-1, "message"), (1, "NUL\0message")] {
+        let mut revision = revision(root);
+        revision.time_ns = time_ns;
+        revision.message = message.into();
+        let object = Object::Revision(revision.clone());
+        let id = object.id().unwrap(); // Still valid canonical native metadata.
+        assert_eq!(
+            Object::decode(id, &object.encode().unwrap()).unwrap(),
+            object
+        );
+        let mut plan = GitPlan::new();
+        plan.tree(&store, &engine, root).unwrap();
+        assert!(plan.commit(&store, id, &revision, &[]).is_err());
+        assert!(plan.write(&store).is_err());
+    }
+    assert_eq!(object_files(dir.path()), 0);
+    let tree = put(dir.path(), "tree", b"");
+    let valid = raw_commit(tree);
+    for raw in [
+        valid.replace_bytes(b"99 -0530", b"-1 -0530"),
+        valid.replace_bytes(b"123 +1245", b"-1 +1245"),
+        valid.replace_bytes(b"exact message", b"NUL\0message"),
+    ] {
+        let oid = put(dir.path(), "commit", &raw);
+        assert!(store.read_commit(oid).is_err());
+    }
+}
+
+#[test]
+fn required_commit_header_order_and_opaque_nuls_are_refused() {
+    let (dir, store) = init();
+    let tree = put(dir.path(), "tree", b"");
+    let valid = raw_commit(tree);
+    let text = std::str::from_utf8(&valid).unwrap();
+    let (header, message) = text.split_once("\n\n").unwrap();
+    let lines: Vec<_> = header.lines().collect();
+    for order in [
+        [1, 0, 2, 3, 4],
+        [0, 2, 1, 3, 4],
+        [0, 3, 1, 2, 4],
+        [0, 1, 3, 2, 4],
+    ] {
+        let raw = format!(
+            "{}\n\n{message}",
+            order
+                .iter()
+                .map(|i| lines[*i])
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let oid = put(dir.path(), "commit", raw.as_bytes());
+        assert!(store.read_commit(oid).is_err());
+    }
+    for raw in [
+        valid.replace_bytes(b"continuation preserved", b"continuation \0invalid"),
+        valid.replace_bytes(
+            b"extra opaque",
+            b"parent 1111111111111111111111111111111111111111",
+        ),
+        valid.replace_bytes(b"99 -0530", b"099 -0530"),
+    ] {
+        let oid = put(dir.path(), "commit", &raw);
+        assert!(store.read_commit(oid).is_err());
+    }
+    // Validation checks the current commit grammar, not availability of foreign
+    // ancestors: an absent parent remains an explicit frontier.
+    let raw = valid.replace_bytes(
+        b"\nauthor ",
+        b"\nparent 1111111111111111111111111111111111111111\nauthor ",
+    );
+    let oid = put(dir.path(), "commit", &raw);
+    assert_eq!(
+        store.read_commit(oid).unwrap().parents,
+        ["1111111111111111111111111111111111111111".parse().unwrap()]
+    );
+}
+
+#[test]
+fn git_reserved_path_aliases_are_refused_without_restricting_raw_names() {
+    let (source_dir, source) = init();
+    let (target_dir, target) = init();
+    // hash-object's grammar checks must not be weakened by untrusted config.
+    for dir in [source_dir.path(), target_dir.path()] {
+        git(dir, &["config", "fsck.hasDotgit", "ignore"], &[]);
+    }
+    let git_blob = put(source_dir.path(), "blob", b"file");
+    for name in [
+        b".git".as_slice(),
+        b".GiT",
+        b".git.",
+        b".git  .",
+        b"git~1",
+        b".git:ads",
+        b"x\\.git",
+        b".g\xe2\x80\x8cit",
+        b"\xe2\x80\x8c.git",
+    ] {
+        let mut raw = Vec::new();
+        tree_entry(&mut raw, b"100644", name, git_blob);
+        let tree = put(source_dir.path(), "tree", &raw);
+        let mut imported = Engine::new();
+        assert!(
+            source.import_source(tree, &mut imported).is_err(),
+            "{name:?}"
+        );
+        assert_eq!(imported.object_count(), 0);
+        let mut native = Engine::new();
+        let empty = native.empty().unwrap();
+        let blob = native.blob(b"file".to_vec()).unwrap();
+        let root = native
+            .edit(
+                empty,
+                &[Edit {
+                    path: vec![name.to_vec()],
+                    expected: Entry::Absent,
+                    value: Entry::File {
+                        blob,
+                        executable: false,
+                    },
+                }],
+            )
+            .unwrap();
+        let mut plan = GitPlan::new();
+        assert!(plan.tree(&target, &native, root).is_err(), "{name:?}");
+        assert!(plan.write(&target).is_err());
+        assert_eq!(object_files(target_dir.path()), 0);
+    }
+    for name in [b".gitx".as_slice(), b"raw-\xff"] {
+        let mut raw = Vec::new();
+        tree_entry(&mut raw, b"100644", name, git_blob);
+        let tree = put(source_dir.path(), "tree", &raw);
+        let mut native = Engine::new();
+        let root = source.import_source(tree, &mut native).unwrap();
+        let mut plan = GitPlan::new();
+        assert_eq!(plan.tree(&target, &native, root).unwrap(), tree);
+        plan.write(&target).unwrap();
+    }
+    git(
+        target_dir.path(),
+        &["fsck", "--strict", "--no-reflogs"],
+        &[],
+    );
+}
+
+#[test]
+fn empty_root_exports_but_cached_empty_directory_entry_refuses_without_writes() {
+    let (dir, store) = init();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let mut plan = GitPlan::new();
+    let tree = plan.tree(&store, &engine, empty).unwrap();
+    assert_eq!(
+        tree.to_string(),
+        "sha1:4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    );
+    let revision = revision(empty);
+    let id = Object::Revision(revision.clone()).id().unwrap();
+    let commit = plan.commit(&store, id, &revision, &[]).unwrap();
+    assert_eq!(object_files(dir.path()), 0);
+    let nested = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b"empty-directory".to_vec()],
+                expected: Entry::Absent,
+                value: Entry::Directory(empty),
+            }],
+        )
+        .unwrap();
+    assert!(plan.tree(&store, &engine, nested).is_err());
+    assert!(plan.write(&store).is_err());
+    assert_eq!(object_files(dir.path()), 0);
+    let mut valid = GitPlan::new();
+    assert_eq!(valid.tree(&store, &engine, empty).unwrap(), tree);
+    assert_eq!(valid.commit(&store, id, &revision, &[]).unwrap(), commit);
+    valid.write(&store).unwrap();
+    assert_eq!(store.read_commit(commit).unwrap().tree, tree);
+    assert_eq!(
+        git(dir.path(), &["cat-file", "tree", &bare(tree)], &[]),
+        b""
+    );
+    git(dir.path(), &["fsck", "--strict", "--no-reflogs"], &[]);
 }
 
 #[test]

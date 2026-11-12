@@ -3,7 +3,11 @@
 //! Limits apply independently to Git payloads and native canonical payloads:
 //! 16 MiB/object, 256 MiB/closure, 100,000 unique objects and expanded entries,
 //! 256 path components and 4096 path bytes. Export policy 1 refuses empty
-//! directories and conflicts. Git administration files are locally trusted;
+//! directory entries (not an empty root), conflicts, negative dates and
+//! NUL-containing commit messages.
+//! Git's own object validator also refuses `.git`/HFS/NTFS aliases and other
+//! Git-invalid tree names/modes before import or candidate writes.
+//! Git administration files are locally trusted;
 //! inherited environment, configuration-driven execution, and source bytes are not.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,7 +19,7 @@ use std::str::FromStr;
 
 use crate::engine::{Engine, Limits};
 use crate::repository::{Error, MAX_CLOSURE_BYTES, MAX_OBJECT_BYTES, MAX_OBJECTS, Result};
-use crate::{Entry, Id, Node, Object, Revision};
+use crate::{Entry, Id, Object, Revision};
 
 const MAX_ENTRIES: usize = 100_000;
 const MAX_AUTHOR: usize = 4096;
@@ -194,16 +198,9 @@ impl GitStore {
         if data.len() > MAX_OBJECT_BYTES {
             return Err(Error::Limit("Git object payload"));
         }
-        // Hash raw bytes independently of optional fsck policy: native i64
-        // timestamps can be negative. Our parsers validate supported grammar.
-        let mut args = vec![
-            "hash-object",
-            "-t",
-            kind.name(),
-            "--stdin",
-            "--no-filters",
-            "--literally",
-        ];
+        let mut args = vec!["hash-object", "-t", kind.name(), "--stdin", "--no-filters"];
+        // Keep Git's object-grammar checks in both read-only preflight and
+        // writes. This does not require or fetch historical commit parents.
         if write {
             args.push("-w");
         }
@@ -251,6 +248,8 @@ impl GitStore {
             },
         )?;
         // cat-file returns bytes from an OID slot, not a verified content hash.
+        // Normal hash-object also applies Git's object-grammar checks (including
+        // filesystem aliases of .git), without fetching or traversing children.
         if self.hash(expected, &raw, false)? != oid {
             return Err(invalid("Git object hash mismatch"));
         }
@@ -264,14 +263,26 @@ impl GitStore {
     pub fn import_source(&self, tree: GitOid, engine: &mut Engine) -> Result<Id> {
         let mut import = Import {
             store: self,
-            native: Native::default(),
+            native: Engine::new(),
+            entries: 0,
             git_budget: Budget::default(),
             trees: BTreeMap::new(),
             blobs: BTreeMap::new(),
             active: BTreeSet::new(),
         };
         let (root, _) = import.tree(tree, 0)?;
-        engine.import(import.native.objects, root, limits())?;
+        // One final pass budgets the serialized native closure. The scratch
+        // engine is bounded by the verified Git byte/object/entry budgets, but
+        // radix expansion may exceed the native budget and must not leak into
+        // the caller's authority. Bulk construction retains no edit orphans.
+        let mut budget = Budget::default();
+        let mut records = Vec::new();
+        for (id, object) in import.native.objects() {
+            let raw = object.encode()?;
+            budget.add(raw.len())?;
+            records.push((id, raw));
+        }
+        engine.import(records, root, limits())?;
         Ok(root)
     }
 }
@@ -348,70 +359,10 @@ impl Bounds {
     }
 }
 
-#[derive(Default)]
-struct Native {
-    objects: BTreeMap<Id, Vec<u8>>,
-    budget: Budget,
-}
-impl Native {
-    fn add(&mut self, object: Object) -> Result<Id> {
-        let raw = object.encode()?;
-        let id = Id::hash(object.kind(), &raw)?;
-        if let Some(previous) = self.objects.get(&id) {
-            if previous != &raw {
-                return Err(invalid("native hash collision"));
-            }
-        } else {
-            self.budget.add(raw.len())?;
-            self.objects.insert(id, raw);
-        }
-        Ok(id)
-    }
-
-    // Same canonical radix grammar as the engine: leaf <=32 bindings, otherwise
-    // maximal common prefix and one partition per next nibble. No edit history
-    // or unreachable intermediate maps are accumulated during bulk import.
-    fn map(&mut self, entries: Vec<(Vec<u8>, Entry)>) -> Result<Id> {
-        if entries.len() <= 32 {
-            return self.add(Object::Map(Node::Leaf(entries)));
-        }
-        let count =
-            u32::try_from(entries.len()).map_err(|_| Error::Limit("native map bindings"))?;
-        let prefix_len = entries[0]
-            .0
-            .iter()
-            .zip(&entries[entries.len() - 1].0)
-            .take_while(|(a, b)| a == b)
-            .count();
-        let prefix = entries[0].0[..prefix_len].to_vec();
-        let mut terminal = None;
-        let mut groups: BTreeMap<u8, Vec<(Vec<u8>, Entry)>> = BTreeMap::new();
-        for (key, value) in entries {
-            if key.len() == prefix_len {
-                terminal = Some(value);
-            } else {
-                groups
-                    .entry(key[prefix_len])
-                    .or_default()
-                    .push((key[prefix_len + 1..].to_vec(), value));
-            }
-        }
-        let mut children = BTreeMap::new();
-        for (slot, group) in groups {
-            children.insert(slot, self.map(group)?);
-        }
-        self.add(Object::Map(Node::Branch {
-            count,
-            prefix,
-            terminal,
-            children,
-        }))
-    }
-}
-
 struct Import<'a> {
     store: &'a GitStore,
-    native: Native,
+    native: Engine,
+    entries: usize,
     git_budget: Budget,
     trees: BTreeMap<GitOid, (Id, Bounds)>,
     blobs: BTreeMap<GitOid, Id>,
@@ -429,7 +380,7 @@ impl Import<'_> {
             .store
             .object(oid, Kind::Blob, MAX_CLOSURE_BYTES - self.git_budget.bytes)?;
         self.git_budget.add(data.len())?;
-        let id = self.native.add(Object::Blob(data))?;
+        let id = self.native.blob(data)?;
         self.blobs.insert(oid, id);
         Ok(id)
     }
@@ -451,6 +402,10 @@ impl Import<'_> {
             .object(oid, Kind::Tree, MAX_CLOSURE_BYTES - self.git_budget.bytes)?;
         self.git_budget.add(raw.len())?;
         let entries = parse_tree(&raw)?;
+        self.entries += entries.len();
+        if self.entries > MAX_ENTRIES {
+            return Err(Error::Limit("Git closure bindings"));
+        }
         let mut bindings = Vec::with_capacity(entries.len());
         let mut bounds = Bounds::default();
         for (name, mode, child) in entries {
@@ -469,15 +424,9 @@ impl Import<'_> {
                 Mode::Symlink => (Entry::Symlink(self.blob(child)?), Bounds::default()),
             };
             bounds.entry(&name, child_bounds)?;
-            bindings.push((
-                name.iter()
-                    .flat_map(|b| [b >> 4, b & 15])
-                    .collect::<Vec<_>>(),
-                entry,
-            ));
+            bindings.push((name, entry));
         }
-        bindings.sort_by(|a, b| a.0.cmp(&b.0));
-        let id = self.native.map(bindings)?;
+        let id = self.native.directory(bindings)?;
         self.active.remove(&oid);
         self.trees.insert(oid, (id, bounds));
         Ok((id, bounds))
@@ -608,9 +557,6 @@ impl GitPlan {
             return Ok(*result);
         }
         let entries = engine.list(root, &[])?;
-        if entries.is_empty() {
-            return Err(invalid("native empty directories cannot be exported"));
-        }
         let mut output = Vec::with_capacity(entries.len());
         let mut bounds = Bounds::default();
         for (name, entry) in entries {
@@ -618,6 +564,9 @@ impl GitPlan {
             let (mode, oid, child) = match entry {
                 Entry::Directory(id) => {
                     let (oid, bounds) = self.directory(store, engine, id, depth + 1)?;
+                    if bounds.entries == 0 {
+                        return Err(invalid("native empty directory entries cannot be exported"));
+                    }
                     (Mode::Directory, oid, bounds)
                 }
                 Entry::File { blob, executable } => (
@@ -692,6 +641,10 @@ impl GitPlan {
                 return Err(invalid("native revision ID mismatch"));
             }
             validate_identity(&revision.author)?;
+            validate_message(&revision.message)?;
+            if revision.time_ns < 0 {
+                return Err(invalid("negative Git export timestamps are unsupported"));
+            }
             if parents.len() != revision.parents.len()
                 || parents.len() > 16
                 || parents.iter().collect::<BTreeSet<_>>().len() != parents.len()
@@ -758,6 +711,9 @@ impl GitPlan {
 }
 
 fn parse_commit(oid: GitOid, raw: Vec<u8>) -> Result<GitCommit> {
+    if raw.contains(&0) {
+        return Err(invalid("NUL-containing Git commits are unsupported"));
+    }
     let split = raw
         .windows(2)
         .position(|bytes| bytes == b"\n\n")
@@ -767,7 +723,7 @@ fn parse_commit(oid: GitOid, raw: Vec<u8>) -> Result<GitCommit> {
     let mut author = None;
     let mut committer = None;
     let mut continuation = false;
-    for line in raw[..split].split(|b| *b == b'\n') {
+    for (index, line) in raw[..split].split(|b| *b == b'\n').enumerate() {
         if line.starts_with(b" ") {
             if !continuation {
                 return Err(invalid("continuation on required Git header"));
@@ -779,21 +735,21 @@ fn parse_commit(oid: GitOid, raw: Vec<u8>) -> Result<GitCommit> {
             .position(|b| *b == b' ')
             .ok_or_else(|| invalid("invalid Git commit header"))?;
         let (key, value) = (&line[..space], &line[space + 1..]);
-        if key.is_empty()
-            || !key.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-')
-            || line.contains(&0)
-        {
+        if key.is_empty() || !key.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-') {
             return Err(invalid("invalid Git commit header"));
         }
         continuation = false;
         match key {
             b"tree" => {
-                if tree.is_some() {
-                    return Err(invalid("duplicate Git tree header"));
+                if tree.is_some() || index != 0 {
+                    return Err(invalid("Git tree must be the unique first header"));
                 }
                 tree = Some(header_oid(value)?);
             }
             b"parent" => {
+                if tree.is_none() || author.is_some() {
+                    return Err(invalid("Git parents must immediately follow tree"));
+                }
                 if parents.len() >= 16 {
                     return Err(Error::Limit("Git commit parents (maximum 16)"));
                 }
@@ -804,18 +760,21 @@ fn parse_commit(oid: GitOid, raw: Vec<u8>) -> Result<GitCommit> {
                 parents.push(parent);
             }
             b"author" => {
-                if author.is_some() {
-                    return Err(invalid("duplicate Git author"));
+                if tree.is_none() || author.is_some() || committer.is_some() {
+                    return Err(invalid("Git author must uniquely follow tree/parents"));
                 }
                 author = Some(parse_person(value)?);
             }
             b"committer" => {
-                if committer.is_some() {
-                    return Err(invalid("duplicate Git committer"));
+                if author.is_none() || committer.is_some() {
+                    return Err(invalid("Git committer must uniquely follow author"));
                 }
                 committer = Some(parse_person(value)?);
             }
             _ => {
+                if committer.is_none() {
+                    return Err(invalid("extra Git headers must follow committer"));
+                }
                 continuation = true;
             }
         }
@@ -832,9 +791,7 @@ fn parse_commit(oid: GitOid, raw: Vec<u8>) -> Result<GitCommit> {
         .ok_or_else(|| invalid("Git committer timestamp outside native range"))?;
     let message =
         std::str::from_utf8(&raw[split + 2..]).map_err(|_| invalid("Git message is not UTF-8"))?;
-    if message.len() > MAX_MESSAGE {
-        return Err(Error::Limit("Git message"));
-    }
+    validate_message(message)?;
     let message = message.to_owned();
     Ok(GitCommit {
         oid,
@@ -854,6 +811,17 @@ fn header_oid(raw: &[u8]) -> Result<GitOid> {
     std::str::from_utf8(raw)
         .map_err(|_| invalid("invalid Git header OID"))?
         .parse()
+}
+fn validate_message(message: &str) -> Result<()> {
+    if message.len() > MAX_MESSAGE {
+        return Err(Error::Limit("Git message"));
+    }
+    if message.contains('\0') {
+        return Err(invalid(
+            "NUL-containing Git commit messages are unsupported",
+        ));
+    }
+    Ok(())
 }
 fn validate_identity(identity: &str) -> Result<()> {
     if identity.len() > MAX_AUTHOR || identity.bytes().any(|b| matches!(b, 0 | b'\r' | b'\n')) {
@@ -896,12 +864,9 @@ fn parse_person(raw: &[u8]) -> Result<(&[u8], i64, i16)> {
         .ok_or_else(|| invalid("missing Git identity"))?;
     validate_raw_identity(identity)?;
     let seconds = std::str::from_utf8(seconds).map_err(|_| invalid("invalid Git timestamp"))?;
-    if seconds.strip_prefix('-').unwrap_or(seconds).is_empty()
-        || !seconds
-            .strip_prefix('-')
-            .unwrap_or(seconds)
-            .bytes()
-            .all(|b| b.is_ascii_digit())
+    if seconds.is_empty()
+        || !seconds.bytes().all(|b| b.is_ascii_digit())
+        || (seconds.len() > 1 && seconds.starts_with('0'))
     {
         return Err(invalid("invalid Git timestamp"));
     }

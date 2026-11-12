@@ -117,17 +117,20 @@ struct Commit {
     #[usage(long)]
     request_key: String,
 }
-/// Pin and select explicit existing files/symlinks for review; never author or write live files.
+/// Pin explicit source scopes for review; never author or write live files.
 #[derive(Args)]
 struct Capture {
-    /// Source directory; defaults to the project directory. No recursive scan.
+    /// Source directory; defaults to the project directory.
     #[usage(long)]
     from: Option<PathBuf>,
+    /// Include complete directory descendants ('.' selects the root). No ignore rules or deletions.
+    #[usage(long)]
+    recursive: bool,
     #[usage(long)]
     expected_generation: u64,
     #[usage(long)]
     request_key: String,
-    /// Relative leaf paths; directory traversal, deletions and ignore rules are not supported.
+    /// Relative scopes; directories require --recursive. Missing selected paths refuse.
     #[usage(required)]
     paths: Vec<PathBuf>,
 }
@@ -338,10 +341,42 @@ fn print_receipt(receipt: &Receipt) {
                 .as_encoded_bytes()
                 .escape_ascii()
         );
+        println!(
+            "Capture mode: {}",
+            match scope.mode() {
+                avc::capture::CaptureMode::Leaves => "leaves",
+                avc::capture::CaptureMode::Recursive =>
+                    "recursive (no ignore rules; missing selected paths refuse)",
+            }
+        );
         for path in scope.paths() {
-            println!("Captured: {}", display_path(path));
+            println!(
+                "Captured: {}",
+                if path.is_empty() {
+                    ".".to_owned()
+                } else {
+                    display_path(path)
+                }
+            );
         }
     }
+}
+fn capture_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
+    let witnesses = repo
+        .capture_observation(&receipt.request_key)?
+        .ok_or("capture receipt has no observation")?;
+    let report = avc::capture::report(&witnesses)?;
+    println!(
+        "Observed: files={} symlinks={} directories={}",
+        report.files, report.symlinks, report.directories
+    );
+    for path in report.excluded {
+        println!(
+            "Unobserved administration scope: {} (not read; any selected binding retained)",
+            display_path(&path)
+        );
+    }
+    Ok(())
 }
 // Publication is already acknowledged before these optional comparisons run.
 // Damaged comparison metadata must not hide a committed/recovered receipt.
@@ -718,18 +753,39 @@ fn run(cli: CommandLine) -> Result<()> {
         Command::Capture(args) => {
             let mut paths = Vec::with_capacity(args.paths.len());
             for path in args.paths {
-                let raw = path.as_os_str().as_encoded_bytes();
-                if raw.starts_with(b"/") {
-                    return Err("capture paths must be relative".into());
+                if path.as_os_str().is_empty() {
+                    return Err(
+                        "capture paths must not be empty (use '.' with --recursive for the root)"
+                            .into(),
+                    );
                 }
-                paths.push(raw.split(|b| *b == b'/').map(<[u8]>::to_vec).collect());
+                let mut parts = Vec::new();
+                for component in path.components() {
+                    match component {
+                        std::path::Component::Normal(name) => {
+                            parts.push(name.as_encoded_bytes().to_vec())
+                        }
+                        std::path::Component::CurDir => {}
+                        _ => {
+                            return Err(
+                                "capture paths must be relative and must not contain '..'".into()
+                            );
+                        }
+                    }
+                }
+                paths.push(parts);
             }
-            let scope = avc::repository::CaptureScope::new(
-                args.from.as_deref().unwrap_or(&cli.repository),
-                paths,
-            )?;
+            let directory = args.from.as_deref().unwrap_or(&cli.repository);
+            let scope = if args.recursive {
+                avc::repository::CaptureScope::recursive(directory, paths)?
+            } else {
+                avc::repository::CaptureScope::new(directory, paths)?
+            };
             let receipt = repo.capture(&scope, args.expected_generation, &args.request_key)?;
             print_receipt(&receipt);
+            if let Err(error) = capture_diagnostics(&repo, &receipt) {
+                eprintln!("Capture committed; observation diagnostics unavailable: {error}");
+            }
             println!(
                 "Pinned selected source; no revision authored and no live files written. Unselected source retained. Not an atomic filesystem snapshot."
             );

@@ -1,16 +1,31 @@
-//! Explicit leaf capture selects pinned bytes; it does not author or write live files.
+//! Explicit capture selects pinned bytes; it does not author or write live files.
 use super::*;
+use crate::capture::{CaptureMode, MAX_WITNESS_BYTES};
 
-/// Exact requested filesystem scope. No recursive scan, inferred deletion or
-/// implicit inclusion of new files. Relative directory inputs become absolute
-/// lexically; constructing a retry identity never opens the source directory.
+/// Exact requested filesystem scope and inclusion mode. Recursive scopes include
+/// new descendants, but neither mode infers deletions. Relative directory inputs
+/// become absolute lexically; constructing retry identity never opens the source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureScope {
     directory: PathBuf,
     paths: Vec<Vec<Vec<u8>>>,
+    mode: CaptureMode,
 }
 impl CaptureScope {
-    pub fn new(directory: &Path, mut paths: Vec<Vec<Vec<u8>>>) -> Result<Self> {
+    /// Select explicit file or symlink leaves only.
+    pub fn new(directory: &Path, paths: Vec<Vec<Vec<u8>>>) -> Result<Self> {
+        Self::with_mode(directory, paths, CaptureMode::Leaves)
+    }
+    /// Include complete existing directory descendants. An empty path selects
+    /// the root directory. Missing previously selected bindings still refuse.
+    pub fn recursive(directory: &Path, paths: Vec<Vec<Vec<u8>>>) -> Result<Self> {
+        Self::with_mode(directory, paths, CaptureMode::Recursive)
+    }
+    fn with_mode(
+        directory: &Path,
+        mut paths: Vec<Vec<Vec<u8>>>,
+        mode: CaptureMode,
+    ) -> Result<Self> {
         let directory = std::path::absolute(directory)?;
         if directory
             .components()
@@ -24,27 +39,13 @@ impl CaptureScope {
         if directory.as_os_str().as_encoded_bytes().len() > 4096 {
             return Err(Error::Limit("capture directory path"));
         }
-        if paths.is_empty() || paths.len() > 1024 {
-            return Err(Error::Limit(
-                "capture requires 1..=1024 explicit leaf paths",
-            ));
-        }
-        let mut size = 0usize;
-        for path in &paths {
-            crate::validate_path(path)?;
-            if path.is_empty() || path.iter().any(|p| p == b".avc" || p == b".git") {
-                return Err(invalid("capture refuses root and administration paths"));
-            }
-            size += path.iter().map(|p| p.len() + 1).sum::<usize>();
-        }
-        if size > 65536 {
-            return Err(Error::Limit("capture scope path bytes"));
-        }
+        crate::capture::validate_paths(&paths, mode)?;
         paths.sort();
-        if paths.windows(2).any(|pair| pair[0] == pair[1]) {
-            return Err(invalid("duplicate capture path"));
-        }
-        Ok(Self { directory, paths })
+        Ok(Self {
+            directory,
+            paths,
+            mode,
+        })
     }
     pub fn directory(&self) -> &Path {
         &self.directory
@@ -53,8 +54,16 @@ impl CaptureScope {
         &self.paths
     }
 
+    pub fn mode(&self) -> CaptureMode {
+        self.mode
+    }
+
     pub(super) fn encode(&self) -> Vec<u8> {
-        let mut out = b"AVCCAP01".to_vec();
+        let mut out = b"AVCCAP02".to_vec();
+        out.push(match self.mode {
+            CaptureMode::Leaves => 0,
+            CaptureMode::Recursive => 1,
+        });
         let root = self.directory.as_os_str().as_encoded_bytes();
         out.extend_from_slice(&(root.len() as u32).to_le_bytes());
         out.extend_from_slice(root);
@@ -90,9 +99,14 @@ impl CaptureScope {
             return Err(Error::Limit("stored capture scope"));
         }
         let mut input = bytes;
-        if take(&mut input, 8)? != b"AVCCAP01" {
+        if take(&mut input, 8)? != b"AVCCAP02" {
             return Err(invalid("capture scope version"));
         }
+        let mode = match take(&mut input, 1)?[0] {
+            0 => CaptureMode::Leaves,
+            1 => CaptureMode::Recursive,
+            _ => return Err(invalid("capture inclusion mode")),
+        };
         let len = number(&mut input, 4)?;
         if len > 4096 {
             return Err(Error::Limit("capture directory path"));
@@ -110,7 +124,7 @@ impl CaptureScope {
         let mut paths = Vec::with_capacity(count);
         for _ in 0..count {
             let count = number(&mut input, 2)?;
-            if count == 0 || count > 256 {
+            if count > 256 {
                 return Err(invalid("stored capture path components"));
             }
             let mut path = Vec::with_capacity(count);
@@ -123,7 +137,7 @@ impl CaptureScope {
             }
             paths.push(path);
         }
-        let scope = Self::new(&directory, paths)?;
+        let scope = Self::with_mode(&directory, paths, mode)?;
         if !input.is_empty() || scope.encode() != bytes {
             return Err(invalid("noncanonical capture scope"));
         }
@@ -136,7 +150,7 @@ impl CaptureScope {
 }
 
 impl Repository {
-    /// Observe explicit existing leaves once, then atomically select their exact
+    /// Observe explicit existing scopes once, then atomically select their exact
     /// bytes under the current source CAS. Unselected source and authored head
     /// remain unchanged. A retry recovers the original observation without any
     /// source filesystem access, even after later edits or selection changes.
@@ -161,11 +175,17 @@ impl Repository {
         // Trusted roots such as macOS /var commonly contain symlink aliases.
         // The reader rejects physical admin roots and anchors every descendant.
         let directory = scope.directory().canonicalize()?;
-        let observation =
-            crate::capture::observe(&mut engine, before.root, &directory, scope.paths())?;
-        if observation.witnesses.is_empty() || observation.witnesses.len() > 262144 {
+        let observation = crate::capture::observe(
+            &mut engine,
+            before.root,
+            &directory,
+            scope.paths(),
+            scope.mode(),
+        )?;
+        if observation.witnesses.is_empty() || observation.witnesses.len() > MAX_WITNESS_BYTES {
             return Err(Error::Limit("capture observation witness bytes"));
         }
+        crate::capture::report(&observation.witnesses)?;
         let records = collect_closure([observation.root], |id| encode_bounded(engine.object(id)?))?;
         engine.verify(observation.root, limits())?;
         let prepared = self.prepare_objects(records)?;
@@ -215,7 +235,7 @@ impl Repository {
             .optional()?;
         let (witnesses, checksum) = row.ok_or_else(|| invalid("missing capture observation"))?;
         if witnesses.is_empty()
-            || witnesses.len() > 262144
+            || witnesses.len() > MAX_WITNESS_BYTES
             || checksum != observation_checksum(prior.after.root, &scope, &witnesses)?
         {
             return Err(invalid("capture observation checksum"));
@@ -250,4 +270,53 @@ pub(super) fn insert_observation(
         ],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_mode_and_root_round_trip_without_opening_the_directory() {
+        let directory = Path::new("/nonexistent-avc-scope/input");
+        let root = CaptureScope::recursive(directory, vec![Vec::new()]).unwrap();
+        let encoded = root.encode();
+        assert!(encoded.starts_with(b"AVCCAP02\x01"));
+        assert_eq!(CaptureScope::decode(&encoded).unwrap(), root);
+        assert!(CaptureScope::new(directory, vec![Vec::new()]).is_err());
+        let leaf = CaptureScope::new(directory, vec![vec![b"a".to_vec()]]).unwrap();
+        let recursive = CaptureScope::recursive(directory, vec![vec![b"a".to_vec()]]).unwrap();
+        assert_ne!(leaf, recursive);
+        assert_ne!(leaf.encode(), recursive.encode());
+        assert_eq!(CaptureScope::decode(&leaf.encode()).unwrap(), leaf);
+        assert_eq!(
+            CaptureScope::decode(&recursive.encode()).unwrap(),
+            recursive
+        );
+    }
+
+    #[test]
+    fn stored_scope_rejects_unknown_mode_old_version_and_trailing_or_noncanonical_data() {
+        let root = CaptureScope::recursive(Path::new("/input"), vec![Vec::new()]).unwrap();
+        for mode in [0, 2, 255] {
+            let mut bytes = root.encode();
+            bytes[8] = mode;
+            assert!(CaptureScope::decode(&bytes).is_err());
+        }
+        let mut bytes = root.encode();
+        bytes[7] = b'1';
+        assert!(CaptureScope::decode(&bytes).is_err());
+        let mut bytes = root.encode();
+        bytes.push(0);
+        assert!(CaptureScope::decode(&bytes).is_err());
+        let mut bytes = CaptureScope::new(
+            Path::new("/input"),
+            vec![vec![b"a".to_vec()], vec![b"b".to_vec()]],
+        )
+        .unwrap()
+        .encode();
+        let n = bytes.len();
+        bytes.swap(n - 1, n - 6);
+        assert!(CaptureScope::decode(&bytes).is_err());
+    }
 }

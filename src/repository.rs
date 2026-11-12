@@ -39,7 +39,7 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 mod capture;
 pub use capture::CaptureScope;
@@ -722,7 +722,7 @@ CREATE TABLE operations (
 ) STRICT;
 CREATE TABLE capture_observations (
     request_key TEXT PRIMARY KEY REFERENCES operations(request_key) DEFERRABLE INITIALLY DEFERRED,
-    witnesses BLOB NOT NULL CHECK(length(witnesses) BETWEEN 1 AND 262144),
+    witnesses BLOB NOT NULL CHECK(length(witnesses) BETWEEN 1 AND 16773120),
     checksum BLOB NOT NULL CHECK(length(checksum) = 32)
 ) STRICT;
 CREATE TRIGGER capture_receipt_metadata BEFORE INSERT ON operations

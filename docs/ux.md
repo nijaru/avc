@@ -17,7 +17,7 @@ By default, `status`/`log` operate locally; `show`/`diff` can read-through-fetch
 
 ## 2. Starting and cloning
 
-**Available local Git subset:** `git import --git-dir DIR --commit OID --request-key KEY` imports one exact SHA-1 tip into an untouched store; `git export --git-dir DIR [--revision ID]` writes candidate objects, not refs. Both require `--experimental`. Without an exact `--revision`, export requires selected source equal to the authored head. `git origins` reports retained foreign boundaries without contacting Git. These do not implement the clone/fetch/push workflows below. See [Git](git.md#available-local-round-trip) for the example, metadata projection and current refusal of Git-anchored history export.
+**Available local Git subset:** `git import --git-dir DIR --commit OID --request-key KEY` imports one exact SHA-1 tip into an untouched store; `git export --git-dir DIR [--revision ID]` writes candidate objects, not refs. Both require `--experimental`. Native-born parentless history exports as Git roots without a prior import; known foreign anchors still require exact retained origins. Without an exact `--revision`, export requires selected source equal to the authored head. `git origins` reports retained foreign boundaries without contacting Git. These do not implement the clone/fetch/push workflows below. See [Git](git.md#available-local-round-trip) for the example, metadata projection and current refusal of Git-anchored history export.
 
 ```sh
 avc init

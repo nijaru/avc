@@ -8,7 +8,7 @@ The experimental CLI implements a **local SHA-1 subset**, using an explicit Git 
 
 - `avc --experimental git import --git-dir DIR --commit OID --request-key KEY` requires an untouched initialized native store. An exact retry returns its receipt even after native edits or removal of the Git store; the path is not part of identity.
 - `avc git origins [--revision NATIVE_ID]` inspects retained boundaries without contacting Git. Ordinary `status` does not traverse ancestry or certify Git completeness.
-- `avc --experimental git export --git-dir DIR [--revision NATIVE_ID]` prepares a complete representable candidate, writes immutable Git objects and records derived mappings. Without `--revision`, selected source must match the authored head. Selection/generation remain unchanged. Every native root must have a retained original mapping, and its exact Git commit must be available at the target; missing origins refuse rather than fabricate a root. New translated commits use mapped parents in native parent order.
+- `avc --experimental git export --git-dir DIR [--revision NATIVE_ID]` prepares a complete representable candidate, writes immutable Git objects and records derived mappings. Without `--revision`, selected source must match the authored head. Selection/generation remain unchanged. A parentless native revision without a foreign boundary exports as a Git root, including after native history transfer. Known import anchors instead require retained origin metadata and their exact original Git commits at the target; missing or damaged origins refuse rather than fall back to native-root translation. New translated commits use mapped parents in native parent order.
 
 Empty top-level source is representable; standalone empty directory entries and unresolved source conflicts refuse. Export policy **`avc.git.export/v1`** uses the exact native author as both Git author and committer, with the native timezone. The identity must be a single-line representable `Name <email>`; no email is invented. Git time is `time_ns.div_euclid(1_000_000_000)` seconds. Exact nanoseconds and the native RevisionId remain in `avc-time-ns` and `avc-revision` audit headers. This is a declared Git precision projection, not a lossless native identity round trip. Reimport treats those headers as untrusted foreign data and creates the ordinary deterministic Git anchor; it does not recreate native parents from a claimed ID.
 
@@ -45,7 +45,29 @@ git --git-dir "$demo/foreign.git" cat-file -p "$oid"
 ./target/debug/avc --repository "$demo/native" git origins
 ```
 
-The sections below describe the broader interoperability target; refs, remote synchronization, foreign partial views and hosting are not implemented by this subset.
+A repository started in AVC needs no prior Git import. This example captures and authors a native root, then exports it into a fresh bare Git store:
+
+```sh
+mkdir -p tmp
+demo=$(mktemp -d tmp/git-native.XXXXXX)
+mkdir "$demo/native"
+./target/debug/avc --repository "$demo/native" --experimental init
+printf 'native source\n' > "$demo/hello"
+./target/debug/avc --repository "$demo/native" --experimental capture \
+  --from "$demo" --expected-generation 0 --request-key capture hello
+./target/debug/avc --repository "$demo/native" --experimental commit \
+  --author 'Native <native@example.test>' -m 'Native root' \
+  --expected-generation 1 --request-key root
+git init --bare "$demo/target.git"
+result=$(./target/debug/avc --repository "$demo/native" --experimental git export \
+  --git-dir "$demo/target.git")
+oid=${result#commit=sha1:}; oid=${oid%% *}
+test "$(git --git-dir "$demo/target.git" rev-list --count "$oid")" = 1
+test -z "$(git --git-dir "$demo/target.git" show -s --format=%P "$oid")"
+git --git-dir "$demo/target.git" show "$oid:hello"
+```
+
+Both examples leave candidate objects unreferenced; no Git branch was created. The sections below describe the broader interoperability target; refs, remote synchronization, foreign partial views and hosting are not implemented by this subset.
 
 ## The fundamental identity incompatibility
 

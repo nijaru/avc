@@ -1,73 +1,293 @@
-//! Explicit, existing filesystem leaf observation; never a scan or database writer.
+//! Read-only, bounded Linux/macOS filesystem observation, never database custody.
 //!
-//! Only regular files and symlink leaves are supported (Linux and macOS). All
-//! directory components are opened without following symlinks, including those
-//! of the absolute observation root. `.avc` and `.git` components are refused in
-//! the entire request before any filesystem access (ASCII case variants too,
-//! to protect case-insensitive filesystems). Source bytes are read once;
-//! unselected source entries are retained. Missing source directory parents are
-//! constructed, but existing non-directory parents and selected source directories
-//! refuse rather than implicitly removing unselected source. Requests contain
-//! 1..=1024 leaves, at most 64 KiB of `component.len() + 1` bytes in total, and
-//! an absolute root pathname of at most 4096 bytes. Captured leaf payloads are at
-//! most 16 MiB each and 256 MiB in total. The selected closure
-//! is verified at 100,000 objects, 256 MiB total and 16 MiB per canonical payload.
+//! Leaves observes explicit files/links; Recursive also enumerates explicit
+//! directories (including an empty path for the root). Traversal uses anchored,
+//! NOFOLLOW directory descriptors and raw basenames. Administrative `.avc`/`.git`
+//! names (ASCII case-insensitive) and directory identity aliases are unobserved:
+//! no descendant is opened, and existing excluded Source bindings are preserved.
+//! Missing ordinary Source bindings and directory-to-leaf changes refuse, never
+//! imply deletion. Non-directory Source ancestors refuse partial selection.
 //!
-//! Successful observations detect *observed* changes, not all possible races or a
-//! simultaneous snapshot. Each leaf's pre-open lstat, open fstat, post-read fstat
-//! and post-read lstat must agree in device, inode, full mode, size, mtime and
-//! ctime (including nanoseconds). Parent/root name-to-handle identity and mode
-//! are guarded before/after reads; directory size/times may change independently.
-//! An adversary can still relocate a directory between guards or restore names.
-//! On macOS readlinkat uses the guarded parent/name, while Linux reads the pinned
-//! symlink descriptor. Neither approach promises a globally atomic snapshot.
+//! Requests: 1..=1024 disjoint paths, 64 KiB total component lengths plus one per
+//! component, canonical paths <=256 components/4096 bytes, names <=255 bytes.
+//! Expanded observations: <=100,000 entries (including excluded live names),
+//! 16 MiB per Blob, 256 MiB captured bytes. The entire resulting closure,
+//! including unselected Base, is checked at
+//! 100,000 objects/256 MiB/16 MiB per payload. Metadata has MAX_WITNESS_BYTES limit.
 //!
-//! Durable evidence format v1 (all integers little-endian, at most 256 KiB):
-//! `AVCOBS01`, root pathname (u32 length + raw bytes), root-chain count u32,
-//! root-chain stats (starting with `/`, ending with the root fd), path count u32,
-//! then per path: component count u32, each raw component (u32 length + bytes),
-//! relative-parent count u32 and stats in prefix order, leaf kind u8 (1=file,
-//! 2=symlink), leaf stat, observed byte count u64. A stat is nine 64-bit words:
-//! device u64, inode u64, mode u64 (includes type), size i64, mtime i64,
-//! mtime-nanoseconds i64, ctime i64, ctime-nanoseconds i64, link-count u64.
-//! Leaf stats encode once the exact equal witnesses at all four checks;
-//! parent stats describe opening,
-//! with only identity/mode equality asserted by later guards. Root fd device and
-//! inode are thus in the last root-chain stat. Paths are lexicographically sorted.
-//! Regular-file hardlinks (link count other than one) are unsupported, to avoid
-//! ordinary aliases of SQLite-owned files. Physical root canonicalization rejects
-//! administrative components before opening descriptors. This does not protect
-//! against hostile same-user hardlink substitution or administrative replacement.
-//! Payload bytes are NOT evidence metadata; they belong to immutable source blobs.
+//! Evidence detects observed races, NOT a simultaneous or complete filesystem
+//! snapshot. File/link pre-open lstat, open fstat, post-read fstat/lstat agree.
+//! Scanned directories have equal full stats before enumeration and after their
+//! subtree; ancestor/root guards compare identity and mode. Name-to-fd checks
+//! surround reads. Relocation/restoration between guards can escape detection.
+//! macOS readlinkat uses guarded parent/name; Linux uses the pinned link fd.
+//! Regular files with nlink != 1 refuse before opening (including ordinary
+//! hardlink aliases of SQLite-owned files). Trusted root/admin replacement by a
+//! hostile same-user actor is outside this contract. No database file is opened.
+//!
+//! Private witness v2 grammar (all integers little-endian; strict EOF):
+//! `AVCOBS02`, raw absolute root (u32 length + bytes), root-chain count u32,
+//! that many 72-byte stats (from `/` through root), files/symlinks/scanned-directories
+//! counts (three u64), record count u32, then records. Each record is path (u32
+//! component count, each u32 length + raw bytes), kind u8, then kind-specific data:
+//! 0=unscanned ancestor: stat; 1=file or 2=link: stat + observed length u64;
+//! 3=scanned directory: stat; 4=UNOBSERVED exclusion: no further data. Records
+//! follow sorted-scope, sorted-live-child depth-first traversal; Base-only
+//! exclusions follow that directory's live children. Ancestor records may repeat.
+//! Exclusions also include preserved administrative Base-only bindings.
+//! A stat is device u64, inode u64, full mode u64, size i64, mtime i64,
+//! mtime-nanoseconds i64, ctime i64, ctime-nanoseconds i64, nlink u64.
+//! Equal checks are encoded once; ancestor stats assert only identity/mode.
+//! Counts describe actual observations, not preserved excluded Source entries.
+//! `report` validates framing and derives diagnostics, not Source authority.
+//! Payload bytes belong only to Native Blobs and are never repeated in evidence.
 
 use crate::{Id, engine::Engine, repository::Result};
 use std::path::Path;
+
+pub const MAX_WITNESS_BYTES: usize = 16 * 1024 * 1024 - 4096;
+const MAX_ENTRIES: usize = 100_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum CaptureMode {
+    Leaves = 0,
+    Recursive = 1,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CaptureReport {
+    pub files: u64,
+    pub symlinks: u64,
+    pub directories: u64,
+    pub excluded: Vec<Vec<Vec<u8>>>,
+}
+
+fn refused(context: &str, reason: impl std::fmt::Display) -> crate::repository::Error {
+    crate::repository::Error::Invalid(format!("observation refused at {context}: {reason}"))
+}
+fn administrative(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(b".avc") || name.eq_ignore_ascii_case(b".git")
+}
+
+/// Validate the entire scope without filesystem access. The caller may retain
+/// its own sorted representation; this function owns the shared scope policy.
+pub(crate) fn validate_paths(paths: &[Vec<Vec<u8>>], mode: CaptureMode) -> Result<()> {
+    if paths.is_empty() || paths.len() > 1024 {
+        return Err(refused("paths", "requires 1..=1024 explicit paths"));
+    }
+    let mut bytes = 0;
+    for path in paths {
+        crate::validate_path(path)?;
+        if (path.is_empty() && mode == CaptureMode::Leaves)
+            || path.iter().any(|name| administrative(name))
+        {
+            return Err(refused(
+                "paths",
+                "empty leaf path or administrative basename .avc or .git",
+            ));
+        }
+        bytes += path.iter().map(|name| name.len() + 1).sum::<usize>();
+        if bytes > 64 * 1024 {
+            return Err(refused("paths", "raw path bytes exceed 64 KiB"));
+        }
+    }
+    let mut sorted: Vec<_> = paths.iter().collect();
+    sorted.sort_unstable();
+    if sorted.windows(2).any(|pair| pair[1].starts_with(pair[0])) {
+        return Err(refused("paths", "duplicate or overlapping paths"));
+    }
+    Ok(())
+}
 
 pub struct Observation {
     pub root: Id,
     pub witnesses: Vec<u8>,
 }
 
-/// Observe a bounded, explicit set of existing leaves without changing live files
-/// or persisting anything. On refusal, unpublished immutable engine objects may
+/// Observe explicit leaves or recursive directory scopes without changing live
+/// files or persisting anything. On refusal, unpublished immutable engine objects may
 /// remain, but no observation root is returned. No deletion is inferred.
 pub fn observe(
     engine: &mut Engine,
     base: Id,
     directory: &Path,
     paths: &[Vec<Vec<u8>>],
+    mode: CaptureMode,
 ) -> Result<Observation> {
+    validate_paths(paths, mode)?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        unix::observe(engine, base, directory, paths)
+        unix::observe(engine, base, directory, paths, mode)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = (engine, base, directory, paths);
+        let _ = (engine, base, directory, paths, mode);
         Err(crate::repository::Error::Invalid(
             "observation refused: unsupported platform (requires Linux or macOS dirfds)".into(),
         ))
     }
+}
+
+/// Parse bounded private evidence for post-publication diagnostics. Damaged or
+/// unknown evidence is an error, never a reason to undo an acknowledged capture.
+pub fn report(witnesses: &[u8]) -> Result<CaptureReport> {
+    struct Reader<'a>(&'a [u8]);
+    impl<'a> Reader<'a> {
+        fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+            let (head, rest) = self
+                .0
+                .split_at_checked(n)
+                .ok_or_else(|| refused("witnesses", "truncated metadata"))?;
+            self.0 = rest;
+            Ok(head)
+        }
+        fn count(&mut self) -> Result<usize> {
+            Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")) as usize)
+        }
+        fn word(&mut self) -> Result<u64> {
+            Ok(u64::from_le_bytes(
+                self.take(8)?.try_into().expect("eight bytes"),
+            ))
+        }
+        fn raw(&mut self, max: usize) -> Result<&'a [u8]> {
+            let n = self.count()?;
+            if n > max {
+                return Err(refused("witnesses", "oversized field"));
+            }
+            self.take(n)
+        }
+        fn stat(&mut self, kind: u8) -> Result<u64> {
+            let stat = self.take(72)?;
+            let word = |offset| {
+                u64::from_le_bytes(stat[offset..offset + 8].try_into().expect("stat word"))
+            };
+            let expected = match kind {
+                0 | 3 => 0o040000,
+                1 => 0o100000,
+                2 => 0o120000,
+                _ => unreachable!(),
+            };
+            if word(16) > u64::from(u32::MAX)
+                || word(16) & 0o170000 != expected
+                || word(24) > i64::MAX as u64
+                || word(40) >= 1_000_000_000
+                || word(56) >= 1_000_000_000
+                || (kind == 1 && word(64) != 1)
+            {
+                return Err(refused("witnesses", "invalid stat fields"));
+            }
+            Ok(word(24))
+        }
+    }
+    if witnesses.len() > MAX_WITNESS_BYTES {
+        return Err(refused("witnesses", "metadata limit"));
+    }
+    let mut input = Reader(witnesses);
+    if input.take(8)? != b"AVCOBS02" {
+        return Err(refused("witnesses", "unknown version"));
+    }
+    let root = input.raw(4096)?;
+    if !root.starts_with(b"/") || root.contains(&0) {
+        return Err(refused("witnesses", "invalid root"));
+    }
+    for name in root.split(|b| *b == b'/').filter(|name| !name.is_empty()) {
+        crate::validate_name(name)?;
+        if administrative(name) {
+            return Err(refused("witnesses", "administrative root"));
+        }
+    }
+    let chain = input.count()?;
+    if chain
+        != 1 + root
+            .split(|b| *b == b'/')
+            .filter(|name| !name.is_empty())
+            .count()
+    {
+        return Err(refused("witnesses", "invalid root chain"));
+    }
+    for _ in 0..chain {
+        input.stat(0)?;
+    }
+    let expected = [input.word()?, input.word()?, input.word()?];
+    let records = input.count()?;
+    if records > MAX_WITNESS_BYTES / 5 {
+        return Err(refused("witnesses", "record limit"));
+    }
+    let mut result = CaptureReport {
+        files: 0,
+        symlinks: 0,
+        directories: 0,
+        excluded: Vec::new(),
+    };
+    let mut payload_bytes = 0u64;
+    for _ in 0..records {
+        let count = input.count()?;
+        if count > 256 {
+            return Err(refused("witnesses", "path depth limit"));
+        }
+        let mut path = Vec::with_capacity(count);
+        let mut bytes = 0;
+        for _ in 0..count {
+            let name = input.raw(255)?;
+            crate::validate_name(name)?;
+            bytes += name.len() + 1;
+            path.push(name);
+        }
+        if bytes.saturating_sub(1) > 4096 {
+            return Err(refused("witnesses", "path byte limit"));
+        }
+        let kind = input.take(1)?[0];
+        if kind != 4 && path.iter().any(|name| administrative(name)) {
+            return Err(refused("witnesses", "observed administrative path"));
+        }
+        match kind {
+            0 | 3 => {
+                input.stat(kind)?;
+                if kind == 3 {
+                    result.directories += 1;
+                }
+            }
+            1 | 2 => {
+                if path.is_empty() {
+                    return Err(refused("witnesses", "empty leaf"));
+                }
+                let size = input.stat(kind)?;
+                let observed = input.word()?;
+                if size != observed || size > 16 * 1024 * 1024 {
+                    return Err(refused("witnesses", "invalid observed size"));
+                }
+                payload_bytes += size;
+                if payload_bytes > 256 * 1024 * 1024 {
+                    return Err(refused("witnesses", "payload byte limit"));
+                }
+                if kind == 1 {
+                    result.files += 1;
+                } else {
+                    result.symlinks += 1;
+                }
+            }
+            4 => {
+                if path.is_empty() {
+                    return Err(refused("witnesses", "empty exclusion"));
+                }
+                result
+                    .excluded
+                    .push(path.into_iter().map(<[u8]>::to_vec).collect());
+            }
+            _ => return Err(refused("witnesses", "unknown record kind")),
+        }
+        if result.files + result.symlinks + result.directories > MAX_ENTRIES as u64 {
+            return Err(refused("witnesses", "expanded entry limit"));
+        }
+    }
+    if !input.0.is_empty() || expected != [result.files, result.symlinks, result.directories] {
+        return Err(refused(
+            "witnesses",
+            "trailing bytes or inconsistent counts",
+        ));
+    }
+    Ok(result)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -76,7 +296,7 @@ mod unix {
     use crate::{
         Entry, Object,
         engine::{Edit, Limits},
-        repository::{Error, MAX_CLOSURE_BYTES, MAX_OBJECT_BYTES, MAX_OBJECTS},
+        repository::{MAX_CLOSURE_BYTES, MAX_OBJECT_BYTES, MAX_OBJECTS},
     };
     use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
     use std::{
@@ -87,22 +307,12 @@ mod unix {
         os::unix::ffi::OsStrExt,
     };
 
-    const MAX_PATHS: usize = 1024;
-    const MAX_PATH_BYTES: usize = 64 * 1024;
-    const MAX_WITNESSES: usize = 256 * 1024;
-
-    fn refused(context: &str, reason: impl std::fmt::Display) -> Error {
-        Error::Invalid(format!("observation refused at {context}: {reason}"))
-    }
     fn checked<T, E: std::fmt::Display>(
         context: &str,
         operation: &str,
         result: std::result::Result<T, E>,
     ) -> Result<T> {
         result.map_err(|error| refused(context, format_args!("{operation}: {error}")))
-    }
-    fn administrative(name: &[u8]) -> bool {
-        name.eq_ignore_ascii_case(b".avc") || name.eq_ignore_ascii_case(b".git")
     }
 
     // Convert explicitly instead of casting: stat field widths/signedness vary
@@ -179,21 +389,8 @@ mod unix {
         // Name spelling is not authority on case/normalization-insensitive
         // filesystems. Refuse aliases of an actual administrative directory,
         // before any descendant (potentially SQLite-owned) file is opened.
-        for admin in [".avc", ".git"] {
-            match fs::statat(&parent, admin, AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(raw) => {
-                    if before.same_directory(&Stat::from(raw, context)?) {
-                        return Err(refused(context, "administrative directory identity"));
-                    }
-                }
-                Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => {
-                    return Err(refused(
-                        context,
-                        format_args!("check administrative identity: {error}"),
-                    ));
-                }
-            }
+        if administrative_identity(&parent, &before, context)? {
+            return Err(refused(context, "administrative directory identity"));
         }
         let fd = checked(
             context,
@@ -216,6 +413,22 @@ mod unix {
             opened,
         })
     }
+    fn administrative_identity(parent: impl AsFd, before: &Stat, context: &str) -> Result<bool> {
+        for admin in [".avc", ".git"] {
+            match fs::statat(&parent, admin, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(raw) if before.same_directory(&Stat::from(raw, context)?) => return Ok(true),
+                Ok(_) | Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => {
+                    return Err(refused(
+                        context,
+                        format_args!("check administrative identity: {error}"),
+                    ));
+                }
+            }
+        }
+        Ok(false)
+    }
+
     fn guard(chain: &[Directory], context: &str) -> Result<()> {
         for (index, directory) in chain.iter().enumerate() {
             let named = if index == 0 {
@@ -239,23 +452,70 @@ mod unix {
         Ok(())
     }
 
-    struct Evidence(Vec<u8>);
+    struct Evidence {
+        bytes: Vec<u8>,
+        reserved: usize,
+        records: u32,
+        counts: [u64; 3],
+    }
     impl Evidence {
-        fn append(&mut self, bytes: &[u8]) -> Result<()> {
-            if bytes.len() > MAX_WITNESSES - self.0.len() {
-                return Err(refused("witnesses", "metadata exceeds 256 KiB"));
+        fn reserve(&mut self, length: usize) -> Result<()> {
+            if length > MAX_WITNESS_BYTES - self.bytes.len() - self.reserved {
+                return Err(refused("witnesses", "metadata exceeds MAX_WITNESS_BYTES"));
             }
-            self.0.extend_from_slice(bytes);
+            self.reserved += length;
+            Ok(())
+        }
+        fn append(&mut self, bytes: &[u8]) -> Result<()> {
+            self.reserve(bytes.len())?;
+            self.reserved -= bytes.len();
+            self.bytes.extend_from_slice(bytes);
             Ok(())
         }
         fn count(&mut self, count: usize) -> Result<()> {
             let count = checked("witnesses", "length", u32::try_from(count))?;
             self.append(&count.to_le_bytes())
         }
-        fn bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        fn raw(&mut self, bytes: &[u8]) -> Result<()> {
             self.count(bytes.len())?;
             self.append(bytes)
         }
+        fn record(
+            &mut self,
+            path: &[Vec<u8>],
+            kind: u8,
+            stat: Option<&Stat>,
+            size: usize,
+        ) -> Result<()> {
+            // Check the whole record before growing the output buffer.
+            let length = record_size(path, kind);
+            self.reserve(length)?;
+            self.reserved -= length;
+            self.count(path.len())?;
+            for name in path {
+                self.raw(name)?;
+            }
+            self.append(&[kind])?;
+            if let Some(stat) = stat {
+                self.append(&stat.0)?;
+            }
+            if kind == 1 || kind == 2 {
+                self.append(&(size as u64).to_le_bytes())?;
+            }
+            self.records += 1;
+            if (1..=3).contains(&kind) {
+                self.counts[usize::from(kind - 1)] += 1;
+            }
+            Ok(())
+        }
+    }
+    fn record_size(path: &[Vec<u8>], kind: u8) -> usize {
+        5 + path.iter().map(|name| 4 + name.len()).sum::<usize>()
+            + match kind {
+                0 | 3 => 72,
+                1 | 2 => 80,
+                _ => 0,
+            }
     }
 
     fn root_components(directory: &Path) -> Result<Vec<&[u8]>> {
@@ -287,36 +547,8 @@ mod unix {
     // Preflight the WHOLE request, including administrative names, before open.
     fn preflight<'a>(directory: &'a Path, paths: &'a [Vec<Vec<u8>>]) -> Result<Request<'a>> {
         let components = root_components(directory)?;
-        if paths.is_empty() || paths.len() > MAX_PATHS {
-            return Err(refused("paths", "requires 1..=1024 explicit leaves"));
-        }
-        let mut bytes = 0usize;
-        for (index, path) in paths.iter().enumerate() {
-            // Reject unbounded public input before formatting its raw contents.
-            checked(
-                &format!("path[{index}]"),
-                "path",
-                crate::validate_path(path),
-            )?;
-            let context = format!("{path:?}");
-            if path.is_empty() || path.iter().any(|name| administrative(name)) {
-                return Err(refused(
-                    &context,
-                    "empty path or administrative basename .avc or .git",
-                ));
-            }
-            bytes += path.iter().map(|name| name.len() + 1).sum::<usize>();
-            if bytes > MAX_PATH_BYTES {
-                return Err(refused("paths", "raw path bytes exceed 64 KiB"));
-            }
-        }
         let mut paths: Vec<_> = paths.iter().collect();
         paths.sort_unstable();
-        for pair in paths.windows(2) {
-            if pair[1].starts_with(pair[0]) {
-                return Err(refused("paths", "duplicate or overlapping leaf paths"));
-            }
-        }
         Ok(Request {
             root_components: components,
             paths,
@@ -442,11 +674,244 @@ mod unix {
         )
     }
 
+    struct Scanner<'a> {
+        engine: &'a mut Engine,
+        evidence: Evidence,
+        captured: usize,
+        expanded: usize,
+    }
+    struct Frame {
+        path: crate::engine::Path,
+        names: std::vec::IntoIter<(Vec<u8>, usize)>,
+        entries: Vec<(Vec<u8>, Entry)>,
+        prior: std::collections::BTreeMap<Vec<u8>, Entry>,
+        before: Stat,
+    }
+    impl Scanner<'_> {
+        fn entry_budget(&mut self) -> Result<()> {
+            if self.expanded == MAX_ENTRIES {
+                return Err(refused("directory", "expanded entry limit exceeds 100000"));
+            }
+            self.expanded += 1;
+            Ok(())
+        }
+        fn read_leaf(
+            &mut self,
+            chain: &[Directory],
+            path: &[Vec<u8>],
+            prior: &Entry,
+            mode: CaptureMode,
+        ) -> Result<Entry> {
+            let context = format!("{path:?}");
+            if matches!(prior, Entry::Directory(_)) {
+                return Err(refused(
+                    &context,
+                    "selected source is a directory; implicit deletion refused",
+                ));
+            }
+            if mode == CaptureMode::Recursive && matches!(prior, Entry::Conflict(_)) {
+                return Err(refused(
+                    &context,
+                    "recursive conflict replacement is unsupported",
+                ));
+            }
+            guard(chain, &context)?;
+            // Charge evidence before allocating/reading payload bytes.
+            let reserve = record_size(path, 1);
+            self.evidence.reserve(reserve)?;
+            let (bytes, symlink, executable, witness) = leaf(
+                &chain.last().expect("root directory present").fd,
+                path.last().expect("leaf path is nonempty"),
+                &context,
+                MAX_CLOSURE_BYTES - self.captured,
+            )?;
+            guard(chain, &context)?;
+            self.evidence.reserved -= reserve;
+            self.evidence.record(
+                path,
+                if symlink { 2 } else { 1 },
+                Some(&witness),
+                bytes.len(),
+            )?;
+            self.captured += bytes.len();
+            let blob = self.engine.blob(bytes)?;
+            Ok(if symlink {
+                Entry::Symlink(blob)
+            } else {
+                Entry::File { blob, executable }
+            })
+        }
+        fn frame(
+            &mut self,
+            chain: &[Directory],
+            path: crate::engine::Path,
+            prior: Entry,
+        ) -> Result<Frame> {
+            let context = format!("{path:?}");
+            let prior = match prior {
+                Entry::Directory(id) => self.engine.list(id, &[])?.into_iter().collect(),
+                Entry::Conflict(_) => {
+                    return Err(refused(
+                        &context,
+                        "recursive conflict replacement is unsupported",
+                    ));
+                }
+                _ => std::collections::BTreeMap::new(),
+            };
+            guard(chain, &context)?;
+            let fd = &chain.last().expect("root directory present").fd;
+            let before = stat(fd, &context)?;
+            self.evidence.record(&path, 3, Some(&before), 0)?;
+            let mut names = Vec::new();
+            let mut dir = checked(&context, "enumerate directory", fs::Dir::read_from(fd))?;
+            for item in &mut dir {
+                let item = checked(&context, "read directory entry", item)?;
+                let name = item.file_name().to_bytes();
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                self.entry_budget()?;
+                crate::validate_name(name)?;
+                let length = path.iter().map(|name| name.len() + 1).sum::<usize>() + name.len();
+                if path.len() == 256 || length > 4096 {
+                    return Err(refused(
+                        &context,
+                        "expanded path exceeds 256 components or 4096 bytes",
+                    ));
+                }
+                let reserve = record_size(&path, 1) + 4 + name.len();
+                // Reserve eventual witness bytes BEFORE copying untrusted names.
+                self.evidence.reserve(reserve)?;
+                names.push((name.to_vec(), reserve));
+            }
+            names.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            if names.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err(refused(&context, "duplicate enumerated directory name"));
+            }
+            Ok(Frame {
+                path,
+                names: names.into_iter(),
+                entries: Vec::new(),
+                prior,
+                before,
+            })
+        }
+        fn subtree(
+            &mut self,
+            chain: &mut Vec<Directory>,
+            path: crate::engine::Path,
+            prior: Entry,
+        ) -> Result<Entry> {
+            // One frame and descriptor per directory depth; no Rust recursion.
+            let mut stack = vec![self.frame(chain, path, prior)?];
+            loop {
+                let frame = stack.last_mut().expect("active scan frame");
+                if let Some((name, reserve)) = frame.names.next() {
+                    let mut path = frame.path.clone();
+                    path.push(name.clone());
+                    self.evidence.reserved -= reserve;
+                    let context = format!("{path:?}");
+                    let prior = frame.prior.remove(&name).unwrap_or(Entry::Absent);
+                    let fd = &chain.last().expect("scan directory present").fd;
+                    // Never stat/open a descendant of an excluded basename.
+                    let excluded = if administrative(&name) {
+                        true
+                    } else {
+                        let raw = lstat(fd, OsStr::from_bytes(&name), &context)?;
+                        FileType::from_raw_mode(raw.st_mode).is_dir()
+                            && administrative_identity(fd, &Stat::from(raw, &context)?, &context)?
+                    };
+                    if excluded {
+                        self.evidence.record(&path, 4, None, 0)?;
+                        if prior != Entry::Absent {
+                            frame.entries.push((name, prior));
+                        }
+                        continue;
+                    }
+                    guard(chain, &context)?;
+                    let raw = lstat(
+                        &chain.last().expect("scan directory present").fd,
+                        OsStr::from_bytes(&name),
+                        &context,
+                    )?;
+                    if FileType::from_raw_mode(raw.st_mode).is_dir() {
+                        let child = open_directory(
+                            &chain.last().expect("scan directory present").fd,
+                            &name,
+                            &context,
+                        )?;
+                        chain.push(child);
+                        stack.push(self.frame(chain, path, prior)?);
+                    } else {
+                        let value = self.read_leaf(chain, &path, &prior, CaptureMode::Recursive)?;
+                        stack
+                            .last_mut()
+                            .expect("active scan frame")
+                            .entries
+                            .push((name, value));
+                    }
+                    continue;
+                }
+                let mut frame = stack.pop().expect("active scan frame");
+                for (name, entry) in frame.prior {
+                    // Base administrative data is protected even when absent live.
+                    if !administrative(&name) {
+                        let mut missing = frame.path.clone();
+                        missing.push(name);
+                        return Err(refused(
+                            &format!("{missing:?}"),
+                            "missing previously-selected path; deletion unsupported",
+                        ));
+                    }
+                    let reserve = record_size(&frame.path, 4) + 4 + name.len();
+                    self.evidence.reserve(reserve)?;
+                    let mut path = frame.path.clone();
+                    path.push(name.clone());
+                    self.evidence.reserved -= reserve;
+                    self.evidence.record(&path, 4, None, 0)?;
+                    frame.entries.push((name, entry));
+                }
+                let context = format!("{:?}", frame.path);
+                guard(chain, &context)?;
+                let directory = chain.last().expect("scan directory present");
+                require_directory_same(&frame.before, &stat(&directory.fd, &context)?, &context)?;
+                let named = if chain.len() == 1 {
+                    lstat(fs::CWD, OsStr::new("/"), &context)?
+                } else {
+                    lstat(
+                        &chain[chain.len() - 2].fd,
+                        OsStr::from_bytes(&directory.name),
+                        &context,
+                    )?
+                };
+                require_directory_same(&frame.before, &Stat::from(named, &context)?, &context)?;
+                let value = Entry::Directory(self.engine.directory(frame.entries)?);
+                if let Some(parent) = stack.last_mut() {
+                    let name = frame.path.pop().expect("child directory has basename");
+                    parent.entries.push((name, value));
+                    chain.pop();
+                } else {
+                    return Ok(value);
+                }
+            }
+        }
+    }
+    fn require_directory_same(before: &Stat, after: &Stat, context: &str) -> Result<()> {
+        if before != after {
+            return Err(refused(
+                context,
+                "enumerated directory changed during observation",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn observe(
         engine: &mut Engine,
         base: Id,
         directory: &Path,
         paths: &[Vec<Vec<u8>>],
+        mode: CaptureMode,
     ) -> Result<Observation> {
         let request = preflight(directory, paths)?;
         // Resolve only the explicitly trusted root to exclude physical admin
@@ -465,85 +930,129 @@ mod unix {
         }
         let root_depth = chain.len();
         guard(&chain, "root")?;
-        let mut evidence = Evidence(Vec::new());
-        evidence.append(b"AVCOBS01")?;
-        evidence.bytes(directory.as_os_str().as_bytes())?;
+        let mut evidence = Evidence {
+            bytes: Vec::new(),
+            reserved: 0,
+            records: 0,
+            counts: [0; 3],
+        };
+        evidence.append(b"AVCOBS02")?;
+        evidence.raw(directory.as_os_str().as_bytes())?;
         evidence.count(chain.len())?;
         for directory in &chain {
             evidence.append(&directory.opened.0)?;
         }
-        evidence.count(request.paths.len())?;
+        let report_offset = evidence.bytes.len();
+        evidence.append(&[0; 28])?; // three u64 counts and one u32 record count
+        let mut scanner = Scanner {
+            engine,
+            evidence,
+            captured: 0,
+            expanded: 0,
+        };
         let mut root = base;
-        let mut captured = 0;
         let mut previous_parents: &[Vec<u8>] = &[];
         for path in request.paths {
             let context = format!("{path:?}");
-            let parents = &path[..path.len() - 1];
+            let parents = &path[..path.len().saturating_sub(1)];
+            // Construct only missing logical ancestors, never replace one.
+            for length in 1..path.len() {
+                let prefix = &path[..length];
+                match checked(
+                    &context,
+                    "read source parent",
+                    scanner.engine.read(root, prefix),
+                )? {
+                    Entry::Directory(_) => {}
+                    Entry::Absent => {
+                        let empty = scanner.engine.empty()?;
+                        root = put(scanner.engine, root, prefix, Entry::Directory(empty))?;
+                    }
+                    _ => {
+                        return Err(refused(
+                            &context,
+                            "source parent is not a directory; select the ancestor recursively",
+                        ));
+                    }
+                }
+            }
             let shared = parents
                 .iter()
                 .zip(previous_parents)
                 .take_while(|(a, b)| a == b)
                 .count();
-            // Sorted paths keep shared directory prefixes contiguous. Retain
-            // their handles so replacement between sibling reads is detected.
             chain.truncate(root_depth + shared);
-            for name in &parents[shared..] {
+            for (index, name) in parents.iter().enumerate().skip(shared) {
                 let parent = &chain.last().expect("root directory present").fd;
-                chain.push(open_directory(parent, name, &context)?);
+                let directory = open_directory(parent, name, &context)?;
+                scanner
+                    .evidence
+                    .record(&parents[..=index], 0, Some(&directory.opened), 0)?;
+                chain.push(directory);
             }
             guard(&chain, &context)?;
-            evidence.count(path.len())?;
-            for name in path {
-                evidence.bytes(name)?;
-            }
-            evidence.count(chain.len() - root_depth)?;
-            for parent in &chain[root_depth..] {
-                evidence.append(&parent.opened.0)?;
-            }
-            let parent = &chain.last().expect("root directory present").fd;
-            let (bytes, symlink, executable, witness) = leaf(
-                parent,
-                path.last().expect("nonempty validated path"),
-                &context,
-                MAX_CLOSURE_BYTES - captured,
-            )?;
-            guard(&chain, &context)?;
-            evidence.append(&[if symlink { 2 } else { 1 }])?;
-            evidence.append(&witness.0)?;
-            evidence.append(&(bytes.len() as u64).to_le_bytes())?;
-            captured += bytes.len();
-            // Explicitly construct only missing logical parents; never replace
-            // an existing source ancestor or remove unselected directory entries.
-            for length in 1..path.len() {
-                let prefix = &path[..length];
-                match checked(&context, "read source parent", engine.read(root, prefix))? {
-                    Entry::Directory(_) => {}
-                    Entry::Absent => {
-                        let empty = engine.empty()?;
-                        root = put(engine, root, prefix, Entry::Directory(empty))?;
-                    }
-                    _ => return Err(refused(&context, "source parent is not a directory")),
-                }
-            }
-            if matches!(engine.read(root, path)?, Entry::Directory(_)) {
-                return Err(refused(
-                    &context,
-                    "selected source is a directory; implicit deletion refused",
-                ));
-            }
-            let blob = engine.blob(bytes)?;
-            let value = if symlink {
-                Entry::Symlink(blob)
+            scanner.entry_budget()?;
+            let prior = scanner.engine.read(root, path)?;
+            let is_directory = if path.is_empty() {
+                true
             } else {
-                Entry::File { blob, executable }
+                let named = fs::statat(
+                    &chain.last().expect("root directory present").fd,
+                    OsStr::from_bytes(path.last().expect("nonempty path")),
+                    AtFlags::SYMLINK_NOFOLLOW,
+                );
+                match named {
+                    Ok(raw) => FileType::from_raw_mode(raw.st_mode).is_dir(),
+                    Err(rustix::io::Errno::NOENT)
+                        if mode == CaptureMode::Recursive && prior != Entry::Absent =>
+                    {
+                        return Err(refused(
+                            &context,
+                            "missing previously-selected path; deletion unsupported",
+                        ));
+                    }
+                    Err(error) => return Err(refused(&context, format_args!("lstat: {error}"))),
+                }
             };
-            root = put(engine, root, path, value)?;
+            let value = if mode == CaptureMode::Recursive && is_directory {
+                if let Some(name) = path.last() {
+                    let child = open_directory(
+                        &chain.last().expect("root directory present").fd,
+                        name,
+                        &context,
+                    )?;
+                    chain.push(child);
+                }
+                let value = scanner.subtree(&mut chain, path.clone(), prior)?;
+                if !path.is_empty() {
+                    chain.pop();
+                }
+                value
+            } else {
+                scanner.read_leaf(&chain, path, &prior, mode)?
+            };
+            root = if path.is_empty() {
+                // Engine edits intentionally require nonempty paths. The scanner
+                // already built and checked the complete selected root directory.
+                match value {
+                    Entry::Directory(id) => id,
+                    _ => return Err(refused("root", "requires a directory")),
+                }
+            } else {
+                put(scanner.engine, root, path, value)?
+            };
             previous_parents = parents;
         }
         guard(&chain, "root/final parent")?;
+        for (index, count) in scanner.evidence.counts.iter().enumerate() {
+            scanner.evidence.bytes[report_offset + index * 8..report_offset + (index + 1) * 8]
+                .copy_from_slice(&count.to_le_bytes());
+        }
+        scanner.evidence.bytes[report_offset + 24..report_offset + 28]
+            .copy_from_slice(&scanner.evidence.records.to_le_bytes());
         // Engine verification bounds the complete selected closure. Its API has
         // no per-object limit, so check encoded payloads in that closure too.
-        engine.verify(
+        scanner.engine.verify(
             root,
             Limits {
                 objects: MAX_OBJECTS,
@@ -551,10 +1060,10 @@ mod unix {
                 bytes: MAX_CLOSURE_BYTES,
             },
         )?;
-        verify_payloads(engine, root)?;
+        verify_payloads(scanner.engine, root)?;
         Ok(Observation {
             root,
-            witnesses: evidence.0,
+            witnesses: scanner.evidence.bytes,
         })
     }
 
@@ -641,6 +1150,52 @@ mod unix {
             std::fs::write(&path, b"after!").unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
             assert!(require_same(&before, &stat(&file, "test").unwrap(), "test").is_err());
+        }
+
+        #[test]
+        fn enumerated_membership_guard_detects_directory_change() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let file = File::open(&root).unwrap();
+            file.set_modified(std::time::UNIX_EPOCH).unwrap();
+            let before = stat(&file, "test").unwrap();
+            std::fs::write(root.join("new-member"), b"member").unwrap();
+            let after = stat(&file, "test").unwrap();
+            // Identity guards alone deliberately allow independent membership
+            // changes; enumerated-directory guards must reject them.
+            assert!(before.same_directory(&after));
+            assert!(require_directory_same(&before, &after, "test").is_err());
+        }
+
+        #[test]
+        fn metadata_reservations_and_expansion_are_bounded_before_allocation() {
+            let mut engine = Engine::new();
+            let mut scanner = Scanner {
+                engine: &mut engine,
+                evidence: Evidence {
+                    bytes: Vec::new(),
+                    reserved: 0,
+                    records: 0,
+                    counts: [0; 3],
+                },
+                captured: 0,
+                expanded: MAX_ENTRIES - 1,
+            };
+            scanner.entry_budget().unwrap();
+            assert!(scanner.entry_budget().is_err());
+            scanner.evidence.reserve(MAX_WITNESS_BYTES).unwrap();
+            assert!(scanner.evidence.append(b"x").is_err());
+            assert!(scanner.evidence.bytes.is_empty());
+            scanner.evidence.reserved -= 1;
+            scanner.evidence.append(b"x").unwrap();
+            assert_eq!(scanner.evidence.bytes, b"x");
+            assert!(
+                scanner
+                    .evidence
+                    .record(&[], 3, Some(&Stat([0; 72])), 0)
+                    .is_err()
+            );
+            assert_eq!(scanner.evidence.bytes, b"x");
         }
 
         #[test]

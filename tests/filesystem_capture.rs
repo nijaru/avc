@@ -1,6 +1,11 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
-use avc::{Entry, Id, Object, capture::observe, engine::Edit, engine::Engine};
+use avc::{
+    Entry, Id, Object,
+    capture::{CaptureMode, MAX_WITNESS_BYTES, observe, report},
+    engine::Edit,
+    engine::Engine,
+};
 use std::{
     ffi::OsStr,
     fs,
@@ -48,7 +53,7 @@ fn payload<'a>(engine: &'a Engine, root: Id, path: &[Vec<u8>]) -> &'a [u8] {
 fn refuses(root: &Path, paths: &[Vec<Vec<u8>>]) -> String {
     let mut engine = Engine::new();
     let base = engine.empty().unwrap();
-    match observe(&mut engine, base, root, paths) {
+    match observe(&mut engine, base, root, paths, CaptureMode::Leaves) {
         Ok(_) => panic!("unexpected observation success"),
         Err(error) => error.to_string(),
     }
@@ -80,7 +85,7 @@ fn captures_exact_bytes_modes_links_and_nested_leaves_without_live_writes() {
         path(&[b"link"]),
         path(&[b"one", b"group-exec"]),
     ];
-    let observed = observe(&mut engine, base, &root, &selected).unwrap();
+    let observed = observe(&mut engine, base, &root, &selected, CaptureMode::Leaves).unwrap();
     assert_eq!(payload(&engine, observed.root, &selected[1]), binary);
     assert_eq!(payload(&engine, observed.root, &selected[2]), target);
     assert!(matches!(
@@ -97,8 +102,13 @@ fn captures_exact_bytes_modes_links_and_nested_leaves_without_live_writes() {
             ..
         }
     ));
-    assert!(observed.witnesses.starts_with(b"AVCOBS01"));
-    assert!(observed.witnesses.len() <= 256 * 1024);
+    assert!(observed.witnesses.starts_with(b"AVCOBS02"));
+    assert!(observed.witnesses.len() <= MAX_WITNESS_BYTES);
+    let report = report(&observed.witnesses).unwrap();
+    assert_eq!(
+        (report.files, report.symlinks, report.directories),
+        (3, 1, 0)
+    );
     assert_eq!(fs::read(root.join("binary")).unwrap(), binary);
     assert_eq!(
         fs::read_link(root.join("link"))
@@ -123,7 +133,14 @@ fn raw_non_utf8_basename_is_not_normalized() {
     fs::write(root.join(OsStr::from_bytes(name)), b"\xff\0").unwrap();
     let mut engine = Engine::new();
     let base = engine.empty().unwrap();
-    let observed = observe(&mut engine, base, &root, &[path(&[name])]).unwrap();
+    let observed = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[name])],
+        CaptureMode::Leaves,
+    )
+    .unwrap();
     assert_eq!(payload(&engine, observed.root, &path(&[name])), b"\xff\0");
     assert!(
         observed
@@ -161,10 +178,11 @@ fn versioned_evidence_contains_exact_raw_paths_root_identity_and_leaf_stats() {
         base,
         &root,
         &[path(&[b"link"]), path(&[b"file"])],
+        CaptureMode::Leaves,
     )
     .unwrap();
     let mut input = observation.witnesses.as_slice();
-    assert_eq!(&take::<8>(&mut input), b"AVCOBS01");
+    assert_eq!(&take::<8>(&mut input), b"AVCOBS02");
     assert_eq!(raw(&mut input), root.as_os_str().as_bytes());
     let chain = count(&mut input);
     assert!(chain > 0);
@@ -182,11 +200,13 @@ fn versioned_evidence_contains_exact_raw_paths_root_identity_and_leaf_stats() {
             );
         }
     }
+    for expected in [1, 1, 0] {
+        assert_eq!(u64::from_le_bytes(take(&mut input)), expected);
+    }
     assert_eq!(count(&mut input), 2);
     for (name, tag) in [(b"file".as_slice(), 1), (b"link".as_slice(), 2)] {
         assert_eq!(count(&mut input), 1);
         assert_eq!(raw(&mut input), name);
-        assert_eq!(count(&mut input), 0);
         assert_eq!(take::<1>(&mut input), [tag]);
         let metadata = fs::symlink_metadata(root.join(OsStr::from_bytes(name))).unwrap();
         for expected in [metadata.dev(), metadata.ino(), u64::from(metadata.mode())] {
@@ -233,7 +253,14 @@ fn preserves_unselected_source_and_updates_only_requested_leaves() {
     );
     let top = file(&mut engine, b"top");
     let base = put(&mut engine, base, path(&[b"top"]), top.clone());
-    let observed = observe(&mut engine, base, &root, &[path(&[b"nested", b"selected"])]).unwrap();
+    let observed = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[b"nested", b"selected"])],
+        CaptureMode::Leaves,
+    )
+    .unwrap();
     assert_eq!(
         engine
             .read(observed.root, &path(&[b"nested", b"kept"]))
@@ -300,7 +327,13 @@ fn validates_entire_scope_before_opening_any_leaf() {
         let mut engine = Engine::new();
         let base = engine.empty().unwrap();
         let count = engine.object_count();
-        let error = observe(&mut engine, base, &root, &[path(&[b"first"]), selected]);
+        let error = observe(
+            &mut engine,
+            base,
+            &root,
+            &[path(&[b"first"]), selected],
+            CaptureMode::Leaves,
+        );
         assert!(error.is_err());
         assert_eq!(engine.object_count(), count);
     }
@@ -343,7 +376,16 @@ fn oversized_sparse_leaf_refuses_before_allocating_or_storing_payload() {
     let mut engine = Engine::new();
     let base = engine.empty().unwrap();
     let count = engine.object_count();
-    assert!(observe(&mut engine, base, &root, &[path(&[b"huge"])]).is_err());
+    assert!(
+        observe(
+            &mut engine,
+            base,
+            &root,
+            &[path(&[b"huge"])],
+            CaptureMode::Leaves
+        )
+        .is_err()
+    );
     assert_eq!(engine.object_count(), count);
 }
 
@@ -361,7 +403,16 @@ fn refuses_instead_of_discarding_unselected_source_directory_children() {
         path(&[b"directory"]),
         Entry::Directory(directory),
     );
-    assert!(observe(&mut engine, base, &root, &[path(&[b"directory"])]).is_err());
+    assert!(
+        observe(
+            &mut engine,
+            base,
+            &root,
+            &[path(&[b"directory"])],
+            CaptureMode::Leaves
+        )
+        .is_err()
+    );
     assert_eq!(
         payload(&engine, base, &path(&[b"directory", b"child"])),
         b"unselected child"
@@ -411,7 +462,7 @@ fn refuses_physical_admin_root_aliases_and_regular_file_hardlinks() {
 }
 
 #[test]
-fn witness_metadata_bound_explicitly_refuses_deep_repeated_parents() {
+fn v2_ancestor_records_fit_the_shared_witness_budget_without_repeating_every_parent() {
     let (_temp, root) = temp();
     let parents = vec![b"d".to_vec(); 20];
     let mut directory = root.clone();
@@ -427,7 +478,15 @@ fn witness_metadata_bound_explicitly_refuses_deep_repeated_parents() {
         path.push(name);
         selected.push(path);
     }
-    assert!(refuses(&root, &selected).contains("metadata exceeds 256 KiB"));
+    let mut engine = Engine::new();
+    let base = engine.empty().unwrap();
+    let observed = observe(&mut engine, base, &root, &selected, CaptureMode::Leaves).unwrap();
+    assert!(observed.witnesses.len() < MAX_WITNESS_BYTES);
+    let report = report(&observed.witnesses).unwrap();
+    assert_eq!(
+        (report.files, report.symlinks, report.directories),
+        (256, 0, 0)
+    );
 }
 
 #[test]
@@ -438,7 +497,14 @@ fn capture_accepts_the_exact_native_blob_payload_limit_and_refuses_one_more_byte
     let mut engine = Engine::new();
     let base = engine.empty().unwrap();
     let selected = path(&[b"boundary"]);
-    let observed = observe(&mut engine, base, &root, std::slice::from_ref(&selected)).unwrap();
+    let observed = observe(
+        &mut engine,
+        base,
+        &root,
+        std::slice::from_ref(&selected),
+        CaptureMode::Leaves,
+    )
+    .unwrap();
     // Canonical Blob payloads are raw bytes: no hypothetical length prefix is
     // charged against their physical payload limit (codec.rs Object::encode).
     assert_eq!(
@@ -460,5 +526,537 @@ fn final_closure_payload_limit_also_covers_unselected_base_objects() {
         executable: false,
     };
     let base = put(&mut engine, empty, path(&[b"unselected"]), large);
-    assert!(observe(&mut engine, base, &root, &[path(&[b"selected"])]).is_err());
+    assert!(
+        observe(
+            &mut engine,
+            base,
+            &root,
+            &[path(&[b"selected"])],
+            CaptureMode::Leaves
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn recursive_builds_exact_canonical_subtree_and_updates_without_touching_outside_scope() {
+    let (_temp, root) = temp();
+    // APFS rejects invalid UTF-8 names and normalizes composed Unicode. Use an
+    // already-decomposed spelling there, and arbitrary non-UTF-8 bytes on Linux.
+    let raw_name: &[u8] = if cfg!(target_os = "linux") {
+        b"raw-\xff\xfe"
+    } else {
+        b"raw-e\xcc\x81"
+    };
+    let unicode = "e\u{301}";
+    fs::create_dir_all(root.join("tree").join(unicode).join("empty")).unwrap();
+    for (name, contents, mode) in [
+        (b"plain".as_slice(), b"new".as_slice(), 0o600),
+        (b"run", b"run", 0o710),
+        (b"group", b"group", 0o610),
+        (raw_name, b"\0\xff", 0o600),
+    ] {
+        let live = root.join("tree").join(OsStr::from_bytes(name));
+        fs::write(&live, contents).unwrap();
+        fs::set_permissions(live, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let target = b"../../outside-\xff";
+    symlink(OsStr::from_bytes(target), root.join("tree/link")).unwrap();
+    fs::write(root.join("unselected"), b"not captured").unwrap();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let old = file(&mut engine, b"old");
+    let old_tree = put(&mut engine, empty, path(&[b"plain"]), old);
+    let base = put(
+        &mut engine,
+        empty,
+        path(&[b"tree"]),
+        Entry::Directory(old_tree),
+    );
+    let retained = file(&mut engine, b"outside Base need not exist live");
+    let base = put(&mut engine, base, path(&[b"retained"]), retained.clone());
+
+    let mut expected_tree = empty;
+    for (name, contents, executable) in [
+        (b"plain".as_slice(), b"new".as_slice(), false),
+        (b"run", b"run", true),
+        (b"group", b"group", false),
+        (raw_name, b"\0\xff", false),
+    ] {
+        let blob = engine.blob(contents.to_vec()).unwrap();
+        expected_tree = put(
+            &mut engine,
+            expected_tree,
+            path(&[name]),
+            Entry::File { blob, executable },
+        );
+    }
+    let blob = engine.blob(target.to_vec()).unwrap();
+    expected_tree = put(
+        &mut engine,
+        expected_tree,
+        path(&[b"link"]),
+        Entry::Symlink(blob),
+    );
+    let nested = put(
+        &mut engine,
+        empty,
+        path(&[b"empty"]),
+        Entry::Directory(empty),
+    );
+    expected_tree = put(
+        &mut engine,
+        expected_tree,
+        path(&[unicode.as_bytes()]),
+        Entry::Directory(nested),
+    );
+    let expected = put(
+        &mut engine,
+        base,
+        path(&[b"tree"]),
+        Entry::Directory(expected_tree),
+    );
+    let observed = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[b"tree"])],
+        CaptureMode::Recursive,
+    )
+    .unwrap();
+    assert_eq!(observed.root, expected);
+    let counts = report(&observed.witnesses).unwrap();
+    assert_eq!(
+        (counts.files, counts.symlinks, counts.directories),
+        (4, 1, 3)
+    );
+    assert!(counts.excluded.is_empty());
+    assert_eq!(
+        engine.read(observed.root, &path(&[b"retained"])).unwrap(),
+        retained
+    );
+
+    fs::write(root.join("tree/plain"), b"updated").unwrap();
+    fs::write(root.join("tree").join(unicode).join("added"), b"added").unwrap();
+    let updated = file(&mut engine, b"updated");
+    let expected = put(&mut engine, expected, path(&[b"tree", b"plain"]), updated);
+    let added = file(&mut engine, b"added");
+    let expected = put(
+        &mut engine,
+        expected,
+        path(&[b"tree", unicode.as_bytes(), b"added"]),
+        added,
+    );
+    let observed = observe(
+        &mut engine,
+        observed.root,
+        &root,
+        &[path(&[b"tree"])],
+        CaptureMode::Recursive,
+    )
+    .unwrap();
+    assert_eq!(observed.root, expected);
+    assert_eq!(report(&observed.witnesses).unwrap().files, 5);
+}
+
+#[test]
+fn recursive_exclusions_preserve_native_admin_data_including_absent_live_bindings() {
+    let (_temp, root) = temp();
+    fs::create_dir_all(root.join("nested/.GiT")).unwrap();
+    fs::create_dir_all(root.join(".AVC")).unwrap();
+    // An unreadable administration file must not be opened, even by a scan.
+    fs::write(root.join(".AVC/store.sqlite"), b"not source").unwrap();
+    fs::set_permissions(
+        root.join(".AVC/store.sqlite"),
+        fs::Permissions::from_mode(0o0),
+    )
+    .unwrap();
+    symlink("/never-follow-this-target", root.join("nested/.GiT/config")).unwrap();
+    fs::write(root.join("ordinary"), b"source").unwrap();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let protected = file(&mut engine, b"Native .avc binding from another source");
+    let protected_child = put(&mut engine, empty, path(&[b"data"]), protected.clone());
+    let base = put(
+        &mut engine,
+        empty,
+        path(&[b".avc"]),
+        Entry::Directory(protected_child),
+    );
+    let base = put(&mut engine, base, path(&[b".AVC"]), protected.clone());
+    let base = put(&mut engine, base, path(&[b".git"]), protected.clone());
+    let nested = put(&mut engine, empty, path(&[b".GiT"]), protected.clone());
+    let base = put(
+        &mut engine,
+        base,
+        path(&[b"nested"]),
+        Entry::Directory(nested),
+    );
+    let ordinary = file(&mut engine, b"source");
+    let expected = put(&mut engine, base, path(&[b"ordinary"]), ordinary);
+    let observed = observe(&mut engine, base, &root, &[vec![]], CaptureMode::Recursive).unwrap();
+    assert_eq!(observed.root, expected);
+    let mut counts = report(&observed.witnesses).unwrap();
+    assert_eq!(
+        (counts.files, counts.symlinks, counts.directories),
+        (1, 0, 2)
+    );
+    counts.excluded.sort();
+    let mut excluded = vec![
+        path(&[b".avc"]),
+        path(&[b".AVC"]),
+        path(&[b".git"]),
+        path(&[b"nested", b".GiT"]),
+    ];
+    excluded.sort();
+    assert_eq!(counts.excluded, excluded);
+    assert_eq!(
+        payload(&engine, observed.root, &path(&[b".avc", b"data"])),
+        b"Native .avc binding from another source"
+    );
+    fs::set_permissions(
+        root.join(".AVC/store.sqlite"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+}
+
+#[test]
+fn root_recursive_scans_empty_directories_but_never_follows_directory_symlinks() {
+    let (_temp, root) = temp();
+    let (_outside_temp, outside) = temp();
+    fs::create_dir(root.join("empty")).unwrap();
+    fs::write(outside.join("secret"), b"outside").unwrap();
+    symlink(&outside, root.join("link")).unwrap();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let expected = put(
+        &mut engine,
+        empty,
+        path(&[b"empty"]),
+        Entry::Directory(empty),
+    );
+    let blob = engine
+        .blob(outside.as_os_str().as_bytes().to_vec())
+        .unwrap();
+    let expected = put(
+        &mut engine,
+        expected,
+        path(&[b"link"]),
+        Entry::Symlink(blob),
+    );
+    let observed = observe(&mut engine, empty, &root, &[vec![]], CaptureMode::Recursive).unwrap();
+    assert_eq!(observed.root, expected);
+    let counts = report(&observed.witnesses).unwrap();
+    assert_eq!(
+        (counts.files, counts.symlinks, counts.directories),
+        (0, 1, 2)
+    );
+}
+
+#[test]
+fn recursive_refuses_missing_tracked_bindings_and_directory_to_leaf_or_missing() {
+    let (_temp, root) = temp();
+    fs::create_dir_all(root.join("selected/nested")).unwrap();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let tracked = file(&mut engine, b"tracked");
+    let nested = put(&mut engine, empty, path(&[b"missing"]), tracked);
+    let selected = put(
+        &mut engine,
+        empty,
+        path(&[b"nested"]),
+        Entry::Directory(nested),
+    );
+    let base = put(
+        &mut engine,
+        empty,
+        path(&[b"selected"]),
+        Entry::Directory(selected),
+    );
+    let error = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[b"selected"])],
+        CaptureMode::Recursive,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(
+        error.contains("missing previously-selected path")
+            && error.contains("deletion unsupported"),
+        "{error}"
+    );
+    assert!(error.contains(&format!(
+        "{:?}",
+        path(&[b"selected", b"nested", b"missing"])
+    )));
+    fs::remove_dir_all(root.join("selected/nested")).unwrap();
+    for replacement in [Some(false), Some(true), None] {
+        match replacement {
+            Some(false) => fs::write(root.join("selected/nested"), b"replacement").unwrap(),
+            Some(true) => symlink("target", root.join("selected/nested")).unwrap(),
+            None => {}
+        }
+        assert!(
+            observe(
+                &mut engine,
+                base,
+                &root,
+                &[path(&[b"selected"])],
+                CaptureMode::Recursive
+            )
+            .is_err()
+        );
+        if replacement.is_some() {
+            fs::remove_file(root.join("selected/nested")).unwrap();
+        }
+    }
+    fs::remove_dir(root.join("selected")).unwrap();
+    let error = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[b"selected"])],
+        CaptureMode::Recursive,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("deletion unsupported"));
+    fs::write(root.join("selected"), b"replacement").unwrap();
+    assert!(
+        observe(
+            &mut engine,
+            base,
+            &root,
+            &[path(&[b"selected"])],
+            CaptureMode::Recursive
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn recursive_explicit_directory_can_replace_source_leaf_but_partial_scope_cannot() {
+    let (_temp, root) = temp();
+    fs::create_dir(root.join("selected")).unwrap();
+    fs::write(root.join("selected/file"), b"new").unwrap();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let old = file(&mut engine, b"old");
+    let link = Entry::Symlink(engine.blob(b"target".to_vec()).unwrap());
+    let value = file(&mut engine, b"new");
+    let expected_child = put(&mut engine, empty, path(&[b"file"]), value);
+    let expected = put(
+        &mut engine,
+        empty,
+        path(&[b"selected"]),
+        Entry::Directory(expected_child),
+    );
+    for prior in [Entry::Absent, old, link] {
+        let base = put(&mut engine, empty, path(&[b"selected"]), prior.clone());
+        if prior != Entry::Absent {
+            let error = observe(
+                &mut engine,
+                base,
+                &root,
+                &[path(&[b"selected", b"file"])],
+                CaptureMode::Recursive,
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(error.contains("source parent is not a directory"));
+        }
+        let observed = observe(
+            &mut engine,
+            base,
+            &root,
+            &[path(&[b"selected"])],
+            CaptureMode::Recursive,
+        )
+        .unwrap();
+        assert_eq!(observed.root, expected);
+    }
+}
+
+#[test]
+fn recursive_scope_preflight_refuses_overlap_root_overlap_and_admin_before_io() {
+    let mut engine = Engine::new();
+    let base = engine.empty().unwrap();
+    for selected in [
+        vec![vec![], path(&[b"other"])],
+        vec![path(&[b"a"]), path(&[b"a", b"b"])],
+        vec![vec![], vec![]],
+        vec![path(&[b"allowed"]), path(&[b".AvC", b"db"])],
+    ] {
+        let before = engine.object_count();
+        let error = observe(
+            &mut engine,
+            base,
+            Path::new("/nonexistent-observer-root"),
+            &selected,
+            CaptureMode::Recursive,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(!error.contains("canonicalize"), "{error}");
+        assert_eq!(engine.object_count(), before);
+    }
+}
+
+#[test]
+fn recursive_expanded_path_limit_is_checked_even_for_empty_directories() {
+    let (_temp, root) = temp();
+    let selected = vec![b"d".to_vec(); 256];
+    let mut directory = root.clone();
+    for _ in 0..256 {
+        directory.push("d");
+    }
+    fs::create_dir_all(&directory).unwrap();
+    let mut engine = Engine::new();
+    let base = engine.empty().unwrap();
+    let observed = observe(
+        &mut engine,
+        base,
+        &root,
+        std::slice::from_ref(&selected),
+        CaptureMode::Recursive,
+    )
+    .unwrap();
+    assert_eq!(report(&observed.witnesses).unwrap().directories, 1);
+    // Traverse all 257 directories rather than merely opening a deep scope.
+    let whole = observe(&mut engine, base, &root, &[vec![]], CaptureMode::Recursive).unwrap();
+    assert_eq!(whole.root, observed.root);
+    assert_eq!(report(&whole.witnesses).unwrap().directories, 257);
+    fs::create_dir(directory.join("one-too-deep")).unwrap();
+    let error = observe(
+        &mut engine,
+        base,
+        &root,
+        &[selected],
+        CaptureMode::Recursive,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("expanded path exceeds"), "{error}");
+}
+
+#[test]
+fn recursive_refuses_conflicts_inside_scope_instead_of_erasing_alternatives() {
+    let (_temp, root) = temp();
+    fs::create_dir(root.join("selected")).unwrap();
+    fs::write(root.join("selected/file"), b"live").unwrap();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let left = file(&mut engine, b"left");
+    let right = file(&mut engine, b"right");
+    let left = put(&mut engine, empty, path(&[b"file"]), left);
+    let right = put(&mut engine, empty, path(&[b"file"]), right);
+    let conflicted = engine
+        .merge(empty, left, right, avc::engine::MergeBudget::default())
+        .unwrap();
+    assert!(conflicted.unresolved);
+    let base = put(
+        &mut engine,
+        empty,
+        path(&[b"selected"]),
+        Entry::Directory(conflicted.root),
+    );
+    let error = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[b"selected"])],
+        CaptureMode::Recursive,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("conflict replacement is unsupported"));
+    assert!(matches!(
+        engine.read(base, &path(&[b"selected", b"file"])).unwrap(),
+        Entry::Conflict(_)
+    ));
+    // Leaf mode keeps its existing explicit conflict-resolution contract.
+    let observed = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[b"selected", b"file"])],
+        CaptureMode::Leaves,
+    )
+    .unwrap();
+    assert_eq!(
+        payload(&engine, observed.root, &path(&[b"selected", b"file"])),
+        b"live"
+    );
+}
+
+#[test]
+fn recursive_accepts_explicit_file_and_link_scopes_without_enumerating_parents() {
+    let (_temp, root) = temp();
+    fs::create_dir(root.join("parent")).unwrap();
+    fs::write(root.join("parent/file"), b"file").unwrap();
+    symlink("missing", root.join("link")).unwrap();
+    fs::write(root.join("parent/unselected"), b"unselected").unwrap();
+    let mut engine = Engine::new();
+    let base = engine.empty().unwrap();
+    let paths = [path(&[b"link"]), path(&[b"parent", b"file"])];
+    let leaves = observe(&mut engine, base, &root, &paths, CaptureMode::Leaves).unwrap();
+    let recursive = observe(&mut engine, base, &root, &paths, CaptureMode::Recursive).unwrap();
+    assert_eq!(recursive.root, leaves.root);
+    let counts = report(&recursive.witnesses).unwrap();
+    assert_eq!(
+        (counts.files, counts.symlinks, counts.directories),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        engine
+            .read(recursive.root, &path(&[b"parent", b"unselected"]))
+            .unwrap(),
+        Entry::Absent
+    );
+}
+
+#[test]
+fn report_refuses_unknown_truncated_inconsistent_or_trailing_evidence() {
+    let (_temp, root) = temp();
+    fs::write(root.join("file"), b"bytes").unwrap();
+    let mut engine = Engine::new();
+    let base = engine.empty().unwrap();
+    let observed = observe(
+        &mut engine,
+        base,
+        &root,
+        &[path(&[b"file"])],
+        CaptureMode::Leaves,
+    )
+    .unwrap();
+    for length in 0..observed.witnesses.len() {
+        assert!(report(&observed.witnesses[..length]).is_err());
+    }
+    let mut bad = observed.witnesses.clone();
+    bad[7] = b'1';
+    assert!(report(&bad).is_err());
+    let mut bad = observed.witnesses.clone();
+    bad.extend_from_slice(b"trailing");
+    assert!(report(&bad).is_err());
+    let mut bad = observed.witnesses.clone();
+    let chain_offset = 12 + root.as_os_str().as_bytes().len();
+    let chain =
+        u32::from_le_bytes(bad[chain_offset..chain_offset + 4].try_into().unwrap()) as usize;
+    let counts_offset = chain_offset + 4 + chain * 72;
+    bad[counts_offset] = 2;
+    assert!(report(&bad).is_err());
+    let mut bad = observed.witnesses.clone();
+    let record_offset = counts_offset + 28;
+    bad[record_offset..record_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(report(&bad).is_err());
+    assert!(report(&vec![0; MAX_WITNESS_BYTES + 1]).is_err());
 }

@@ -5,12 +5,14 @@
 //! NOFOLLOW directory descriptors and raw basenames. Administrative `.avc`/`.git`
 //! names (ASCII case-insensitive) and directory identity aliases are unobserved:
 //! no descendant is opened, and existing excluded Source bindings are preserved.
-//! Missing ordinary Source bindings and directory-to-leaf changes refuse, never
-//! imply deletion. Non-directory Source ancestors refuse partial selection.
+//! Missing ordinary Source bindings refuse unless RecursiveRemovingMissing
+//! observes their absence in a fully scanned existing parent. Explicit missing
+//! scopes/parents and directory-to-leaf changes always refuse. Non-directory
+//! Source ancestors refuse partial selection.
 //!
 //! Requests: 1..=1024 disjoint paths, 64 KiB total component lengths plus one per
 //! component, canonical paths <=256 components/4096 bytes, names <=255 bytes.
-//! Expanded observations: <=100,000 entries (including excluded live names),
+//! Expanded entries: <=100,000 (observations, preserved exclusions and absences),
 //! 16 MiB per Blob, 256 MiB captured bytes. The entire resulting closure,
 //! including unselected Base, is checked at
 //! 100,000 objects/256 MiB/16 MiB per payload. Metadata has MAX_WITNESS_BYTES limit.
@@ -25,16 +27,22 @@
 //! hardlink aliases of SQLite-owned files). Trusted root/admin replacement by a
 //! hostile same-user actor is outside this contract. No database file is opened.
 //!
-//! Private witness v2 grammar (all integers little-endian; strict EOF):
-//! `AVCOBS02`, raw absolute root (u32 length + bytes), root-chain count u32,
-//! that many 72-byte stats (from `/` through root), files/symlinks/scanned-directories
-//! counts (three u64), record count u32, then records. Each record is path (u32
-//! component count, each u32 length + raw bytes), kind u8, then kind-specific data:
+//! Private witness v3 grammar (all integers little-endian; strict EOF):
+//! `AVCOBS03`, mode u8 (0=Leaves, 1=Recursive, 2=RecursiveRemovingMissing), raw
+//! absolute root (u32 length + bytes), root-chain count u32, that many 72-byte
+//! stats (from `/` through root), files/symlinks/scanned-directories/removed counts
+//! (four u64), record count u32, then records. Each record is path (u32 component
+//! count, each u32 length + raw bytes), kind u8, then kind-specific data:
 //! 0=unscanned ancestor: stat; 1=file or 2=link: stat + observed length u64;
-//! 3=scanned directory: stat; 4=UNOBSERVED exclusion: no further data. Records
-//! follow sorted-scope, sorted-live-child depth-first traversal; Base-only
-//! exclusions follow that directory's live children. Ancestor records may repeat.
-//! Exclusions also include preserved administrative Base-only bindings.
+//! 3=scanned directory: stat + u32 raw child-name count + each u32 length/raw name
+//! (sorted, unique, including excluded live names, from enumeration through EOF);
+//! 4=UNOBSERVED exclusion, 5=absent old binding: no further data. Kind 5 requires
+//! mode 2, a nonempty nonadministrative path, and a scanned immediate parent whose
+//! full name list lacks that raw basename. Records follow sorted-scope,
+//! sorted-live-child depth-first traversal; Base-only exclusions/absences follow
+//! that directory's live children. Ancestor records may repeat. Exclusions also
+//! include preserved administrative Base-only bindings. Full before/after scanned
+//! stats cover membership, not atomic or global snapshot consistency.
 //! A stat is device u64, inode u64, full mode u64, size i64, mtime i64,
 //! mtime-nanoseconds i64, ctime i64, ctime-nanoseconds i64, nlink u64.
 //! Equal checks are encoded once; ancestor stats assert only identity/mode.
@@ -53,6 +61,20 @@ const MAX_ENTRIES: usize = 100_000;
 pub enum CaptureMode {
     Leaves = 0,
     Recursive = 1,
+    RecursiveRemovingMissing = 2,
+}
+
+impl TryFrom<u8> for CaptureMode {
+    type Error = crate::repository::Error;
+
+    fn try_from(value: u8) -> Result<Self> {
+        match value {
+            0 => Ok(Self::Leaves),
+            1 => Ok(Self::Recursive),
+            2 => Ok(Self::RecursiveRemovingMissing),
+            _ => Err(refused("mode", "unknown capture mode")),
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -61,6 +83,7 @@ pub struct CaptureReport {
     pub symlinks: u64,
     pub directories: u64,
     pub excluded: Vec<Vec<Vec<u8>>>,
+    pub removed: Vec<Vec<Vec<u8>>>,
 }
 
 fn refused(context: &str, reason: impl std::fmt::Display) -> crate::repository::Error {
@@ -107,7 +130,8 @@ pub struct Observation {
 
 /// Observe explicit leaves or recursive directory scopes without changing live
 /// files or persisting anything. On refusal, unpublished immutable engine objects may
-/// remain, but no observation root is returned. No deletion is inferred.
+/// remain, but no observation root is returned. Only mode 2 may prune old bindings,
+/// using complete parent enumeration and successful directory guards.
 pub fn observe(
     engine: &mut Engine,
     base: Id,
@@ -133,8 +157,9 @@ pub fn observe(
 /// The explicit input may be a symlink; resolve it first, then anchor its actual
 /// parents and refuse SQLite administration files, hardlinks and special files
 /// before opening the payload. Explicit exports within `.avc/exports` remain
-/// readable: file identity, not the whole administration subtree, is protected. The caller owns read-size bounds;
-/// this does not promise stable contents or an atomic filesystem snapshot.
+/// readable: file identity, not the whole administration subtree, is protected.
+/// The caller owns read-size bounds; this does not promise stable contents or an
+/// atomic filesystem snapshot.
 pub fn open_input(path: &Path) -> Result<std::fs::File> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -205,9 +230,10 @@ pub fn report(witnesses: &[u8]) -> Result<CaptureReport> {
         return Err(refused("witnesses", "metadata limit"));
     }
     let mut input = Reader(witnesses);
-    if input.take(8)? != b"AVCOBS02" {
+    if input.take(8)? != b"AVCOBS03" {
         return Err(refused("witnesses", "unknown version"));
     }
+    let mode = CaptureMode::try_from(input.take(1)?[0])?;
     let root = input.raw(4096)?;
     if !root.starts_with(b"/") || root.contains(&0) {
         return Err(refused("witnesses", "invalid root"));
@@ -230,7 +256,7 @@ pub fn report(witnesses: &[u8]) -> Result<CaptureReport> {
     for _ in 0..chain {
         input.stat(0)?;
     }
-    let expected = [input.word()?, input.word()?, input.word()?];
+    let expected = [input.word()?, input.word()?, input.word()?, input.word()?];
     let records = input.count()?;
     if records > MAX_WITNESS_BYTES / 5 {
         return Err(refused("witnesses", "record limit"));
@@ -240,12 +266,20 @@ pub fn report(witnesses: &[u8]) -> Result<CaptureReport> {
         symlinks: 0,
         directories: 0,
         excluded: Vec::new(),
+        removed: Vec::new(),
     };
+    // Borrow raw names from the bounded input, never allocate payloads or consult
+    // Source. The retained BeforeRoot, not this diagnostic parser, owns old values.
+    let mut scanned = std::collections::BTreeMap::new();
+    let mut absent = std::collections::BTreeSet::new();
+    let mut observed = std::collections::BTreeSet::new();
+    let mut bindings = std::collections::BTreeSet::new();
+    let mut expanded_names = 0;
     let mut payload_bytes = 0u64;
     for _ in 0..records {
         let count = input.count()?;
-        if count > 256 {
-            return Err(refused("witnesses", "path depth limit"));
+        if count > 256 || count * 5 + 1 > input.0.len() {
+            return Err(refused("witnesses", "path depth limit or truncated path"));
         }
         let mut path = Vec::with_capacity(count);
         let mut bytes = 0;
@@ -262,12 +296,42 @@ pub fn report(witnesses: &[u8]) -> Result<CaptureReport> {
         if kind != 4 && path.iter().any(|name| administrative(name)) {
             return Err(refused("witnesses", "observed administrative path"));
         }
+        if kind <= 3 {
+            observed.insert(path.clone());
+        }
+        if (1..=5).contains(&kind) && !bindings.insert(path.clone()) {
+            return Err(refused("witnesses", "duplicate binding record"));
+        }
         match kind {
-            0 | 3 => {
+            0 => {
                 input.stat(kind)?;
-                if kind == 3 {
-                    result.directories += 1;
+            }
+            3 => {
+                if mode == CaptureMode::Leaves {
+                    return Err(refused("witnesses", "scanned directory in leaf mode"));
                 }
+                input.stat(kind)?;
+                let count = input.count()?;
+                if count > MAX_ENTRIES - expanded_names || count > input.0.len() / 5 {
+                    return Err(refused("witnesses", "raw name limit or truncated names"));
+                }
+                expanded_names += count;
+                let mut names = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let name = input.raw(255)?;
+                    crate::validate_name(name)?;
+                    if path.len() == 256 || bytes + name.len() > 4096 {
+                        return Err(refused("witnesses", "expanded path limit"));
+                    }
+                    if names.last().is_some_and(|previous| *previous >= name) {
+                        return Err(refused("witnesses", "unsorted or duplicate raw names"));
+                    }
+                    names.push(name);
+                }
+                if scanned.insert(path, names).is_some() {
+                    return Err(refused("witnesses", "duplicate scanned directory"));
+                }
+                result.directories += 1;
             }
             1 | 2 => {
                 if path.is_empty() {
@@ -296,13 +360,83 @@ pub fn report(witnesses: &[u8]) -> Result<CaptureReport> {
                     .excluded
                     .push(path.into_iter().map(<[u8]>::to_vec).collect());
             }
+            5 => {
+                if mode != CaptureMode::RecursiveRemovingMissing || path.is_empty() {
+                    return Err(refused(
+                        "witnesses",
+                        "absence requires mode 2 and nonempty path",
+                    ));
+                }
+                if expanded_names == MAX_ENTRIES || !absent.insert(path) {
+                    return Err(refused(
+                        "witnesses",
+                        "duplicate or excessive absent bindings",
+                    ));
+                }
+                expanded_names += 1;
+            }
             _ => return Err(refused("witnesses", "unknown record kind")),
         }
-        if result.files + result.symlinks + result.directories > MAX_ENTRIES as u64 {
+        if result.files
+            + result.symlinks
+            + result.directories
+            + absent.len() as u64
+            + result.excluded.len() as u64
+            > MAX_ENTRIES as u64
+        {
             return Err(refused("witnesses", "expanded entry limit"));
         }
     }
-    if !input.0.is_empty() || expected != [result.files, result.symlinks, result.directories] {
+    for path in &observed {
+        for length in 1..=path.len() {
+            let (name, parent) = path[..length].split_last().expect("nonempty prefix");
+            if let Some(names) = scanned.get(parent)
+                && names.binary_search(name).is_err()
+            {
+                return Err(refused(
+                    "witnesses",
+                    "observed binding or ancestor absent from raw name list",
+                ));
+            }
+            if absent.contains(&path[..length]) {
+                return Err(refused(
+                    "witnesses",
+                    "observed path contradicts absent binding",
+                ));
+            }
+        }
+    }
+    for path in &bindings {
+        for length in 1..path.len() {
+            if absent.contains(&path[..length]) {
+                return Err(refused("witnesses", "binding beneath an absent ancestor"));
+            }
+        }
+    }
+    for path in &absent {
+        let (name, parent) = path.split_last().expect("nonempty absent path");
+        let names = scanned
+            .get(parent)
+            .ok_or_else(|| refused("witnesses", "absent binding lacks scanned parent"))?;
+        if names.binary_search(name).is_ok() {
+            return Err(refused(
+                "witnesses",
+                "absent binding present in raw name list",
+            ));
+        }
+        result
+            .removed
+            .push(path.iter().map(|name| name.to_vec()).collect());
+    }
+    if !input.0.is_empty()
+        || expected
+            != [
+                result.files,
+                result.symlinks,
+                result.directories,
+                result.removed.len() as u64,
+            ]
+    {
         return Err(refused(
             "witnesses",
             "trailing bytes or inconsistent counts",
@@ -453,6 +587,20 @@ mod unix {
         Ok(false)
     }
 
+    fn missing_administrative_alias(parent: &OwnedFd, name: &[u8]) -> Result<bool> {
+        let context = format!("missing binding {name:?}");
+        match fs::statat(parent, OsStr::from_bytes(name), AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(raw) if FileType::from_raw_mode(raw.st_mode).is_dir() => {
+                administrative_identity(parent, &Stat::from(raw, &context)?, &context)
+            }
+            Ok(_) | Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(error) => Err(refused(
+                &context,
+                format_args!("check administrative alias: {error}"),
+            )),
+        }
+    }
+
     fn guard(chain: &[Directory], context: &str) -> Result<()> {
         for (index, directory) in chain.iter().enumerate() {
             let named = if index == 0 {
@@ -480,7 +628,7 @@ mod unix {
         bytes: Vec<u8>,
         reserved: usize,
         records: u32,
-        counts: [u64; 3],
+        counts: [u64; 4],
     }
     impl Evidence {
         fn reserve(&mut self, length: usize) -> Result<()> {
@@ -529,6 +677,8 @@ mod unix {
             self.records += 1;
             if (1..=3).contains(&kind) {
                 self.counts[usize::from(kind - 1)] += 1;
+            } else if kind == 5 {
+                self.counts[3] += 1;
             }
             Ok(())
         }
@@ -791,6 +941,10 @@ mod unix {
         evidence: Evidence,
         captured: usize,
         expanded: usize,
+        mode: CaptureMode,
+        // Only pruned old directories need this metadata-only walk. Sharing a
+        // directory at many logical paths must not repeatedly traverse its DAG.
+        checked_prunable: std::collections::BTreeSet<Id>,
     }
     struct Frame {
         path: crate::engine::Path,
@@ -812,7 +966,6 @@ mod unix {
             chain: &[Directory],
             path: &[Vec<u8>],
             prior: &Entry,
-            mode: CaptureMode,
         ) -> Result<Entry> {
             let context = format!("{path:?}");
             if matches!(prior, Entry::Directory(_)) {
@@ -821,7 +974,7 @@ mod unix {
                     "selected source is a directory; implicit deletion refused",
                 ));
             }
-            if mode == CaptureMode::Recursive && matches!(prior, Entry::Conflict(_)) {
+            if self.mode != CaptureMode::Leaves && matches!(prior, Entry::Conflict(_)) {
                 return Err(refused(
                     &context,
                     "recursive conflict replacement is unsupported",
@@ -874,6 +1027,7 @@ mod unix {
             let fd = &chain.last().expect("root directory present").fd;
             let before = stat(fd, &context)?;
             self.evidence.record(&path, 3, Some(&before), 0)?;
+            self.evidence.reserve(4)?; // full raw-name count, before enumeration
             let mut names = Vec::new();
             let mut dir = checked(&context, "enumerate directory", fs::Dir::read_from(fd))?;
             for item in &mut dir {
@@ -892,13 +1046,20 @@ mod unix {
                     ));
                 }
                 let reserve = record_size(&path, 1) + 4 + name.len();
-                // Reserve eventual witness bytes BEFORE copying untrusted names.
-                self.evidence.reserve(reserve)?;
+                // Charge both the child record and the duplicate name in this
+                // directory's full enumeration BEFORE copying untrusted bytes.
+                self.evidence.reserve(reserve + 4 + name.len())?;
                 names.push((name.to_vec(), reserve));
             }
             names.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             if names.windows(2).any(|pair| pair[0].0 == pair[1].0) {
                 return Err(refused(&context, "duplicate enumerated directory name"));
+            }
+            self.evidence.reserved -= 4;
+            self.evidence.count(names.len())?;
+            for (name, _) in &names {
+                self.evidence.reserved -= 4 + name.len();
+                self.evidence.raw(name)?;
             }
             Ok(Frame {
                 path,
@@ -907,6 +1068,45 @@ mod unix {
                 prior,
                 before,
             })
+        }
+        fn require_prunable(&mut self, entry: &Entry) -> Result<()> {
+            let mut pending = Vec::new();
+            match entry {
+                Entry::Conflict(_) => {
+                    return Err(refused(
+                        "missing binding",
+                        "conflict alternatives are protected",
+                    ));
+                }
+                Entry::Directory(id) => pending.push(*id),
+                _ => {}
+            }
+            while let Some(id) = pending.pop() {
+                if !self.checked_prunable.insert(id) {
+                    continue;
+                }
+                // Engine.list reads only directory metadata; never open Blob
+                // payloads or interpret opaque conflict alternatives as absent.
+                for (name, entry) in self.engine.list(id, &[])? {
+                    if administrative(&name) {
+                        return Err(refused(
+                            "missing directory",
+                            "contains protected administrative binding",
+                        ));
+                    }
+                    match entry {
+                        Entry::Conflict(_) => {
+                            return Err(refused(
+                                "missing directory",
+                                "conflict alternatives are protected",
+                            ));
+                        }
+                        Entry::Directory(child) => pending.push(child),
+                        _ => {}
+                    }
+                }
+            }
+            Ok(())
         }
         fn subtree(
             &mut self,
@@ -955,7 +1155,7 @@ mod unix {
                         chain.push(child);
                         stack.push(self.frame(chain, path, prior)?);
                     } else {
-                        let value = self.read_leaf(chain, &path, &prior, CaptureMode::Recursive)?;
+                        let value = self.read_leaf(chain, &path, &prior)?;
                         stack
                             .last_mut()
                             .expect("active scan frame")
@@ -966,22 +1166,37 @@ mod unix {
                 }
                 let mut frame = stack.pop().expect("active scan frame");
                 for (name, entry) in frame.prior {
-                    // Base administrative data is protected even when absent live.
-                    if !administrative(&name) {
+                    // Absence is RAW-name absence, not a failed OS lookup. Only
+                    // administrative aliases get a special metadata-only lookup.
+                    let fd = &chain.last().expect("scan directory present").fd;
+                    let excluded = administrative(&name)
+                        || (self.mode == CaptureMode::RecursiveRemovingMissing
+                            && missing_administrative_alias(fd, &name)?);
+                    let kind = if excluded {
+                        4
+                    } else if self.mode == CaptureMode::RecursiveRemovingMissing {
+                        self.require_prunable(&entry)?;
+                        5
+                    } else {
                         let mut missing = frame.path.clone();
                         missing.push(name);
                         return Err(refused(
                             &format!("{missing:?}"),
                             "missing previously-selected path; deletion unsupported",
                         ));
-                    }
-                    let reserve = record_size(&frame.path, 4) + 4 + name.len();
+                    };
+                    // Every Base-only output binding consumes an expansion
+                    // slot too; live exclusions were charged during enumeration.
+                    self.entry_budget()?;
+                    let reserve = record_size(&frame.path, kind) + 4 + name.len();
                     self.evidence.reserve(reserve)?;
                     let mut path = frame.path.clone();
                     path.push(name.clone());
                     self.evidence.reserved -= reserve;
-                    self.evidence.record(&path, 4, None, 0)?;
-                    frame.entries.push((name, entry));
+                    self.evidence.record(&path, kind, None, 0)?;
+                    if excluded {
+                        frame.entries.push((name, entry));
+                    }
                 }
                 let context = format!("{:?}", frame.path);
                 guard(chain, &context)?;
@@ -1046,21 +1261,24 @@ mod unix {
             bytes: Vec::new(),
             reserved: 0,
             records: 0,
-            counts: [0; 3],
+            counts: [0; 4],
         };
-        evidence.append(b"AVCOBS02")?;
+        evidence.append(b"AVCOBS03")?;
+        evidence.append(&[mode as u8])?;
         evidence.raw(directory.as_os_str().as_bytes())?;
         evidence.count(chain.len())?;
         for directory in &chain {
             evidence.append(&directory.opened.0)?;
         }
         let report_offset = evidence.bytes.len();
-        evidence.append(&[0; 28])?; // three u64 counts and one u32 record count
+        evidence.append(&[0; 36])?; // four u64 counts and one u32 record count
         let mut scanner = Scanner {
             engine,
             evidence,
             captured: 0,
             expanded: 0,
+            mode,
+            checked_prunable: std::collections::BTreeSet::new(),
         };
         let mut root = base;
         let mut previous_parents: &[Vec<u8>] = &[];
@@ -1116,17 +1334,19 @@ mod unix {
                 match named {
                     Ok(raw) => FileType::from_raw_mode(raw.st_mode).is_dir(),
                     Err(rustix::io::Errno::NOENT)
-                        if mode == CaptureMode::Recursive && prior != Entry::Absent =>
+                        if mode != CaptureMode::Leaves && prior != Entry::Absent =>
                     {
-                        return Err(refused(
-                            &context,
-                            "missing previously-selected path; deletion unsupported",
-                        ));
+                        let reason = if mode == CaptureMode::RecursiveRemovingMissing {
+                            "missing previously-selected path; deletion unsupported for explicit scopes; select an existing parent recursively"
+                        } else {
+                            "missing previously-selected path; deletion unsupported"
+                        };
+                        return Err(refused(&context, reason));
                     }
                     Err(error) => return Err(refused(&context, format_args!("lstat: {error}"))),
                 }
             };
-            let value = if mode == CaptureMode::Recursive && is_directory {
+            let value = if mode != CaptureMode::Leaves && is_directory {
                 if let Some(name) = path.last() {
                     let child = open_directory(
                         &chain.last().expect("root directory present").fd,
@@ -1141,7 +1361,7 @@ mod unix {
                 }
                 value
             } else {
-                scanner.read_leaf(&chain, path, &prior, mode)?
+                scanner.read_leaf(&chain, path, &prior)?
             };
             root = if path.is_empty() {
                 // Engine edits intentionally require nonempty paths. The scanner
@@ -1160,7 +1380,7 @@ mod unix {
             scanner.evidence.bytes[report_offset + index * 8..report_offset + (index + 1) * 8]
                 .copy_from_slice(&count.to_le_bytes());
         }
-        scanner.evidence.bytes[report_offset + 24..report_offset + 28]
+        scanner.evidence.bytes[report_offset + 32..report_offset + 36]
             .copy_from_slice(&scanner.evidence.records.to_le_bytes());
         // Engine verification bounds the complete selected closure. Its API has
         // no per-object limit, so check encoded payloads in that closure too.
@@ -1288,10 +1508,12 @@ mod unix {
                     bytes: Vec::new(),
                     reserved: 0,
                     records: 0,
-                    counts: [0; 3],
+                    counts: [0; 4],
                 },
                 captured: 0,
                 expanded: MAX_ENTRIES - 1,
+                mode: CaptureMode::Leaves,
+                checked_prunable: std::collections::BTreeSet::new(),
             };
             scanner.entry_budget().unwrap();
             assert!(scanner.entry_budget().is_err());
@@ -1308,6 +1530,143 @@ mod unix {
                     .is_err()
             );
             assert_eq!(scanner.evidence.bytes, b"x");
+        }
+
+        #[test]
+        fn base_only_exclusions_consume_the_shared_entry_budget() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let mut chain = vec![open_directory(fs::CWD, b"/", "test").unwrap()];
+            for name in root_components(&root).unwrap() {
+                let directory = open_directory(&chain.last().unwrap().fd, name, "test").unwrap();
+                chain.push(directory);
+            }
+            let mut engine = Engine::new();
+            let blob = engine.blob(b"protected".to_vec()).unwrap();
+            let base = engine
+                .directory(vec![
+                    (b".avc".to_vec(), Entry::Symlink(blob)),
+                    (b".git".to_vec(), Entry::Symlink(blob)),
+                ])
+                .unwrap();
+            for mode in [
+                CaptureMode::Recursive,
+                CaptureMode::RecursiveRemovingMissing,
+            ] {
+                for remaining in [1, 2] {
+                    let mut scanner = Scanner {
+                        engine: &mut engine,
+                        evidence: Evidence {
+                            bytes: Vec::new(),
+                            reserved: 0,
+                            records: 0,
+                            counts: [0; 4],
+                        },
+                        captured: 0,
+                        expanded: MAX_ENTRIES - remaining,
+                        mode,
+                        checked_prunable: std::collections::BTreeSet::new(),
+                    };
+                    assert_eq!(
+                        scanner
+                            .subtree(&mut chain, vec![], Entry::Directory(base))
+                            .is_err(),
+                        remaining == 1
+                    );
+                    assert_eq!(scanner.expanded, MAX_ENTRIES);
+                }
+            }
+        }
+
+        #[test]
+        fn pruned_directory_walk_caches_shared_metadata_ids_without_blob_ids() {
+            let mut engine = Engine::new();
+            let blob = engine.blob(b"payload".to_vec()).unwrap();
+            let leaf = engine
+                .directory(vec![(b"file".to_vec(), Entry::Symlink(blob))])
+                .unwrap();
+            let branch = engine
+                .directory(vec![
+                    (b"a".to_vec(), Entry::Directory(leaf)),
+                    (b"b".to_vec(), Entry::Directory(leaf)),
+                ])
+                .unwrap();
+            let root = engine
+                .directory(vec![
+                    (b"left".to_vec(), Entry::Directory(branch)),
+                    (b"right".to_vec(), Entry::Directory(branch)),
+                ])
+                .unwrap();
+            let mut scanner = Scanner {
+                engine: &mut engine,
+                evidence: Evidence {
+                    bytes: Vec::new(),
+                    reserved: 0,
+                    records: 0,
+                    counts: [0; 4],
+                },
+                captured: 0,
+                expanded: 0,
+                mode: CaptureMode::RecursiveRemovingMissing,
+                checked_prunable: std::collections::BTreeSet::new(),
+            };
+            for _ in 0..2 {
+                scanner.require_prunable(&Entry::Directory(root)).unwrap();
+                assert_eq!(
+                    scanner.checked_prunable,
+                    [root, branch, leaf].into_iter().collect()
+                );
+            }
+            assert!(!scanner.checked_prunable.contains(&blob));
+        }
+
+        #[test]
+        fn scanned_raw_name_list_and_child_record_share_the_exact_metadata_budget() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            std::fs::write(root.join("child"), b"not read by enumeration").unwrap();
+            let mut chain = vec![open_directory(fs::CWD, b"/", "test").unwrap()];
+            for name in root_components(&root).unwrap() {
+                let directory = open_directory(&chain.last().unwrap().fd, name, "test").unwrap();
+                chain.push(directory);
+            }
+            let child_record = record_size(&[], 1) + 4 + b"child".len();
+            let full_name_list = 4 + 4 + b"child".len();
+            let required = record_size(&[], 3) + full_name_list + child_record;
+            let mut engine = Engine::new();
+            for short in [0, 1] {
+                let mut scanner = Scanner {
+                    engine: &mut engine,
+                    evidence: Evidence {
+                        bytes: Vec::new(),
+                        reserved: 0,
+                        records: 0,
+                        counts: [0; 4],
+                    },
+                    captured: 0,
+                    expanded: 0,
+                    mode: CaptureMode::RecursiveRemovingMissing,
+                    checked_prunable: std::collections::BTreeSet::new(),
+                };
+                scanner
+                    .evidence
+                    .reserve(MAX_WITNESS_BYTES - required + short)
+                    .unwrap();
+                let result = scanner.frame(&chain, vec![], Entry::Absent);
+                assert_eq!(result.is_err(), short == 1);
+                assert_eq!(scanner.captured, 0);
+                if short == 0 {
+                    assert_eq!(result.unwrap().names.len(), 1);
+                    assert_eq!(
+                        scanner.evidence.bytes.len(),
+                        record_size(&[], 3) + full_name_list
+                    );
+                    assert_eq!(
+                        scanner.evidence.bytes.len() + scanner.evidence.reserved,
+                        MAX_WITNESS_BYTES
+                    );
+                }
+            }
         }
 
         #[test]

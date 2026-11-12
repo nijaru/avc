@@ -39,7 +39,7 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 mod capture;
 pub use capture::CaptureScope;

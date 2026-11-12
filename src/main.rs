@@ -122,14 +122,17 @@ struct Capture {
     /// Source directory; defaults to the project directory.
     #[usage(long)]
     from: Option<PathBuf>,
-    /// Include complete directory descendants ('.' selects the root). No ignore rules or deletions.
+    /// Include complete directory descendants ('.' selects the root). No ignore rules.
     #[usage(long)]
     recursive: bool,
+    /// Remove absent raw-name bindings only within fully scanned existing directories.
+    #[usage(long, requires("--recursive"))]
+    remove_missing: bool,
     #[usage(long)]
     expected_generation: u64,
     #[usage(long)]
     request_key: String,
-    /// Relative scopes; directories require --recursive. Missing selected paths refuse.
+    /// Relative scopes; directories require --recursive. Missing requested scopes refuse.
     #[usage(required)]
     paths: Vec<PathBuf>,
 }
@@ -346,6 +349,8 @@ fn print_receipt(receipt: &Receipt) {
                 avc::capture::CaptureMode::Leaves => "leaves",
                 avc::capture::CaptureMode::Recursive =>
                     "recursive (no ignore rules; missing selected paths refuse)",
+                avc::capture::CaptureMode::RecursiveRemovingMissing =>
+                    "recursive with removal of proven-missing bindings (existing directories only)",
             }
         );
         for path in scope.paths() {
@@ -369,6 +374,12 @@ fn capture_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
         "Observed: files={} symlinks={} directories={}",
         report.files, report.symlinks, report.directories
     );
+    for path in report.removed {
+        println!(
+            "Removed from selected source: {} (including any selected descendants; live files not deleted)",
+            display_path(&path)
+        );
+    }
     for path in report.excluded {
         println!(
             "Unobserved administration scope: {} (not read; any selected binding retained)",
@@ -772,7 +783,9 @@ fn run(cli: CommandLine) -> Result<()> {
                 paths.push(parts);
             }
             let directory = args.from.as_deref().unwrap_or(&cli.repository);
-            let scope = if args.recursive {
+            let scope = if args.remove_missing {
+                avc::repository::CaptureScope::recursive_removing_missing(directory, paths)?
+            } else if args.recursive {
                 avc::repository::CaptureScope::recursive(directory, paths)?
             } else {
                 avc::repository::CaptureScope::new(directory, paths)?

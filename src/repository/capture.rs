@@ -2,9 +2,10 @@
 use super::*;
 use crate::capture::{CaptureMode, MAX_WITNESS_BYTES};
 
-/// Exact requested filesystem scope and inclusion mode. Recursive scopes include
-/// new descendants, but neither mode infers deletions. Relative directory inputs
-/// become absolute lexically; constructing retry identity never opens the source.
+/// Exact requested filesystem scope and inclusion/removal policy. Recursive
+/// scopes include new descendants; removal requires explicit consent and complete
+/// directory coverage. Relative directory inputs become absolute lexically;
+/// constructing retry identity never opens the source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaptureScope {
     directory: PathBuf,
@@ -20,6 +21,12 @@ impl CaptureScope {
     /// the root directory. Missing previously selected bindings still refuse.
     pub fn recursive(directory: &Path, paths: Vec<Vec<Vec<u8>>>) -> Result<Self> {
         Self::with_mode(directory, paths, CaptureMode::Recursive)
+    }
+    /// Also remove missing raw-name bindings beneath existing selected
+    /// directories after complete successful enumeration. Missing requested
+    /// scopes and directory-to-leaf replacements still refuse.
+    pub fn recursive_removing_missing(directory: &Path, paths: Vec<Vec<Vec<u8>>>) -> Result<Self> {
+        Self::with_mode(directory, paths, CaptureMode::RecursiveRemovingMissing)
     }
     fn with_mode(
         directory: &Path,
@@ -59,11 +66,8 @@ impl CaptureScope {
     }
 
     pub(super) fn encode(&self) -> Vec<u8> {
-        let mut out = b"AVCCAP02".to_vec();
-        out.push(match self.mode {
-            CaptureMode::Leaves => 0,
-            CaptureMode::Recursive => 1,
-        });
+        let mut out = b"AVCCAP03".to_vec();
+        out.push(self.mode as u8);
         let root = self.directory.as_os_str().as_encoded_bytes();
         out.extend_from_slice(&(root.len() as u32).to_le_bytes());
         out.extend_from_slice(root);
@@ -99,14 +103,10 @@ impl CaptureScope {
             return Err(Error::Limit("stored capture scope"));
         }
         let mut input = bytes;
-        if take(&mut input, 8)? != b"AVCCAP02" {
+        if take(&mut input, 8)? != b"AVCCAP03" {
             return Err(invalid("capture scope version"));
         }
-        let mode = match take(&mut input, 1)?[0] {
-            0 => CaptureMode::Leaves,
-            1 => CaptureMode::Recursive,
-            _ => return Err(invalid("capture inclusion mode")),
-        };
+        let mode = CaptureMode::try_from(take(&mut input, 1)?[0])?;
         let len = number(&mut input, 4)?;
         if len > 4096 {
             return Err(Error::Limit("capture directory path"));
@@ -281,7 +281,7 @@ mod tests {
         let directory = Path::new("/nonexistent-avc-scope/input");
         let root = CaptureScope::recursive(directory, vec![Vec::new()]).unwrap();
         let encoded = root.encode();
-        assert!(encoded.starts_with(b"AVCCAP02\x01"));
+        assert!(encoded.starts_with(b"AVCCAP03\x01"));
         assert_eq!(CaptureScope::decode(&encoded).unwrap(), root);
         assert!(CaptureScope::new(directory, vec![Vec::new()]).is_err());
         let leaf = CaptureScope::new(directory, vec![vec![b"a".to_vec()]]).unwrap();
@@ -293,19 +293,26 @@ mod tests {
             CaptureScope::decode(&recursive.encode()).unwrap(),
             recursive
         );
+        let removing =
+            CaptureScope::recursive_removing_missing(directory, vec![Vec::new()]).unwrap();
+        assert_ne!(removing, root);
+        assert!(removing.encode().starts_with(b"AVCCAP03\x02"));
+        assert_eq!(CaptureScope::decode(&removing.encode()).unwrap(), removing);
     }
 
     #[test]
     fn stored_scope_rejects_unknown_mode_old_version_and_trailing_or_noncanonical_data() {
         let root = CaptureScope::recursive(Path::new("/input"), vec![Vec::new()]).unwrap();
-        for mode in [0, 2, 255] {
+        for mode in [0, 3, 255] {
             let mut bytes = root.encode();
             bytes[8] = mode;
             assert!(CaptureScope::decode(&bytes).is_err());
         }
-        let mut bytes = root.encode();
-        bytes[7] = b'1';
-        assert!(CaptureScope::decode(&bytes).is_err());
+        for &version in b"12" {
+            let mut bytes = root.encode();
+            bytes[7] = version;
+            assert!(CaptureScope::decode(&bytes).is_err());
+        }
         let mut bytes = root.encode();
         bytes.push(0);
         assert!(CaptureScope::decode(&bytes).is_err());

@@ -66,8 +66,15 @@ impl Repository {
                 actual: current.generation,
             });
         }
-        if amend && current.revision.is_none() {
-            return Err(invalid("amend requires an authored head"));
+        if amend {
+            let head = current
+                .revision
+                .ok_or_else(|| invalid("amend requires an authored head"))?;
+            if self.git_origin(head)?.is_some() {
+                return Err(invalid(
+                    "cannot amend a foreign import anchor; author a native child first",
+                ));
+            }
         }
         // Validate the source being authored, not every ancestor's source again.
         // Retained parents are immutable and were admitted when first authored.

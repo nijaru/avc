@@ -39,6 +39,7 @@ enum Command {
     /// Rewrite the selected tip using selected source, preserving ChangeId and parents.
     Amend(Commit),
     Rebase(Rebase),
+    Git(Git),
     History(History),
     Log(Log),
 }
@@ -124,6 +125,45 @@ struct Rebase {
     expected_generation: u64,
     #[usage(long)]
     request_key: String,
+}
+/// Local Git translation; no index, ref, worktree or network publication.
+#[derive(Args)]
+struct Git {
+    #[usage(subcommand)]
+    command: GitCommand,
+}
+#[derive(Subcommands)]
+enum GitCommand {
+    /// Import an exact local Git commit into an untouched native store.
+    Import(GitImport),
+    /// Export an authored snapshot as candidate objects, not a Git ref.
+    Export(GitExport),
+    /// Inspect retained foreign boundaries; does not contact Git.
+    Origins(GitOrigins),
+}
+#[derive(Args)]
+struct GitImport {
+    /// Explicit Git administration directory (for example a bare clone).
+    #[usage(long)]
+    git_dir: PathBuf,
+    /// Exact SHA-1 commit, optionally prefixed sha1:. Ref names are not accepted.
+    #[usage(long)]
+    commit: avc::git::GitOid,
+    #[usage(long)]
+    request_key: String,
+}
+#[derive(Args)]
+struct GitExport {
+    #[usage(long)]
+    git_dir: PathBuf,
+    /// Exact authored revision; default requires clean selected source/head.
+    #[usage(long)]
+    revision: Option<Id>,
+}
+#[derive(Args)]
+struct GitOrigins {
+    #[usage(long)]
+    revision: Option<Id>,
 }
 /// Generation-checked local history operations; no filesystem or remote effects.
 #[derive(Args)]
@@ -260,6 +300,7 @@ fn print_receipt(receipt: &Receipt) {
     let target = match &receipt.operation {
         avc::repository::Operation::Rebase { onto } => format!(" onto={onto}"),
         avc::repository::Operation::Undo { target } => format!(" undo={}", target.escape_debug()),
+        avc::repository::Operation::ImportGit { commit } => format!(" foreign={commit}"),
         _ => String::new(),
     };
     println!(
@@ -455,6 +496,9 @@ fn run(cli: CommandLine) -> Result<()> {
             | Command::Amend(_)
             | Command::Rebase(_)
             | Command::History(_)
+            | Command::Git(Git {
+                command: GitCommand::Import(_) | GitCommand::Export(_)
+            })
     );
     if mutating && !cli.experimental {
         return Err(
@@ -482,9 +526,63 @@ fn run(cli: CommandLine) -> Result<()> {
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| "unborn".to_owned());
             println!(
-                "Experimental native repository\nRoot: {root}\nRevision: {revision}\nGeneration: {generation}\nFilesystem: not scanned"
+                "Experimental native repository\nRoot: {root}\nRevision: {revision}\nGeneration: {generation}\nFilesystem: not scanned\nGit ancestry: not inspected (use git origins)"
             );
         }
+        Command::Git(args) => match args.command {
+            GitCommand::Import(args) => {
+                let receipt = repo.import_git(&args.git_dir, args.commit, &args.request_key)?;
+                print_receipt(&receipt);
+                eprintln!(
+                    "Native import anchor with retained foreign Git ancestry boundary; no Git refs or files changed."
+                );
+            }
+            GitCommand::Export(args) => {
+                let revision = match args.revision {
+                    Some(id) => id,
+                    None => {
+                        let current = repo.status()?;
+                        let id = current
+                            .revision
+                            .ok_or("Git export requires an authored revision")?;
+                        if repo.revision(id)?.root != current.root {
+                            return Err("Git export refuses selected-but-uncommitted source; commit it or select --revision explicitly".into());
+                        }
+                        id
+                    }
+                };
+                let oid = repo.export_git(&args.git_dir, revision)?;
+                println!(
+                    "commit={oid} revision={revision} policy=avc.git.export/v1 publication=objects-only"
+                );
+                eprintln!(
+                    "Candidate objects only: no Git ref, index, worktree or network publication. Git timestamps use floor seconds; exact native nanoseconds remain in audit headers."
+                );
+            }
+            GitCommand::Origins(args) => {
+                let head = args.revision.or(repo.status()?.revision);
+                let origins = match head {
+                    Some(id) => repo.git_origins(id)?,
+                    None => Vec::new(),
+                };
+                if origins.is_empty() {
+                    println!(
+                        "No retained foreign Git boundary; this does not certify an authentic Git root."
+                    );
+                }
+                for origin in origins {
+                    println!(
+                        "anchor={} foreign={} foreign-parents={} tracking=none ancestry=foreign",
+                        origin.revision,
+                        origin.commit,
+                        origin.parents.len()
+                    );
+                    for parent in origin.parents {
+                        println!("foreign-parent={parent}");
+                    }
+                }
+            }
+        },
         Command::Show(args) => {
             let root = selected(&repo, args.root)?;
             let engine = repo.load_root(root)?;

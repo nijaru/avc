@@ -33,6 +33,11 @@ impl Repository {
         let head = current
             .revision
             .ok_or_else(|| invalid("rebase requires an authored head"))?;
+        if self.git_origin(head)?.is_some() {
+            return Err(invalid(
+                "cannot rebase a foreign import anchor as a Git change; author a native child first",
+            ));
+        }
         let mut revision = self.revision(head)?;
         if current.root != revision.root {
             return Err(invalid("rebase refuses selected-but-uncommitted source"));

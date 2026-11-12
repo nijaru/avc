@@ -154,6 +154,23 @@ fn failed_commit_and_failed_rollback_cannot_acknowledge_own_uncommitted_receipt(
         repo.rebase(next_root, before.generation, "must-not-rebase"),
         Err(Error::RecoveryRequired)
     ));
+    let foreign = "0000000000000000000000000000000000000001".parse().unwrap();
+    assert!(matches!(
+        repo.import_git(project.path(), foreign, "must-not-git-import"),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(
+        repo.export_git(project.path(), next_root),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(
+        repo.git_origin(next_root),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(
+        repo.git_origins(next_root),
+        Err(Error::RecoveryRequired)
+    ));
     assert!(matches!(
         repo.export_history(&mut output),
         Err(Error::RecoveryRequired)

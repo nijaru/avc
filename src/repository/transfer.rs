@@ -133,6 +133,15 @@ impl Repository {
         let records = collect_closure(std::iter::once(root).chain(revision), |id| {
             self.read_object(id)
         })?;
+        if revision.is_some() {
+            for id in records.keys().filter(|id| id.kind == crate::REVISION_KIND) {
+                if self.git_origin(*id)?.is_some() {
+                    return Err(invalid(
+                        "selected-history v1 cannot preserve Git origins; refusing to drop the foreign ancestry boundary; source-only export remains available",
+                    ));
+                }
+            }
+        }
         Bundle::checked(root, revision, records)
     }
 

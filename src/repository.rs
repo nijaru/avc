@@ -39,8 +39,10 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
+mod git_bridge;
+pub use git_bridge::GitOrigin;
 mod history;
 mod rebase;
 mod transfer;
@@ -138,6 +140,7 @@ pub enum Operation {
     Amend,
     Rebase { onto: Id },
     ImportHistory,
+    ImportGit { commit: crate::git::GitOid },
     Undo { target: String },
 }
 impl Operation {
@@ -148,7 +151,14 @@ impl Operation {
             Self::Amend => "amend",
             Self::Rebase { .. } => "rebase",
             Self::ImportHistory => "import-history",
+            Self::ImportGit { .. } => "import-git",
             Self::Undo { .. } => "undo",
+        }
+    }
+    fn git_commit(&self) -> Option<crate::git::GitOid> {
+        match self {
+            Self::ImportGit { commit } => Some(*commit),
+            _ => None,
         }
     }
     fn rebase_onto(&self) -> Option<Id> {
@@ -180,6 +190,10 @@ enum Mutation<'a> {
         root: Id,
         revision: Option<Id>,
     },
+    ImportGit {
+        root: Id,
+        origin: &'a GitOrigin,
+    },
     Undo {
         target: &'a str,
     },
@@ -201,6 +215,9 @@ impl Mutation<'_> {
                 }
             }
             Self::ImportHistory { .. } => Operation::ImportHistory,
+            Self::ImportGit { origin, .. } => Operation::ImportGit {
+                commit: origin.commit,
+            },
             Self::Rebase { onto, .. } => Operation::Rebase { onto },
             Self::Undo { target } => Operation::Undo {
                 target: target.to_owned(),
@@ -451,6 +468,7 @@ impl Repository {
                 empty_only: true,
                 ..
             } | Mutation::ImportHistory { .. }
+                | Mutation::ImportGit { .. }
         ) && before.generation != 0
         {
             return Err(Error::NotEmpty);
@@ -473,6 +491,14 @@ impl Repository {
                 revision,
                 generation: next as u64,
             },
+            Mutation::ImportGit { root, origin } => {
+                git_bridge::insert_origin(&tx, origin)?;
+                Selection {
+                    root,
+                    revision: Some(origin.revision),
+                    generation: next as u64,
+                }
+            }
             Mutation::Rebase { root, revision, .. } => Selection {
                 root,
                 revision: Some(revision),
@@ -515,8 +541,9 @@ impl Repository {
         }
         let operation = mutation.operation();
         let onto = operation.rebase_onto().map(Id::to_bytes).transpose()?;
+        let git_commit = operation.git_commit().map(|oid| oid.to_bytes());
         tx.execute(
-            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 request_key,
                 operation.as_str(),
@@ -527,7 +554,8 @@ impl Repository {
                 next,
                 after_revision.as_ref().map(|id| id.as_slice()),
                 operation.undo_target(),
-                onto.as_ref().map(|id| id.as_slice())
+                onto.as_ref().map(|id| id.as_slice()),
+                git_commit.as_ref().map(|oid| oid.as_slice())
             ],
         )?;
         tx.commit()?;
@@ -540,6 +568,9 @@ impl Repository {
     }
 
     fn reconcile(&self, prior: Receipt, expected: u64, mutation: Mutation<'_>) -> Result<Receipt> {
+        if let Mutation::ImportGit { origin, .. } = mutation {
+            return self.reconcile_git_import(prior, origin.commit);
+        }
         if let Mutation::Rebase { onto, .. } = mutation {
             return self.reconcile_rebase(prior, expected, onto);
         }
@@ -615,9 +646,24 @@ CREATE TABLE selection (
     generation INTEGER NOT NULL CHECK(generation >= 0),
     revision BLOB REFERENCES objects(id)
 ) STRICT;
+CREATE TABLE git_origins (
+    revision BLOB PRIMARY KEY REFERENCES objects(id),
+    commit_oid BLOB NOT NULL UNIQUE CHECK(length(commit_oid) = 21 AND substr(commit_oid,1,1) = X'01'),
+    tree_oid BLOB NOT NULL CHECK(length(tree_oid) = 21 AND substr(tree_oid,1,1) = X'01'),
+    parents BLOB NOT NULL CHECK(length(parents) % 21 = 0 AND length(parents) <= 336),
+    raw_commit BLOB NOT NULL CHECK(length(raw_commit) <= 16777216),
+    checksum BLOB NOT NULL CHECK(length(checksum) = 32)
+) STRICT;
+CREATE TABLE git_exports (
+    revision BLOB NOT NULL REFERENCES objects(id),
+    algorithm INTEGER NOT NULL CHECK(algorithm = 1),
+    policy INTEGER NOT NULL CHECK(policy = 1),
+    commit_oid BLOB NOT NULL CHECK(length(commit_oid) = 21 AND substr(commit_oid,1,1) = X'01'),
+    PRIMARY KEY(revision, algorithm, policy)
+) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit', 'amend', 'rebase', 'import-history', 'undo')),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo')),
     before_root BLOB NOT NULL REFERENCES objects(id),
     before_generation INTEGER NOT NULL CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
@@ -626,15 +672,23 @@ CREATE TABLE operations (
     after_revision BLOB REFERENCES objects(id),
     undo_target TEXT REFERENCES operations(request_key),
     onto_revision BLOB REFERENCES objects(id),
+    git_commit BLOB REFERENCES git_origins(commit_oid),
+    CHECK((kind = 'import-git' AND git_commit IS NOT NULL) OR (kind != 'import-git' AND git_commit IS NULL)),
     CHECK((kind = 'rebase' AND onto_revision IS NOT NULL) OR (kind != 'rebase' AND onto_revision IS NULL)),
     CHECK((kind = 'undo' AND undo_target IS NOT NULL) OR (kind != 'undo' AND undo_target IS NULL)),
     CHECK((kind = 'source' AND before_revision IS after_revision) OR
           (kind = 'commit' AND before_root = after_root AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
           (kind = 'amend' AND before_root = after_root AND before_revision IS NOT NULL AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
           (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL) OR
+          (kind = 'import-git' AND before_generation = 0 AND before_revision IS NULL AND after_revision IS NOT NULL) OR
           (kind = 'rebase' AND before_revision IS NOT NULL AND after_revision IS NOT NULL) OR
           kind = 'undo')
 ) STRICT;
+CREATE INDEX operations_git_anchor ON operations(after_revision) WHERE kind = 'import-git';
+CREATE TRIGGER git_origins_no_update BEFORE UPDATE ON git_origins BEGIN SELECT RAISE(ABORT, 'immutable Git origin'); END;
+CREATE TRIGGER git_origins_no_delete BEFORE DELETE ON git_origins BEGIN SELECT RAISE(ABORT, 'retained Git origin'); END;
+CREATE TRIGGER git_exports_no_update BEFORE UPDATE ON git_exports BEGIN SELECT RAISE(ABORT, 'immutable Git mapping'); END;
+CREATE TRIGGER git_exports_no_delete BEFORE DELETE ON git_exports BEGIN SELECT RAISE(ABORT, 'retained Git mapping'); END;
 CREATE TRIGGER objects_no_update BEFORE UPDATE ON objects BEGIN SELECT RAISE(ABORT, 'immutable object'); END;
 CREATE TRIGGER objects_no_delete BEFORE DELETE ON objects BEGIN SELECT RAISE(ABORT, 'retained object'); END;
 CREATE TRIGGER operations_no_update BEFORE UPDATE ON operations BEGIN SELECT RAISE(ABORT, 'immutable receipt'); END;
@@ -758,12 +812,13 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
         StoredSelection,
         Option<String>,
         Option<Vec<u8>>,
+        Option<Vec<u8>>,
     );
     let row: Option<StoredReceipt> = connection.query_row(
-        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision FROM operations WHERE request_key = ?1",
-        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?)),
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit FROM operations WHERE request_key = ?1",
+        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?)),
     ).optional()?;
-    row.map(|(kind, before, after, target, onto)| {
+    row.map(|(kind, before, after, target, onto, git_commit)| {
         let before = decode_selection(before)?;
         let after = decode_selection(after)?;
         if before.generation.checked_add(1) != Some(after.generation) {
@@ -774,6 +829,9 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
         }
         if (kind == "rebase") != onto.is_some() {
             return Err(invalid("receipt rebase target"));
+        }
+        if (kind == "import-git") != git_commit.is_some() {
+            return Err(invalid("receipt Git commit"));
         }
         let operation = match kind.as_str() {
             "source" if before.revision == after.revision => Operation::Source,
@@ -806,6 +864,17 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
             }
             "import-history" if before.generation == 0 && before.revision.is_none() => {
                 Operation::ImportHistory
+            }
+            "import-git"
+                if before.generation == 0
+                    && before.revision.is_none()
+                    && after.revision.is_some() =>
+            {
+                Operation::ImportGit {
+                    commit: crate::git::GitOid::from_bytes(
+                        &git_commit.ok_or_else(|| invalid("receipt Git commit"))?,
+                    )?,
+                }
             }
             _ => return Err(invalid("receipt operation")),
         };

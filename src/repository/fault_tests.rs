@@ -142,6 +142,20 @@ fn failed_commit_and_failed_rollback_cannot_acknowledge_own_uncommitted_receipt(
         Err(Error::RecoveryRequired)
     ));
     assert!(matches!(repo.log(None, 20), Err(Error::RecoveryRequired)));
+    assert!(matches!(
+        repo.export_history(&mut output),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(output.is_empty());
+    assert!(matches!(
+        repo.export_history_file(&output_path),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(!output_path.exists());
+    assert!(matches!(
+        repo.import_history(std::io::empty(), "must-not-import"),
+        Err(Error::RecoveryRequired)
+    ));
     assert_restorable(&observer, before.root, 17);
     drop(repo);
     drop(observer);

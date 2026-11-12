@@ -39,11 +39,10 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 mod history;
-const EXPORT_MAGIC: &[u8; 8] = b"AVCEXP01";
-const EXPORT_END: &[u8; 8] = b"AVCEND01";
+mod transfer;
 
 #[derive(Debug)]
 pub enum Error {
@@ -135,12 +134,14 @@ pub struct Selection {
 pub enum Operation {
     Source,
     Commit,
+    ImportHistory,
 }
 impl Operation {
     fn as_str(self) -> &'static str {
         match self {
             Self::Source => "source",
             Self::Commit => "commit",
+            Self::ImportHistory => "import-history",
         }
     }
 }
@@ -149,12 +150,14 @@ impl Operation {
 enum Mutation<'a> {
     Source { root: Id, empty_only: bool },
     Commit { author: &'a str, message: &'a str },
+    ImportHistory { root: Id, revision: Option<Id> },
 }
 impl Mutation<'_> {
     fn operation(self) -> Operation {
         match self {
             Self::Source { .. } => Operation::Source,
             Self::Commit { .. } => Operation::Commit,
+            Self::ImportHistory { .. } => Operation::ImportHistory,
         }
     }
 }
@@ -315,7 +318,7 @@ impl Repository {
 
     pub fn load_root(&self, root: Id) -> Result<Engine> {
         self.ensure_idle()?;
-        let records = collect_closure(root, |id| self.read_object(id))?;
+        let records = collect_closure([root], |id| self.read_object(id))?;
         let mut engine = Engine::new();
         engine.import(records, root, limits())?;
         Ok(engine)
@@ -333,20 +336,12 @@ impl Repository {
         expected_generation: u64,
         request_key: &str,
     ) -> Result<Receipt> {
-        self.admit_source(engine, root, expected_generation, request_key, false)
-    }
-
-    fn admit_source(
-        &mut self,
-        engine: &Engine,
-        root: Id,
-        expected_generation: u64,
-        request_key: &str,
-        empty_only: bool,
-    ) -> Result<Receipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
-        let mutation = Mutation::Source { root, empty_only };
+        let mutation = Mutation::Source {
+            root,
+            empty_only: false,
+        };
         if let Some(prior) = self.receipt(request_key)? {
             return self.reconcile(prior, expected_generation, mutation);
         }
@@ -355,21 +350,23 @@ impl Repository {
         // Refuse known stale work before preparing data. Recheck under the write
         // transaction, including a receipt created by a concurrent same request.
         let current = self.status()?;
-        if current.generation != expected_generation || (empty_only && current.generation != 0) {
+        if current.generation != expected_generation {
             // Reconcile an identical request that won the race to selection.
             if let Some(prior) = self.receipt(request_key)? {
                 return self.reconcile(prior, expected_generation, mutation);
-            }
-            if empty_only {
-                return Err(Error::NotEmpty);
             }
             return Err(Error::Stale {
                 expected: expected_generation,
                 actual: current.generation,
             });
         }
-        let records = collect_closure(root, |id| encode_bounded(engine.object(id)?))?;
+        let records = collect_closure([root], |id| encode_bounded(engine.object(id)?))?;
         engine.verify(root, limits())?;
+        let prepared = self.prepare_objects(records)?;
+        self.publish(expected_generation, request_key, prepared, mutation)
+    }
+
+    fn prepare_objects(&self, records: BTreeMap<Id, Vec<u8>>) -> Result<Vec<(Id, Vec<u8>)>> {
         let mut prepared = Vec::new();
         for (id, payload) in records {
             if let Some(stored) = read_object_optional(&self.connection, id)? {
@@ -380,7 +377,7 @@ impl Repository {
                 prepared.push((id, payload));
             }
         }
-        self.publish(expected_generation, request_key, prepared, mutation)
+        Ok(prepared)
     }
 
     fn publish(
@@ -406,7 +403,7 @@ impl Repository {
             Mutation::Source {
                 empty_only: true,
                 ..
-            }
+            } | Mutation::ImportHistory { .. }
         ) && before.generation != 0
         {
             return Err(Error::NotEmpty);
@@ -424,6 +421,11 @@ impl Repository {
         // outside the write transaction except for new concurrent dedup winners.
         insert_objects(&tx, prepared)?;
         let after = match mutation {
+            Mutation::ImportHistory { root, revision } => Selection {
+                root,
+                revision,
+                generation: next as u64,
+            },
             Mutation::Source { root, .. } => Selection {
                 root,
                 generation: next as u64,
@@ -474,6 +476,9 @@ impl Repository {
         let same = prior.operation == mutation.operation() && prior.before.generation == expected;
         let same = same
             && match mutation {
+                Mutation::ImportHistory { root, revision } => {
+                    prior.after.root == root && prior.after.revision == revision
+                }
                 Mutation::Source { root, .. } => prior.after.root == root,
                 Mutation::Commit { author, message } => {
                     let id = prior
@@ -496,109 +501,6 @@ impl Repository {
     fn read_object(&self, id: Id) -> Result<Vec<u8>> {
         read_object_optional(&self.connection, id)?.ok_or(Error::MissingObject(id))
     }
-
-    /// Independent object-only v1 binary stream: explicit root and exact sorted
-    /// owning records, followed by a completion marker and BLAKE3 of all preceding
-    /// bytes. No private receipts, local selections or orphan objects are included.
-    /// Failure can leave a partial output; only the complete stream is importable.
-    /// The caller owns output flush/sync and atomic publication, if required.
-    pub fn export(&self, root: Id, mut writer: impl Write) -> Result<()> {
-        self.ensure_idle()?;
-        require_source_root(root)?;
-        let engine = self.load_root(root)?;
-        let records = collect_closure(root, |id| encode_bounded(engine.object(id)?))?;
-        let mut hash = blake3::Hasher::new();
-        write_hashed(&mut writer, &mut hash, EXPORT_MAGIC)?;
-        write_hashed(&mut writer, &mut hash, &root.to_bytes()?)?;
-        write_hashed(
-            &mut writer,
-            &mut hash,
-            &(records.len() as u64).to_le_bytes(),
-        )?;
-        for (id, payload) in records {
-            write_hashed(&mut writer, &mut hash, &id.to_bytes()?)?;
-            write_hashed(
-                &mut writer,
-                &mut hash,
-                &(payload.len() as u64).to_le_bytes(),
-            )?;
-            write_hashed(&mut writer, &mut hash, &payload)?;
-        }
-        write_hashed(&mut writer, &mut hash, EXPORT_END)?;
-        writer.write_all(hash.finalize().as_bytes())?;
-        Ok(())
-    }
-
-    /// Exclusively create and durably finish an object-only export. A failure
-    /// leaves the incomplete output for inspection; existing paths are refused.
-    pub fn export_file(&self, root: Id, path: &Path) -> Result<()> {
-        self.ensure_idle()?;
-        require_source_root(root)?;
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        self.export(root, &mut output)?;
-        sync_file(&output)?;
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."));
-        sync_directory(parent)?;
-        // Flush device caches after the containing directory entry was synced.
-        sync_file(&output)
-    }
-
-    /// Verifies each typed hash, completed EOF/hash, exact closure and Engine
-    /// invariants before any admission. Initial selection must still be generation
-    /// zero at commit. A successful same-key retry returns its original receipt.
-    /// The reader must terminate (this is an object stream, not a network frame).
-    pub fn import(&mut self, mut reader: impl Read, request_key: &str) -> Result<Receipt> {
-        self.ensure_idle()?;
-        let mut hash = blake3::Hasher::new();
-        if read_hashed::<8>(&mut reader, &mut hash)? != *EXPORT_MAGIC {
-            return Err(invalid("export version/magic"));
-        }
-        let root = Id::from_bytes(&read_hashed::<33>(&mut reader, &mut hash)?)?;
-        let count = u64::from_le_bytes(read_hashed::<8>(&mut reader, &mut hash)?);
-        if count == 0 || count > MAX_OBJECTS as u64 {
-            return Err(Error::Limit("export object count"));
-        }
-        let mut records = Vec::new();
-        let mut previous = None;
-        let mut total = 0;
-        for _ in 0..count {
-            let id = Id::from_bytes(&read_hashed::<33>(&mut reader, &mut hash)?)?;
-            if previous.is_some_and(|p| p >= id) {
-                return Err(invalid("export records must be unique and sorted"));
-            }
-            previous = Some(id);
-            let length = u64::from_le_bytes(read_hashed::<8>(&mut reader, &mut hash)?);
-            let length = bounded_length(length)?;
-            budget(&mut total, length)?;
-            let mut payload = vec![0; length];
-            reader.read_exact(&mut payload)?;
-            hash.update(&payload);
-            Object::decode(id, &payload)?;
-            records.push((id, payload));
-        }
-        if read_hashed::<8>(&mut reader, &mut hash)? != *EXPORT_END {
-            return Err(invalid("incomplete export"));
-        }
-        let mut digest = [0; 32];
-        reader.read_exact(&mut digest)?;
-        if digest != *hash.finalize().as_bytes() {
-            return Err(invalid("export checksum"));
-        }
-        require_eof(&mut reader)?;
-        let mut engine = Engine::new();
-        engine.import(records, root, limits())?;
-        let exact = collect_closure(root, |id| encode_bounded(engine.object(id)?))?;
-        if exact.len() as u64 != count {
-            return Err(invalid("export contains non-owning objects"));
-        }
-        self.admit_source(&engine, root, 0, request_key, true)
-    }
 }
 
 const SCHEMA: &str = "
@@ -616,7 +518,7 @@ CREATE TABLE selection (
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit')),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit', 'import-history')),
     before_root BLOB NOT NULL REFERENCES objects(id),
     before_generation INTEGER NOT NULL CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
@@ -624,7 +526,8 @@ CREATE TABLE operations (
     after_generation INTEGER NOT NULL CHECK(after_generation = before_generation + 1),
     after_revision BLOB REFERENCES objects(id),
     CHECK((kind = 'source' AND before_revision IS after_revision) OR
-          (kind = 'commit' AND before_root = after_root AND after_revision IS NOT NULL AND before_revision IS NOT after_revision))
+          (kind = 'commit' AND before_root = after_root AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
+          (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL))
 ) STRICT;
 CREATE TRIGGER objects_no_update BEFORE UPDATE ON objects BEGIN SELECT RAISE(ABORT, 'immutable object'); END;
 CREATE TRIGGER objects_no_delete BEFORE DELETE ON objects BEGIN SELECT RAISE(ABORT, 'retained object'); END;
@@ -707,7 +610,7 @@ fn require_source_root(root: Id) -> Result<()> {
         crate::MAP_LEAF_KIND | crate::MAP_BRANCH_KIND | crate::CONFLICT_KIND
     ) {
         return Err(invalid(
-            "requires a source Map or root Conflict, not a Revision or Blob; authored history is not included in source transfers",
+            "requires a source Map or root Conflict, not a Revision or Blob",
         ));
     }
     Ok(())
@@ -761,6 +664,9 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
                     && before.revision != after.revision =>
             {
                 Operation::Commit
+            }
+            "import-history" if before.generation == 0 && before.revision.is_none() => {
+                Operation::ImportHistory
             }
             _ => return Err(invalid("receipt operation")),
         };
@@ -822,12 +728,12 @@ fn budget(total: &mut usize, length: usize) -> Result<()> {
 
 /// Walk only owning references, never Engine::objects() (which includes orphans).
 fn collect_closure(
-    root: Id,
+    roots: impl IntoIterator<Item = Id>,
     mut fetch: impl FnMut(Id) -> Result<Vec<u8>>,
 ) -> Result<BTreeMap<Id, Vec<u8>>> {
     let mut records = BTreeMap::new();
-    let mut discovered = BTreeSet::from([root]);
-    let mut pending = vec![root];
+    let mut discovered: BTreeSet<_> = roots.into_iter().collect();
+    let mut pending: Vec<_> = discovered.iter().copied().collect();
     let mut total = 0;
     while let Some(id) = pending.pop() {
         let payload = fetch(id)?;
@@ -928,32 +834,6 @@ fn sync_file(file: &File) -> Result<()> {
 fn sync_directory(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
-}
-
-fn write_hashed(writer: &mut impl Write, hash: &mut blake3::Hasher, bytes: &[u8]) -> Result<()> {
-    writer.write_all(bytes)?;
-    hash.update(bytes);
-    Ok(())
-}
-fn read_hashed<const N: usize>(
-    reader: &mut impl Read,
-    hash: &mut blake3::Hasher,
-) -> Result<[u8; N]> {
-    let mut bytes = [0; N];
-    reader.read_exact(&mut bytes)?;
-    hash.update(&bytes);
-    Ok(bytes)
-}
-fn require_eof(reader: &mut impl Read) -> Result<()> {
-    let mut extra = [0];
-    loop {
-        match reader.read(&mut extra) {
-            Ok(0) => return Ok(()),
-            Ok(_) => return Err(invalid("trailing bytes")),
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
 }
 
 #[cfg(test)]

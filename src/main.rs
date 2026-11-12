@@ -63,17 +63,23 @@ struct Verify {
     #[usage(long)]
     root: Option<Id>,
 }
-/// Export selected source only; excludes private operations and discarded roots.
+/// Export exact source, or selected native history with --history.
 #[derive(Args)]
 struct Export {
+    /// Include selected source, authored head and its complete native ancestry.
+    #[usage(long, conflicts("--root"))]
+    history: bool,
     #[usage(long)]
     root: Option<Id>,
     #[usage(long)]
     output: PathBuf,
 }
-/// Restore an object-only export into an untouched initialized store.
+/// Restore source (or --history) into an untouched initialized store.
 #[derive(Args)]
 struct Import {
+    /// Require selected-history framing; never infer history from source-only input.
+    #[usage(long)]
+    history: bool,
     #[usage(long)]
     input: PathBuf,
     #[usage(long)]
@@ -454,12 +460,31 @@ fn run(cli: CommandLine) -> Result<()> {
             println!("Complete present closure verified: {root}");
         }
         Command::Export(args) => {
-            let root = selected(&repo, args.root)?;
-            repo.export_file(root, &args.output)?;
-            println!("Exported exact source closure {root}; private operations excluded.");
+            if args.history {
+                let snapshot = repo.export_history_file(&args.output)?;
+                let head = snapshot
+                    .revision
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "unborn".to_owned());
+                println!(
+                    "Exported selected native history: root={} revision={head}; local operations, instance/workspace and Git metadata excluded.",
+                    snapshot.root
+                );
+            } else {
+                let root = selected(&repo, args.root)?;
+                repo.export_file(root, &args.output)?;
+                println!(
+                    "Exported exact source closure {root}; authored history and private operations excluded."
+                );
+            }
         }
         Command::Import(args) => {
-            let receipt = repo.import(File::open(args.input)?, &args.request_key)?;
+            let input = File::open(args.input)?;
+            let receipt = if args.history {
+                repo.import_history(input, &args.request_key)?
+            } else {
+                repo.import(input, &args.request_key)?
+            };
             print_receipt(&receipt);
         }
         Command::Restore(args) => {

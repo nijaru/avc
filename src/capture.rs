@@ -10,7 +10,7 @@
 //! refuse rather than implicitly removing unselected source. Requests contain
 //! 1..=1024 leaves, at most 64 KiB of `component.len() + 1` bytes in total, and
 //! an absolute root pathname of at most 4096 bytes. Captured leaf payloads are at
-//! most 16 MiB minus four bytes each and 256 MiB in total. The selected closure
+//! most 16 MiB each and 256 MiB in total. The selected closure
 //! is verified at 100,000 objects, 256 MiB total and 16 MiB per canonical payload.
 //!
 //! Successful observations detect *observed* changes, not all possible races or a
@@ -90,8 +90,6 @@ mod unix {
     const MAX_PATHS: usize = 1024;
     const MAX_PATH_BYTES: usize = 64 * 1024;
     const MAX_WITNESSES: usize = 256 * 1024;
-    // Conservative capture limit, reserving four bytes within the payload cap.
-    const MAX_LEAF_BYTES: usize = MAX_OBJECT_BYTES - 4;
 
     fn refused(context: &str, reason: impl std::fmt::Display) -> Error {
         Error::Invalid(format!("observation refused at {context}: {reason}"))
@@ -178,6 +176,25 @@ mod unix {
     fn open_directory(parent: impl AsFd, name: &[u8], context: &str) -> Result<Directory> {
         let name_os = OsStr::from_bytes(name);
         let before = Stat::from(lstat(&parent, name_os, context)?, context)?;
+        // Name spelling is not authority on case/normalization-insensitive
+        // filesystems. Refuse aliases of an actual administrative directory,
+        // before any descendant (potentially SQLite-owned) file is opened.
+        for admin in [".avc", ".git"] {
+            match fs::statat(&parent, admin, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(raw) => {
+                    if before.same_directory(&Stat::from(raw, context)?) {
+                        return Err(refused(context, "administrative directory identity"));
+                    }
+                }
+                Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => {
+                    return Err(refused(
+                        context,
+                        format_args!("check administrative identity: {error}"),
+                    ));
+                }
+            }
+        }
         let fd = checked(
             context,
             "open directory without symlinks",
@@ -330,7 +347,7 @@ mod unix {
             "nonnegative file size",
             usize::try_from(raw.st_size),
         )?;
-        if size > MAX_LEAF_BYTES || size > remaining {
+        if size > MAX_OBJECT_BYTES || size > remaining {
             return Err(refused(
                 context,
                 "leaf or total captured-byte limit exceeded",

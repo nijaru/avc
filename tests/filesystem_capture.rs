@@ -431,13 +431,22 @@ fn witness_metadata_bound_explicitly_refuses_deep_repeated_parents() {
 }
 
 #[test]
-fn capture_payload_reserves_four_bytes_within_physical_object_limit() {
+fn capture_accepts_the_exact_native_blob_payload_limit_and_refuses_one_more_byte() {
     let (_temp, root) = temp();
-    fs::File::create(root.join("oversize"))
-        .unwrap()
-        .set_len(16 * 1024 * 1024 - 3)
-        .unwrap();
-    assert!(refuses(&root, &[path(&[b"oversize"])]).contains("limit exceeded"));
+    let file = fs::File::create(root.join("boundary")).unwrap();
+    file.set_len(16 * 1024 * 1024).unwrap();
+    let mut engine = Engine::new();
+    let base = engine.empty().unwrap();
+    let selected = path(&[b"boundary"]);
+    let observed = observe(&mut engine, base, &root, std::slice::from_ref(&selected)).unwrap();
+    // Canonical Blob payloads are raw bytes: no hypothetical length prefix is
+    // charged against their physical payload limit (codec.rs Object::encode).
+    assert_eq!(
+        payload(&engine, observed.root, &selected).len(),
+        16 * 1024 * 1024
+    );
+    file.set_len(16 * 1024 * 1024 + 1).unwrap();
+    assert!(refuses(&root, &[selected]).contains("limit exceeded"));
 }
 
 #[test]

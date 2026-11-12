@@ -36,6 +36,7 @@ enum Command {
     Receipt(ReceiptArgs),
     Source(Source),
     Commit(Commit),
+    Capture(Capture),
     /// Rewrite the selected tip using selected source, preserving ChangeId and parents.
     Amend(Commit),
     Rebase(Rebase),
@@ -115,6 +116,20 @@ struct Commit {
     expected_generation: u64,
     #[usage(long)]
     request_key: String,
+}
+/// Pin and select explicit existing files/symlinks for review; never author or write live files.
+#[derive(Args)]
+struct Capture {
+    /// Source directory; defaults to the project directory. No recursive scan.
+    #[usage(long)]
+    from: Option<PathBuf>,
+    #[usage(long)]
+    expected_generation: u64,
+    #[usage(long)]
+    request_key: String,
+    /// Relative leaf paths; directory traversal, deletions and ignore rules are not supported.
+    #[usage(required)]
+    paths: Vec<PathBuf>,
 }
 /// Replay one clean selected change onto an exact native revision; no restacking.
 #[derive(Args)]
@@ -301,6 +316,9 @@ fn print_receipt(receipt: &Receipt) {
         avc::repository::Operation::Rebase { onto } => format!(" onto={onto}"),
         avc::repository::Operation::Undo { target } => format!(" undo={}", target.escape_debug()),
         avc::repository::Operation::ImportGit { commit } => format!(" foreign={commit}"),
+        avc::repository::Operation::Capture { scope } => {
+            format!(" capture-paths={}", scope.paths().len())
+        }
         _ => String::new(),
     };
     println!(
@@ -311,6 +329,19 @@ fn print_receipt(receipt: &Receipt) {
         revision,
         target
     );
+    if let avc::repository::Operation::Capture { scope } = &receipt.operation {
+        println!(
+            "Capture directory: {}",
+            scope
+                .directory()
+                .as_os_str()
+                .as_encoded_bytes()
+                .escape_ascii()
+        );
+        for path in scope.paths() {
+            println!("Captured: {}", display_path(path));
+        }
+    }
 }
 // Publication is already acknowledged before these optional comparisons run.
 // Damaged comparison metadata must not hide a committed/recovered receipt.
@@ -493,6 +524,7 @@ fn run(cli: CommandLine) -> Result<()> {
             | Command::Source(_)
             | Command::Restore(_)
             | Command::Commit(_)
+            | Command::Capture(_)
             | Command::Amend(_)
             | Command::Rebase(_)
             | Command::History(_)
@@ -683,6 +715,36 @@ fn run(cli: CommandLine) -> Result<()> {
             print_receipt(&receipt);
         }
         Command::Source(args) => source(&mut repo, args.command)?,
+        Command::Capture(args) => {
+            let mut paths = Vec::with_capacity(args.paths.len());
+            for path in args.paths {
+                let raw = path.as_os_str().as_encoded_bytes();
+                if raw.starts_with(b"/") {
+                    return Err("capture paths must be relative".into());
+                }
+                paths.push(raw.split(|b| *b == b'/').map(<[u8]>::to_vec).collect());
+            }
+            let scope = avc::repository::CaptureScope::new(
+                args.from.as_deref().unwrap_or(&cli.repository),
+                paths,
+            )?;
+            let receipt = repo.capture(&scope, args.expected_generation, &args.request_key)?;
+            print_receipt(&receipt);
+            println!(
+                "Pinned selected source; no revision authored and no live files written. Unselected source retained. Not an atomic filesystem snapshot."
+            );
+            println!(
+                "Review in the same repository: avc diff {} {}; commit uses selected bytes without rereading files.",
+                receipt.before.root, receipt.after.root
+            );
+            println!(
+                "Cancel: avc --experimental history undo CAPTURE_KEY --expected-generation {} --request-key NEW_KEY",
+                receipt.after.generation
+            );
+            println!(
+                "Use the same --repository; replace CAPTURE_KEY with the request key above and NEW_KEY with a fresh key."
+            );
+        }
         Command::Commit(args) => {
             let receipt = repo.commit(
                 &args.author,

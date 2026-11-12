@@ -107,9 +107,9 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        7
+        8
     );
-    db.pragma_update(None, "user_version", 6).unwrap();
+    db.pragma_update(None, "user_version", 7).unwrap();
     drop(db);
     // Retain a witness in the obsolete raw-file layout as well as the database.
     let objects = project.path().join(".avc/objects/sealed");
@@ -123,7 +123,7 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
         Err(error) => error,
     };
     assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 6"))
+        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 7"))
     );
     assert_eq!(fs::read(&database_path).unwrap(), before);
     assert_eq!(fs::read(witness).unwrap(), b"preserve old payload");

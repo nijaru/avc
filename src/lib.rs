@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod engine;
+pub mod git;
 pub mod materialize;
 pub mod repository;
 pub mod text;

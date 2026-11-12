@@ -1,0 +1,656 @@
+use std::io::{Read, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use avc::engine::{Edit, Engine};
+use avc::git::{GitOid, GitPlan, GitStore};
+use avc::{Entry, Object, Revision};
+use tempfile::TempDir;
+
+// Fixtures are all locally generated, with bounded stdin/stdout and no refs.
+fn git(dir: &Path, args: &[&str], input: &[u8]) -> Vec<u8> {
+    let mut child = Command::new("git")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg("--git-dir")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let mut output = Vec::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .take(17 * 1024 * 1024)
+        .read_to_end(&mut output)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "{args:?}");
+    output
+}
+fn init() -> (TempDir, GitStore) {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "--bare", "--quiet"], &[]);
+    let store = GitStore::open(dir.path()).unwrap();
+    (dir, store)
+}
+fn put(dir: &Path, kind: &str, raw: &[u8]) -> GitOid {
+    let output = git(
+        dir,
+        &["hash-object", "--literally", "-w", "-t", kind, "--stdin"],
+        raw,
+    );
+    std::str::from_utf8(&output)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+fn tree_entry(raw: &mut Vec<u8>, mode: &[u8], name: &[u8], oid: GitOid) {
+    raw.extend_from_slice(mode);
+    raw.push(b' ');
+    raw.extend_from_slice(name);
+    raw.push(0);
+    raw.extend_from_slice(&oid.to_bytes()[1..]);
+}
+fn raw_commit(tree: GitOid) -> Vec<u8> {
+    format!("tree {}\nauthor Original Name <author@example.test> 99 -0530\ncommitter Other Person <committer@example.test> 123 +1245\nextra opaque\n continuation preserved\n\nexact message\nwithout final newline", bare(tree)).into_bytes()
+}
+fn bare(oid: GitOid) -> String {
+    oid.to_string()[5..].to_owned()
+}
+fn revision(root: avc::Id) -> Revision {
+    Revision {
+        root,
+        parents: vec![],
+        change: [9; 16],
+        author: "Native Name <native@example.test>".into(),
+        message: "message without newline".into(),
+        time_ns: -1,
+        timezone_minutes: -1439,
+    }
+}
+fn object_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir.join("objects"))
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            if path.file_name().unwrap().len() == 2 {
+                std::fs::read_dir(path).unwrap().count()
+            } else {
+                0
+            }
+        })
+        .sum()
+}
+
+#[test]
+fn oid_persistence_is_algorithm_tagged() {
+    let oid: GitOid = "0123456789ABCDEF0123456789abcdef01234567".parse().unwrap();
+    assert_eq!(
+        oid.to_string(),
+        "sha1:0123456789abcdef0123456789abcdef01234567"
+    );
+    assert_eq!(GitOid::from_bytes(&oid.to_bytes()).unwrap(), oid);
+    assert!(GitOid::from_bytes(&oid.to_bytes()[1..]).is_err());
+    let mut bytes = oid.to_bytes();
+    bytes[0] = 2;
+    assert!(GitOid::from_bytes(&bytes).is_err());
+    assert!(
+        "sha256:0123456789abcdef0123456789abcdef01234567"
+            .parse::<GitOid>()
+            .is_err()
+    );
+}
+
+#[test]
+fn exact_git_source_roundtrip_and_native_child_metadata() {
+    let (dir, store) = init();
+    let blob = put(dir.path(), "blob", b"\0raw\ncontent\xff");
+    let link = put(dir.path(), "blob", b"../target\xff");
+    let pointer = put(
+        dir.path(),
+        "blob",
+        b"version https://git-lfs.github.com/spec/v1\noid sha256:123\nsize 999\n",
+    );
+    let mut nested = Vec::new();
+    tree_entry(&mut nested, b"100755", b"exec", blob);
+    let nested = put(dir.path(), "tree", &nested);
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b"a.c", blob);
+    tree_entry(&mut raw, b"40000", b"a", nested); // Git's directory terminator sorts '/' after '.'
+    tree_entry(&mut raw, b"120000", b"link", link);
+    tree_entry(&mut raw, b"100644", b"pointer", pointer);
+    tree_entry(&mut raw, b"100644", b"raw-\xff", blob);
+    let tree = put(dir.path(), "tree", &raw);
+    let commit_raw = raw_commit(tree);
+    let parent = put(dir.path(), "commit", &commit_raw);
+    let commit = store.read_commit(parent).unwrap();
+    assert_eq!(commit.raw, commit_raw);
+    assert_eq!(commit.author, "Original Name <author@example.test>");
+    assert_eq!(commit.time_ns, 123_000_000_000);
+    assert_eq!(commit.timezone_minutes, 765);
+    assert_eq!(commit.message, "exact message\nwithout final newline");
+    let mut engine = Engine::new();
+    let root = store.import_source(tree, &mut engine).unwrap();
+    assert!(matches!(
+        engine
+            .read(root, &[b"a".to_vec(), b"exec".to_vec()])
+            .unwrap(),
+        Entry::File {
+            executable: true,
+            ..
+        }
+    ));
+    assert!(matches!(
+        engine.read(root, &[b"link".to_vec()]).unwrap(),
+        Entry::Symlink(_)
+    ));
+    // The Engine may contain history: only the selected source is exported.
+    let anchor = Object::Revision(revision(root));
+    let anchor_id = anchor.id().unwrap();
+    engine
+        .import(
+            [(anchor_id, anchor.encode().unwrap())].into_iter().chain(
+                engine
+                    .objects()
+                    .map(|(id, o)| (id, o.encode().unwrap()))
+                    .collect::<Vec<_>>(),
+            ),
+            anchor_id,
+            Default::default(),
+        )
+        .unwrap();
+    let mut plan = GitPlan::new();
+    assert_eq!(plan.tree(&store, &engine, root).unwrap(), tree);
+    let mut child = revision(root);
+    child.parents.push(anchor_id);
+    let child_id = Object::Revision(child.clone()).id().unwrap();
+    let exported = plan.commit(&store, child_id, &child, &[parent]).unwrap();
+    let before = object_files(dir.path());
+    assert_eq!(
+        git(dir.path(), &["cat-file", "-e", &bare(parent)], &[]),
+        b""
+    );
+    assert_eq!(object_files(dir.path()), before);
+    plan.write(&store).unwrap();
+    let actual = git(dir.path(), &["cat-file", "commit", &bare(exported)], &[]);
+    let expected = format!(
+        "tree {}\nparent {}\nauthor Native Name <native@example.test> -1 -2359\ncommitter Native Name <native@example.test> -1 -2359\navc-revision {child_id}\navc-time-ns -1\n\nmessage without newline",
+        bare(tree),
+        bare(parent)
+    );
+    assert_eq!(actual, expected.as_bytes());
+    assert_eq!(
+        git(dir.path(), &["cat-file", "tree", &bare(tree)], &[]),
+        raw
+    );
+    let imported = store.read_commit(exported).unwrap();
+    assert_eq!(imported.time_ns, -1_000_000_000); // audit header is not identity input
+    assert_eq!(imported.parents, [parent]);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("HEAD"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert!(git(dir.path(), &["for-each-ref"], &[]).is_empty());
+}
+
+#[test]
+fn invalid_source_is_atomic_and_modes_paths_and_order_are_strict() {
+    let (dir, store) = init();
+    let blob = put(dir.path(), "blob", b"data");
+    for (mode, name) in [
+        (b"160000".as_slice(), b"submodule".as_slice()),
+        (b"100644", b".."),
+        (b"100644", b"a/b"),
+        (b"100664", b"bad-mode"),
+    ] {
+        let mut raw = Vec::new();
+        tree_entry(&mut raw, mode, name, blob);
+        let tree = put(dir.path(), "tree", &raw);
+        let mut engine = Engine::new();
+        let existing = engine.empty().unwrap();
+        assert!(store.import_source(tree, &mut engine).is_err());
+        assert_eq!(engine.object_count(), 1);
+        assert_eq!(engine.empty().unwrap(), existing);
+    }
+    for names in [[b"z".as_slice(), b"a".as_slice()], [b"a", b"a"]] {
+        let mut raw = Vec::new();
+        for name in names {
+            tree_entry(&mut raw, b"100644", name, blob);
+        }
+        let tree = put(dir.path(), "tree", &raw);
+        assert!(store.import_source(tree, &mut Engine::new()).is_err());
+    }
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"40000", b"wrong-type", blob);
+    let tree = put(dir.path(), "tree", &raw);
+    assert!(store.import_source(tree, &mut Engine::new()).is_err());
+}
+
+#[test]
+fn corrupt_existing_oid_is_not_trusted_on_read_or_write() {
+    let (dir, store) = init();
+    let good = put(dir.path(), "blob", b"good");
+    let bad = put(dir.path(), "blob", b"evil");
+    let object_path = |oid| {
+        let hex = bare(oid);
+        dir.path().join("objects").join(&hex[..2]).join(&hex[2..])
+    };
+    std::fs::remove_file(object_path(good)).unwrap();
+    std::fs::copy(object_path(bad), object_path(good)).unwrap();
+    let mut tree_raw = Vec::new();
+    tree_entry(&mut tree_raw, b"100644", b"file", good);
+    let tree = put(dir.path(), "tree", &tree_raw);
+    assert!(store.import_source(tree, &mut Engine::new()).is_err());
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let blob = engine.blob(b"good".to_vec()).unwrap();
+    let root = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b"file".to_vec()],
+                expected: Entry::Absent,
+                value: Entry::File {
+                    blob,
+                    executable: false,
+                },
+            }],
+        )
+        .unwrap();
+    let mut plan = GitPlan::new();
+    plan.tree(&store, &engine, root).unwrap();
+    assert!(plan.write(&store).is_err());
+}
+
+#[test]
+fn raw_objects_ignore_replacements_filters_and_promisor_helpers() {
+    let (dir, store) = init();
+    let original = put(dir.path(), "blob", b"original");
+    let replacement = put(dir.path(), "blob", b"replacement");
+    git(
+        dir.path(),
+        &["replace", &bare(original), &bare(replacement)],
+        &[],
+    );
+    let marker = dir.path().join("executed");
+    let evil = format!("!touch {}", marker.display());
+    git(dir.path(), &["config", "filter.evil.clean", &evil], &[]);
+    git(
+        dir.path(),
+        &["config", "remote.origin.promisor", "true"],
+        &[],
+    );
+    git(
+        dir.path(),
+        &[
+            "config",
+            "remote.origin.url",
+            &format!("ext::sh -c 'touch {}'", marker.display()),
+        ],
+        &[],
+    );
+    git(dir.path(), &["config", "protocol.ext.allow", "always"], &[]);
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b"file", original);
+    let tree = put(dir.path(), "tree", &raw);
+    let mut engine = Engine::new();
+    let root = store.import_source(tree, &mut engine).unwrap();
+    let Entry::File { blob, .. } = engine.read(root, &[b"file".to_vec()]).unwrap() else {
+        panic!()
+    };
+    assert_eq!(
+        engine.object(blob).unwrap(),
+        &Object::Blob(b"original".to_vec())
+    );
+    let missing: GitOid = "1111111111111111111111111111111111111111".parse().unwrap();
+    assert!(store.read_commit(missing).is_err());
+    assert!(!marker.exists());
+}
+
+#[test]
+fn malformed_commit_metadata_is_refused_and_extra_headers_retained() {
+    let (dir, store) = init();
+    let tree = put(dir.path(), "tree", b"");
+    let valid = raw_commit(tree);
+    for raw in [
+        valid.replace_bytes(
+            b"author Original",
+            b"tree 1111111111111111111111111111111111111111\nauthor Original",
+        ),
+        valid.replace_bytes(b"123 +1245", b"123 +1260"),
+        valid.replace_bytes(b"123 +1245", b"9223372036854775807 +0000"),
+        valid.replace_bytes(
+            b"author Original Name <author@example.test>",
+            b"author MissingEmail",
+        ),
+        valid.replace_bytes(b"exact message", b"invalid \xff"),
+    ] {
+        let oid = put(dir.path(), "commit", &raw);
+        assert!(store.read_commit(oid).is_err());
+    }
+    let mut raw = format!("tree {}\n", bare(tree));
+    for i in 0..17 {
+        raw.push_str(&format!("parent {i:040x}\n"));
+    }
+    raw.push_str("author A <a> 1 +0000\ncommitter C <c> 1 +0000\n\nm");
+    let oid = put(dir.path(), "commit", raw.as_bytes());
+    assert!(store.read_commit(oid).is_err());
+}
+trait ReplaceBytes {
+    fn replace_bytes(&self, from: &[u8], to: &[u8]) -> Vec<u8>;
+}
+impl ReplaceBytes for Vec<u8> {
+    fn replace_bytes(&self, from: &[u8], to: &[u8]) -> Vec<u8> {
+        let pos = self.windows(from.len()).position(|b| b == from).unwrap();
+        [&self[..pos], to, &self[pos + from.len()..]].concat()
+    }
+}
+
+#[test]
+fn all_preflight_errors_precede_writes_and_poison_plan() {
+    let (dir, store) = init();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let blob = engine.blob(vec![1]).unwrap();
+    let root = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b"file".to_vec()],
+                expected: Entry::Absent,
+                value: Entry::File {
+                    blob,
+                    executable: false,
+                },
+            }],
+        )
+        .unwrap();
+    let mut plan = GitPlan::new();
+    plan.tree(&store, &engine, root).unwrap();
+    let mut r = revision(root);
+    r.author = "not a Git identity".into();
+    let id = Object::Revision(r.clone()).id().unwrap();
+    assert!(plan.commit(&store, id, &r, &[]).is_err());
+    assert!(plan.write(&store).is_err());
+    assert_eq!(object_files(dir.path()), 0);
+    assert!(GitPlan::new().tree(&store, &engine, empty).is_err());
+    let root = engine
+        .edit(
+            root,
+            &[Edit {
+                path: vec![b"empty-directory".to_vec()],
+                expected: Entry::Absent,
+                value: Entry::Directory(empty),
+            }],
+        )
+        .unwrap();
+    assert!(GitPlan::new().tree(&store, &engine, root).is_err());
+}
+
+#[test]
+fn root_and_path_conflicts_are_never_projected_to_git() {
+    let (dir, store) = init();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let a = engine.blob(b"a".to_vec()).unwrap();
+    let b = engine.blob(b"b".to_vec()).unwrap();
+    let file = |blob| Entry::File {
+        blob,
+        executable: false,
+    };
+    let root_a = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b"file".to_vec()],
+                expected: Entry::Absent,
+                value: file(a),
+            }],
+        )
+        .unwrap();
+    let root_b = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b"file".to_vec()],
+                expected: Entry::Absent,
+                value: file(b),
+            }],
+        )
+        .unwrap();
+    for region in [0, 1] {
+        let mut positive = if region == 0 {
+            vec![(Entry::Absent, 1), (file(a), 1)]
+        } else {
+            vec![(Entry::Directory(root_a), 1), (Entry::Directory(root_b), 1)]
+        };
+        positive.sort_by_key(|(entry, _)| entry.encode().unwrap());
+        let negative = if region == 0 {
+            vec![(file(b), 1)]
+        } else {
+            vec![(Entry::Directory(empty), 1)]
+        };
+        let conflict = Object::Conflict(avc::Conflict {
+            region,
+            positive,
+            negative,
+        });
+        let conflict_id = conflict.id().unwrap();
+        let mut records: Vec<_> = engine
+            .objects()
+            .map(|(id, o)| (id, o.encode().unwrap()))
+            .collect();
+        records.push((conflict_id, conflict.encode().unwrap()));
+        let root = if region == 1 {
+            conflict_id
+        } else {
+            let carrier = Object::Map(avc::Node::Leaf(vec![(
+                vec![6, 3],
+                Entry::Conflict(conflict_id),
+            )]));
+            let id = carrier.id().unwrap();
+            records.push((id, carrier.encode().unwrap()));
+            id
+        };
+        engine.import(records, root, Default::default()).unwrap();
+        let mut plan = GitPlan::new();
+        assert!(plan.tree(&store, &engine, root).is_err());
+        assert!(plan.write(&store).is_err());
+    }
+    assert_eq!(object_files(dir.path()), 0);
+}
+
+#[test]
+fn shared_tree_expansion_and_payloads_are_bounded() {
+    let (dir, store) = init();
+    let blob = put(dir.path(), "blob", b"tiny");
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b"leaf", blob);
+    let mut tree = put(dir.path(), "tree", &raw);
+    // Only 18 unique trees, but an exponentially expanded logical source.
+    for _ in 0..17 {
+        let mut raw = Vec::new();
+        tree_entry(&mut raw, b"40000", b"a", tree);
+        tree_entry(&mut raw, b"40000", b"b", tree);
+        tree = put(dir.path(), "tree", &raw);
+    }
+    let mut engine = Engine::new();
+    assert!(store.import_source(tree, &mut engine).is_err());
+    assert_eq!(engine.object_count(), 0);
+    let large = put(dir.path(), "blob", &vec![0; 16 * 1024 * 1024 + 1]);
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b"large", large);
+    let tree = put(dir.path(), "tree", &raw);
+    assert!(store.import_source(tree, &mut engine).is_err());
+    assert_eq!(engine.object_count(), 0);
+}
+
+#[test]
+fn bulk_radix_import_and_multi_revision_plan_are_canonical_and_deduplicated() {
+    let (dir, store) = init();
+    let blob = put(dir.path(), "blob", b"shared");
+    let mut raw = Vec::new();
+    let mut expected = Engine::new();
+    let empty = expected.empty().unwrap();
+    let native_blob = expected.blob(b"shared".to_vec()).unwrap();
+    let mut edits = Vec::new();
+    for i in 0..70 {
+        let name = format!("prefix-{i:04}").into_bytes();
+        tree_entry(&mut raw, b"100644", &name, blob);
+        edits.push(Edit {
+            path: vec![name],
+            expected: Entry::Absent,
+            value: Entry::File {
+                blob: native_blob,
+                executable: false,
+            },
+        });
+    }
+    let expected_root = expected.edit(empty, &edits).unwrap();
+    let tree = put(dir.path(), "tree", &raw);
+    let mut engine = Engine::new();
+    let root = store.import_source(tree, &mut engine).unwrap();
+    assert_eq!(root, expected_root);
+    let (target_dir, target) = init();
+    let mut plan = GitPlan::new();
+    assert_eq!(plan.tree(&target, &engine, root).unwrap(), tree);
+    let mut first = revision(root);
+    first.time_ns = 1_234_567_890;
+    let first_id = Object::Revision(first.clone()).id().unwrap();
+    let first_oid = plan.commit(&target, first_id, &first, &[]).unwrap();
+    let mut second = first.clone();
+    second.parents.push(first_id);
+    second.message = "second".into();
+    let second_id = Object::Revision(second.clone()).id().unwrap();
+    assert_eq!(plan.tree(&target, &engine, root).unwrap(), tree);
+    let second_oid = plan
+        .commit(&target, second_id, &second, &[first_oid])
+        .unwrap();
+    assert_eq!(object_files(target_dir.path()), 0);
+    plan.write(&target).unwrap();
+    assert_eq!(object_files(target_dir.path()), 4); // one shared blob/tree, two commits
+    assert_eq!(target.read_commit(second_oid).unwrap().parents, [first_oid]);
+    let mut merge = second.clone();
+    merge.parents = vec![second_id, first_id];
+    merge.message = "merge".into();
+    let merge_id = Object::Revision(merge.clone()).id().unwrap();
+    let merge_oid = plan
+        .commit(&target, merge_id, &merge, &[second_oid, first_oid])
+        .unwrap();
+    plan.write(&target).unwrap();
+    assert_eq!(
+        target.read_commit(merge_oid).unwrap().parents,
+        [second_oid, first_oid]
+    );
+    assert_eq!(
+        target.read_commit(first_oid).unwrap().time_ns,
+        1_000_000_000
+    );
+    let mut reimport = Engine::new();
+    assert_eq!(target.import_source(tree, &mut reimport).unwrap(), root);
+    plan.write(&target).unwrap();
+    assert_eq!(object_files(target_dir.path()), 5);
+    git(
+        target_dir.path(),
+        &["fsck", "--no-reflogs", "--strict"],
+        &[],
+    );
+}
+
+#[test]
+fn empty_git_tree_import_and_actual_depth_path_bounds() {
+    let (dir, store) = init();
+    let empty = put(dir.path(), "tree", b"");
+    let mut engine = Engine::new();
+    let root = store.import_source(empty, &mut engine).unwrap();
+    assert_eq!(root, engine.empty().unwrap());
+    let blob = put(dir.path(), "blob", b"leaf");
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b"x", blob);
+    let mut tree = put(dir.path(), "tree", &raw);
+    for _ in 0..255 {
+        let mut raw = Vec::new();
+        tree_entry(&mut raw, b"40000", b"x", tree);
+        tree = put(dir.path(), "tree", &raw);
+    }
+    let root = store.import_source(tree, &mut engine).unwrap();
+    assert_eq!(GitPlan::new().tree(&store, &engine, root).unwrap(), tree);
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"40000", b"x", tree);
+    let too_deep = put(dir.path(), "tree", &raw);
+    assert!(store.import_source(too_deep, &mut Engine::new()).is_err());
+    let mut tree = empty;
+    for _ in 0..17 {
+        let mut raw = Vec::new();
+        tree_entry(&mut raw, b"40000", &[b'x'; 255], tree);
+        tree = put(dir.path(), "tree", &raw);
+    }
+    assert!(store.import_source(tree, &mut Engine::new()).is_err());
+}
+
+#[test]
+fn environment_is_scrubbed() {
+    if let Some(path) = std::env::var_os("AVC_GIT_CODEC_ENV_CHILD") {
+        let store = GitStore::open(Path::new(&path)).unwrap();
+        let oid: GitOid = std::env::var("AVC_GIT_CODEC_ENV_OID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            store.read_commit(oid).unwrap().author,
+            "Original Name <author@example.test>"
+        );
+        return;
+    }
+    let (dir, _) = init();
+    let tree = put(dir.path(), "tree", b"");
+    let oid = put(dir.path(), "commit", &raw_commit(tree));
+    let marker = dir.path().join("trace-must-not-exist");
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "environment_is_scrubbed"])
+        .env("AVC_GIT_CODEC_ENV_CHILD", dir.path())
+        .env("AVC_GIT_CODEC_ENV_OID", oid.to_string())
+        .env("GIT_DIR", "/nonexistent")
+        .env("GIT_COMMON_DIR", "/nonexistent")
+        .env("GIT_OBJECT_DIRECTORY", "/nonexistent")
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", "/nonexistent")
+        .env("GIT_CONFIG_COUNT", "invalid")
+        .env("GIT_CONFIG_GLOBAL", "/nonexistent")
+        .env("GIT_TRACE", &marker)
+        .env("GIT_TRACE2_EVENT", &marker)
+        .env("GIT_CONFIG_SYSTEM", "/nonexistent")
+        .env("GIT_NO_REPLACE_OBJECTS", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(!marker.exists());
+}
+
+#[test]
+fn explicit_admin_path_and_sha256_refusal() {
+    let (dir, _) = init();
+    let child = dir.path().join("not-a-repository");
+    std::fs::create_dir(&child).unwrap();
+    assert!(GitStore::open(&child).is_err());
+    let sha256 = tempfile::tempdir().unwrap();
+    git(
+        sha256.path(),
+        &["init", "--bare", "--quiet", "--object-format=sha256"],
+        &[],
+    );
+    assert!(GitStore::open(sha256.path()).is_err());
+}

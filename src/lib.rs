@@ -1,5 +1,6 @@
 //! Canonical AVC v1 object codec. This unreleased format is not yet qualified.
 
+pub mod capture;
 pub mod codec;
 pub mod engine;
 pub mod git;

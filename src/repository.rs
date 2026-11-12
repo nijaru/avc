@@ -39,7 +39,7 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 mod history;
 mod transfer;
@@ -130,34 +130,66 @@ pub struct Selection {
     pub revision: Option<Id>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     Source,
     Commit,
+    Amend,
     ImportHistory,
+    Undo { target: String },
 }
 impl Operation {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::Source => "source",
             Self::Commit => "commit",
+            Self::Amend => "amend",
             Self::ImportHistory => "import-history",
+            Self::Undo { .. } => "undo",
+        }
+    }
+    fn undo_target(&self) -> Option<&str> {
+        match self {
+            Self::Undo { target } => Some(target),
+            _ => None,
         }
     }
 }
 
 #[derive(Clone, Copy)]
 enum Mutation<'a> {
-    Source { root: Id, empty_only: bool },
-    Commit { author: &'a str, message: &'a str },
-    ImportHistory { root: Id, revision: Option<Id> },
+    Source {
+        root: Id,
+        empty_only: bool,
+    },
+    Author {
+        author: &'a str,
+        message: &'a str,
+        amend: bool,
+    },
+    ImportHistory {
+        root: Id,
+        revision: Option<Id>,
+    },
+    Undo {
+        target: &'a str,
+    },
 }
 impl Mutation<'_> {
     fn operation(self) -> Operation {
         match self {
             Self::Source { .. } => Operation::Source,
-            Self::Commit { .. } => Operation::Commit,
+            Self::Author { amend, .. } => {
+                if amend {
+                    Operation::Amend
+                } else {
+                    Operation::Commit
+                }
+            }
             Self::ImportHistory { .. } => Operation::ImportHistory,
+            Self::Undo { target } => Operation::Undo {
+                target: target.to_owned(),
+            },
         }
     }
 }
@@ -431,8 +463,19 @@ impl Repository {
                 generation: next as u64,
                 revision: before.revision,
             },
-            Mutation::Commit { author, message } => {
-                let (id, payload) = history::prepare(&tx, before, author, message)?;
+            Mutation::Undo { target } => {
+                let restored = history::undo_selection(&tx, before, target)?;
+                Selection {
+                    generation: next as u64,
+                    ..restored
+                }
+            }
+            Mutation::Author {
+                author,
+                message,
+                amend,
+            } => {
+                let (id, payload) = history::prepare(&tx, before, author, message, amend)?;
                 insert_objects(&tx, [(id, payload)])?;
                 Selection {
                     root: before.root,
@@ -450,37 +493,54 @@ impl Repository {
         if changed != 1 {
             return Err(invalid("selection singleton/CAS invariant"));
         }
+        let operation = mutation.operation();
         tx.execute(
-            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 request_key,
-                mutation.operation().as_str(),
+                operation.as_str(),
                 before.root.to_bytes()?.as_slice(),
                 expected,
                 before_revision.as_ref().map(|id| id.as_slice()),
                 after.root.to_bytes()?.as_slice(),
                 next,
-                after_revision.as_ref().map(|id| id.as_slice())
+                after_revision.as_ref().map(|id| id.as_slice()),
+                operation.undo_target()
             ],
         )?;
         tx.commit()?;
         Ok(Receipt {
             request_key: request_key.to_owned(),
-            operation: mutation.operation(),
+            operation,
             before,
             after,
         })
     }
 
     fn reconcile(&self, prior: Receipt, expected: u64, mutation: Mutation<'_>) -> Result<Receipt> {
-        let same = prior.operation == mutation.operation() && prior.before.generation == expected;
-        let same = same
-            && match mutation {
-                Mutation::ImportHistory { root, revision } => {
+        let same = prior.before.generation == expected
+            && match (&prior.operation, mutation) {
+                (Operation::ImportHistory, Mutation::ImportHistory { root, revision }) => {
                     prior.after.root == root && prior.after.revision == revision
                 }
-                Mutation::Source { root, .. } => prior.after.root == root,
-                Mutation::Commit { author, message } => {
+                (Operation::Source, Mutation::Source { root, .. }) => prior.after.root == root,
+                (Operation::Undo { target: previous }, Mutation::Undo { target }) => {
+                    previous == target
+                }
+                (
+                    operation,
+                    Mutation::Author {
+                        author,
+                        message,
+                        amend,
+                    },
+                ) if *operation
+                    == if amend {
+                        Operation::Amend
+                    } else {
+                        Operation::Commit
+                    } =>
+                {
                     let id = prior
                         .after
                         .revision
@@ -489,8 +549,22 @@ impl Repository {
                     revision.author == author
                         && revision.message == message
                         && revision.root == prior.after.root
-                        && revision.parents == prior.before.revision.into_iter().collect::<Vec<_>>()
+                        && if amend {
+                            let predecessor = history::read_revision(
+                                &self.connection,
+                                prior
+                                    .before
+                                    .revision
+                                    .ok_or_else(|| invalid("amend receipt has no predecessor"))?,
+                            )?;
+                            revision.parents == predecessor.parents
+                                && revision.change == predecessor.change
+                        } else {
+                            revision.parents
+                                == prior.before.revision.into_iter().collect::<Vec<_>>()
+                        }
                 }
+                _ => false,
             };
         if !same {
             return Err(Error::RequestKeyReuse(prior.request_key));
@@ -518,16 +592,20 @@ CREATE TABLE selection (
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit', 'import-history')),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit', 'amend', 'import-history', 'undo')),
     before_root BLOB NOT NULL REFERENCES objects(id),
     before_generation INTEGER NOT NULL CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
     after_root BLOB NOT NULL REFERENCES objects(id),
     after_generation INTEGER NOT NULL CHECK(after_generation = before_generation + 1),
     after_revision BLOB REFERENCES objects(id),
+    undo_target TEXT REFERENCES operations(request_key),
+    CHECK((kind = 'undo' AND undo_target IS NOT NULL) OR (kind != 'undo' AND undo_target IS NULL)),
     CHECK((kind = 'source' AND before_revision IS after_revision) OR
           (kind = 'commit' AND before_root = after_root AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
-          (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL))
+          (kind = 'amend' AND before_root = after_root AND before_revision IS NOT NULL AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
+          (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL) OR
+          kind = 'undo')
 ) STRICT;
 CREATE TRIGGER objects_no_update BEFORE UPDATE ON objects BEGIN SELECT RAISE(ABORT, 'immutable object'); END;
 CREATE TRIGGER objects_no_delete BEFORE DELETE ON objects BEGIN SELECT RAISE(ABORT, 'retained object'); END;
@@ -646,15 +724,18 @@ fn selection(connection: &Connection) -> Result<Selection> {
     )?)
 }
 fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
-    let row: Option<(String, StoredSelection, StoredSelection)> = connection.query_row(
-        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision FROM operations WHERE request_key = ?1",
-        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?))),
+    let row: Option<(String, StoredSelection, StoredSelection, Option<String>)> = connection.query_row(
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target FROM operations WHERE request_key = ?1",
+        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?)),
     ).optional()?;
-    row.map(|(kind, before, after)| {
+    row.map(|(kind, before, after, target)| {
         let before = decode_selection(before)?;
         let after = decode_selection(after)?;
         if before.generation.checked_add(1) != Some(after.generation) {
             return Err(invalid("receipt generation step"));
+        }
+        if (kind == "undo") != target.is_some() {
+            return Err(invalid("receipt undo target"));
         }
         let operation = match kind.as_str() {
             "source" if before.revision == after.revision => Operation::Source,
@@ -664,6 +745,19 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
                     && before.revision != after.revision =>
             {
                 Operation::Commit
+            }
+            "amend"
+                if before.root == after.root
+                    && before.revision.is_some()
+                    && after.revision.is_some()
+                    && before.revision != after.revision =>
+            {
+                Operation::Amend
+            }
+            "undo" => {
+                let target = target.ok_or_else(|| invalid("receipt undo target"))?;
+                check_request_key(&target)?;
+                Operation::Undo { target }
             }
             "import-history" if before.generation == 0 && before.revision.is_none() => {
                 Operation::ImportHistory

@@ -217,3 +217,300 @@ fn actual_cli_authors_selected_source_and_reads_persisted_history() {
         );
     }
 }
+
+#[test]
+fn actual_cli_amends_pinned_source_and_undoes_only_local_selection() {
+    let project = tempfile::tempdir().unwrap();
+    let p = project.path();
+    let input = p.join("input");
+    fs::write(&input, b"selected bytes").unwrap();
+    success(p, &["--experimental", "init"]);
+    success(
+        p,
+        &[
+            "--experimental",
+            "commit",
+            "--author",
+            "Author",
+            "-m",
+            "empty",
+            "--expected-generation",
+            "0",
+            "--request-key",
+            "first",
+        ],
+    );
+    let original = Repository::open(p).unwrap().status().unwrap();
+    let empty = success(
+        p,
+        &[
+            "--experimental",
+            "amend",
+            "--author",
+            "Author",
+            "-m",
+            "empty",
+            "--expected-generation",
+            "1",
+            "--request-key",
+            "empty-amend",
+        ],
+    );
+    let diagnostic = String::from_utf8(empty.stderr).unwrap();
+    assert!(diagnostic.contains("Source unchanged"));
+    assert!(diagnostic.contains("Empty change"));
+    success(
+        p,
+        &[
+            "--experimental",
+            "source",
+            "put",
+            "file",
+            "--file",
+            input.to_str().unwrap(),
+            "--expected-generation",
+            "2",
+            "--request-key",
+            "working",
+        ],
+    );
+    fs::write(&input, b"later live bytes, never selected").unwrap();
+    assert!(
+        !cli(
+            p,
+            &[
+                "amend",
+                "--author",
+                "Author",
+                "-m",
+                "new",
+                "--expected-generation",
+                "3",
+                "--request-key",
+                "amend"
+            ]
+        )
+        .output()
+        .unwrap()
+        .status
+        .success()
+    );
+    let output = success(
+        p,
+        &[
+            "--experimental",
+            "amend",
+            "--author",
+            "New Author",
+            "-m",
+            "new",
+            "--expected-generation",
+            "3",
+            "--request-key",
+            "amend",
+        ],
+    );
+    let repo = Repository::open(p).unwrap();
+    let amended = repo.status().unwrap();
+    let revision = repo.revision(amended.revision.unwrap()).unwrap();
+    assert_eq!(
+        revision.change,
+        repo.revision(original.revision.unwrap()).unwrap().change
+    );
+    assert!(revision.parents.is_empty());
+    assert_eq!(revision.author, "New Author");
+    assert_eq!(success(p, &["show", "file"]).stdout, b"selected bytes");
+    let unchanged = success(
+        p,
+        &[
+            "--experimental",
+            "amend",
+            "--author",
+            "New Author",
+            "-m",
+            "new",
+            "--expected-generation",
+            "4",
+            "--request-key",
+            "unchanged",
+        ],
+    );
+    assert!(
+        String::from_utf8(unchanged.stderr.clone())
+            .unwrap()
+            .contains("Source unchanged")
+    );
+    let before_undo = repo.status().unwrap();
+    assert_ne!(before_undo.revision, amended.revision);
+    assert!(
+        !cli(
+            p,
+            &[
+                "history",
+                "undo",
+                "unchanged",
+                "--expected-generation",
+                "5",
+                "--request-key",
+                "undo"
+            ]
+        )
+        .output()
+        .unwrap()
+        .status
+        .success()
+    );
+    let undo = success(
+        p,
+        &[
+            "--experimental",
+            "history",
+            "undo",
+            "unchanged",
+            "--expected-generation",
+            "5",
+            "--request-key",
+            "undo",
+        ],
+    );
+    assert!(
+        String::from_utf8(undo.stderr)
+            .unwrap()
+            .contains("filesystem and remotes unchanged")
+    );
+    let after_undo = repo.status().unwrap();
+    assert_eq!(after_undo.generation, 6);
+    assert_eq!(
+        (after_undo.root, after_undo.revision),
+        (amended.root, amended.revision)
+    );
+    assert_eq!(
+        fs::read(&input).unwrap(),
+        b"later live bytes, never selected"
+    );
+    assert_eq!(
+        success(
+            p,
+            &[
+                "--experimental",
+                "amend",
+                "--author",
+                "New Author",
+                "-m",
+                "new",
+                "--expected-generation",
+                "3",
+                "--request-key",
+                "amend"
+            ]
+        )
+        .stdout,
+        output.stdout
+    );
+    assert_eq!(
+        success(
+            p,
+            &[
+                "--experimental",
+                "amend",
+                "--author",
+                "New Author",
+                "-m",
+                "new",
+                "--expected-generation",
+                "4",
+                "--request-key",
+                "unchanged"
+            ]
+        )
+        .stdout,
+        unchanged.stdout
+    );
+    assert_eq!(repo.status().unwrap(), after_undo);
+    assert!(
+        !cli(
+            p,
+            &[
+                "--experimental",
+                "history",
+                "undo",
+                "amend",
+                "--expected-generation",
+                "6",
+                "--request-key",
+                "old-operation"
+            ]
+        )
+        .output()
+        .unwrap()
+        .status
+        .success()
+    );
+    success(
+        p,
+        &["verify", "--root", &amended.revision.unwrap().to_string()],
+    );
+    let bundle = p.join("history.avc");
+    success(
+        p,
+        &["export", "--history", "--output", bundle.to_str().unwrap()],
+    );
+    if std::env::var_os("AVC_REFERENCE_CHECK").is_some() {
+        let check = Command::new("uv")
+            .args(["run", "reference/bundle.py", "--history"])
+            .arg(bundle)
+            .output()
+            .unwrap();
+        assert!(
+            check.status.success(),
+            "independent amended-history verification: {check:?}"
+        );
+    }
+}
+
+#[test]
+fn committed_amend_retry_is_not_failed_by_unavailable_comparison_diagnostics() {
+    let project = tempfile::tempdir().unwrap();
+    let p = project.path();
+    let mut repo = Repository::init(p).unwrap();
+    let parent = repo
+        .commit("Author", "parent", 0, "parent")
+        .unwrap()
+        .after
+        .revision
+        .unwrap();
+    repo.commit("Author", "tip", 1, "tip").unwrap();
+    let args = [
+        "--experimental",
+        "amend",
+        "--author",
+        "Author",
+        "-m",
+        "amend",
+        "--expected-generation",
+        "2",
+        "--request-key",
+        "amend",
+    ];
+    let acknowledged = success(p, &args);
+    let current = repo.status().unwrap();
+    let mut damaged = Object::Revision(repo.revision(parent).unwrap())
+        .encode()
+        .unwrap();
+    *damaged.last_mut().unwrap() ^= 1;
+    let db = rusqlite::Connection::open(p.join(".avc/store.sqlite")).unwrap();
+    db.execute_batch("DROP TRIGGER objects_no_update").unwrap();
+    db.execute(
+        "UPDATE objects SET payload=?1 WHERE id=?2",
+        rusqlite::params![damaged, parent.to_bytes().unwrap().as_slice()],
+    )
+    .unwrap();
+    let retry = success(p, &args);
+    assert_eq!(retry.stdout, acknowledged.stdout);
+    assert!(
+        String::from_utf8(retry.stderr)
+            .unwrap()
+            .contains("comparison diagnostics unavailable")
+    );
+    assert_eq!(repo.status().unwrap(), current);
+}

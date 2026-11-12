@@ -36,6 +36,9 @@ enum Command {
     Receipt(ReceiptArgs),
     Source(Source),
     Commit(Commit),
+    /// Rewrite the selected tip using selected source, preserving ChangeId and parents.
+    Amend(Commit),
+    History(History),
     Log(Log),
 }
 /// Initialize without reading or changing existing project files.
@@ -106,6 +109,26 @@ struct Commit {
     author: String,
     #[usage(long, short = 'm')]
     message: String,
+    #[usage(long)]
+    expected_generation: u64,
+    #[usage(long)]
+    request_key: String,
+}
+/// Generation-checked local history operations; no filesystem or remote effects.
+#[derive(Args)]
+struct History {
+    #[usage(subcommand)]
+    command: HistoryCommand,
+}
+#[derive(Subcommands)]
+enum HistoryCommand {
+    /// Restore the exact current operation's before-source/head under a new generation.
+    Undo(Undo),
+}
+#[derive(Args)]
+struct Undo {
+    /// Request key of the operation that still owns the current selection/generation.
+    operation: String,
     #[usage(long)]
     expected_generation: u64,
     #[usage(long)]
@@ -223,13 +246,46 @@ fn print_receipt(receipt: &Receipt) {
         .revision
         .map(|id| format!(" revision={id}"))
         .unwrap_or_default();
+    let undo = match &receipt.operation {
+        avc::repository::Operation::Undo { target } => format!(" undo={}", target.escape_debug()),
+        _ => String::new(),
+    };
     println!(
-        "root={} generation={} request={}{}",
+        "root={} generation={} request={}{}{}",
         receipt.after.root,
         receipt.after.generation,
         receipt.request_key.escape_debug(),
-        revision
+        revision,
+        undo
     );
+}
+// Publication is already acknowledged before these optional comparisons run.
+// Damaged comparison metadata must not hide a committed/recovered receipt.
+fn amend_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
+    let before = repo.revision(
+        receipt
+            .before
+            .revision
+            .ok_or("amend receipt has no predecessor")?,
+    )?;
+    let after = repo.revision(
+        receipt
+            .after
+            .revision
+            .ok_or("amend receipt has no revision")?,
+    )?;
+    if before.root == after.root {
+        eprintln!("Source unchanged from predecessor; a new immutable revision was authored.");
+    }
+    let empty = match after.parents.as_slice() {
+        [] => after.root == Object::Map(avc::Node::Leaf(Vec::new())).id()?,
+        [parent] => after.root == repo.revision(*parent)?.root,
+        _ => false,
+    };
+    if empty {
+        eprintln!("Empty change: source equals its comparison base; predecessor retained.");
+    }
+    Ok(())
 }
 fn mutation_base(
     repo: &Repository,
@@ -373,6 +429,8 @@ fn run(cli: CommandLine) -> Result<()> {
             | Command::Source(_)
             | Command::Restore(_)
             | Command::Commit(_)
+            | Command::Amend(_)
+            | Command::History(_)
     );
     if mutating && !cli.experimental {
         return Err(
@@ -512,6 +570,28 @@ fn run(cli: CommandLine) -> Result<()> {
             )?;
             print_receipt(&receipt);
         }
+        Command::Amend(args) => {
+            let receipt = repo.amend(
+                &args.author,
+                &args.message,
+                args.expected_generation,
+                &args.request_key,
+            )?;
+            print_receipt(&receipt);
+            if let Err(error) = amend_diagnostics(&repo, &receipt) {
+                eprintln!("Amend committed; comparison diagnostics unavailable: {error}");
+            }
+        }
+        Command::History(args) => match args.command {
+            HistoryCommand::Undo(args) => {
+                let receipt =
+                    repo.undo(&args.operation, args.expected_generation, &args.request_key)?;
+                print_receipt(&receipt);
+                eprintln!(
+                    "Local source/head selection restored under a new generation; filesystem and remotes unchanged."
+                );
+            }
+        },
         Command::Log(args) => {
             let records = repo.log(args.revision, args.limit)?;
             let mut output = std::io::stdout().lock();

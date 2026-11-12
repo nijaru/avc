@@ -22,7 +22,7 @@ fn literal(root: Id, head: Id, records: &BTreeMap<Id, Vec<u8>>) -> Vec<u8> {
 }
 
 #[test]
-fn history_transfer_owns_all_ordered_merge_parents_and_root_conflict_terms() {
+fn native_merge_graph_preserves_parents_and_conflicts_through_transfer_amend_and_undo() {
     let mut engine = Engine::new();
     let empty = engine.empty().unwrap();
     let mut root = |bytes: &[u8]| {
@@ -119,4 +119,17 @@ fn history_transfer_owns_all_ordered_merge_parents_and_root_conflict_terms() {
     assert!(refused.import_history(missing.as_slice(), "bad").is_err());
     assert_eq!(refused.status().unwrap().generation, 0);
     assert!(refused.receipt("bad").unwrap().is_none());
+    // Amending an imported merge preserves both ordered parents and ChangeId,
+    // without parenting the superseded conflicted tip.
+    let amended = repo
+        .amend("Author", "resolved selected source", 1, "amend")
+        .unwrap();
+    let revision = repo.revision(amended.after.revision.unwrap()).unwrap();
+    assert_eq!(revision.parents, vec![first, second]);
+    assert_eq!(revision.change, [3; 16]);
+    assert_eq!(revision.root, left);
+    assert_eq!(repo.revision(head).unwrap().root, conflict_id);
+    let undo = repo.undo("amend", 2, "undo").unwrap();
+    assert_eq!((undo.after.root, undo.after.revision), (left, Some(head)));
+    repo.load_root(head).unwrap();
 }

@@ -16,9 +16,37 @@ impl Repository {
         expected_generation: u64,
         request_key: &str,
     ) -> Result<Receipt> {
+        self.author(author, message, expected_generation, request_key, false)
+    }
+
+    /// Replace the selected tip with a new immutable revision of the same change.
+    /// Authors selected source, retaining the predecessor's ChangeId and parents;
+    /// it never parents the predecessor or reads live filesystem files.
+    pub fn amend(
+        &mut self,
+        author: &str,
+        message: &str,
+        expected_generation: u64,
+        request_key: &str,
+    ) -> Result<Receipt> {
+        self.author(author, message, expected_generation, request_key, true)
+    }
+
+    fn author(
+        &mut self,
+        author: &str,
+        message: &str,
+        expected_generation: u64,
+        request_key: &str,
+        amend: bool,
+    ) -> Result<Receipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
-        let mutation = Mutation::Commit { author, message };
+        let mutation = Mutation::Author {
+            author,
+            message,
+            amend,
+        };
         if let Some(prior) = self.receipt(request_key)? {
             return self.reconcile(prior, expected_generation, mutation);
         }
@@ -38,9 +66,47 @@ impl Repository {
                 actual: current.generation,
             });
         }
+        if amend && current.revision.is_none() {
+            return Err(invalid("amend requires an authored head"));
+        }
         // Validate the source being authored, not every ancestor's source again.
         // Retained parents are immutable and were admitted when first authored.
         self.load_root(current.root)?;
+        self.publish(expected_generation, request_key, Vec::new(), mutation)
+    }
+
+    /// Restore the exact current operation's before-source/head values, under a
+    /// NEW generation and receipt. No object deletion, filesystem or remote effect.
+    /// Refuses if that operation no longer owns the current selection/generation.
+    pub fn undo(
+        &mut self,
+        target: &str,
+        expected_generation: u64,
+        request_key: &str,
+    ) -> Result<Receipt> {
+        self.ensure_idle()?;
+        check_request_key(request_key)?;
+        let mutation = Mutation::Undo { target };
+        if let Some(prior) = self.receipt(request_key)? {
+            return self.reconcile(prior, expected_generation, mutation);
+        }
+        check_request_key(target)?;
+        let current = self.status()?;
+        if current.generation != expected_generation {
+            if let Some(prior) = self.receipt(request_key)? {
+                return self.reconcile(prior, expected_generation, mutation);
+            }
+            return Err(Error::Stale {
+                expected: expected_generation,
+                actual: current.generation,
+            });
+        }
+        let restored = undo_selection(&self.connection, current, target)?;
+        // Undo is new protection, not a promise to select a corrupt departed source.
+        self.load_root(restored.root)?;
+        if let Some(head) = restored.revision {
+            self.revision(head)?;
+        }
         self.publish(expected_generation, request_key, Vec::new(), mutation)
     }
 
@@ -98,26 +164,66 @@ pub(super) fn read_revision(connection: &Connection, id: Id) -> Result<Revision>
     Ok(revision)
 }
 
+pub(super) fn undo_selection(
+    connection: &Connection,
+    current: Selection,
+    target: &str,
+) -> Result<Selection> {
+    let original = receipt(connection, target)?
+        .ok_or_else(|| invalid("undo target has no committed receipt"))?;
+    if original.after.generation != current.generation {
+        return Err(Error::Stale {
+            expected: original.after.generation,
+            actual: current.generation,
+        });
+    }
+    if original.after != current {
+        return Err(invalid(
+            "undo target does not match the current source/head",
+        ));
+    }
+    Ok(original.before)
+}
+
 pub(super) fn prepare(
     connection: &Connection,
     before: Selection,
     author: &str,
     message: &str,
+    amend: bool,
 ) -> Result<(Id, Vec<u8>)> {
-    if let Some(parent) = before.revision {
+    let (parents, change, previous_time) = if amend {
+        let id = before
+            .revision
+            .ok_or_else(|| invalid("amend requires an authored head"))?;
+        let previous = read_revision(connection, id)?;
+        (previous.parents, previous.change, Some(previous.time_ns))
+    } else {
+        let mut change = [0; 16];
+        getrandom::fill(&mut change).map_err(std::io::Error::other)?;
+        (before.revision.into_iter().collect(), change, None)
+    };
+    // An amend's actual parents are its predecessor's parents, not the
+    // predecessor itself. Check those direct metadata rows before publication.
+    for &parent in &parents {
         read_revision(connection, parent)?;
     }
-    let mut change = [0; 16];
-    getrandom::fill(&mut change).map_err(std::io::Error::other)?;
-    let time_ns = SystemTime::now()
+    let mut time_ns: i64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(std::io::Error::other)?
         .as_nanos()
         .try_into()
         .map_err(|_| Error::Limit("revision timestamp"))?;
+    // Even an unchanged amend in the same clock tick is a distinct immutable
+    // revision. No monotonic-clock claim is made for ordinary authored times.
+    if previous_time == Some(time_ns) {
+        time_ns = time_ns
+            .checked_add(1)
+            .ok_or(Error::Limit("revision timestamp"))?;
+    }
     let object = Object::Revision(Revision {
         root: before.root,
-        parents: before.revision.into_iter().collect(),
+        parents,
         change,
         author: author.to_owned(),
         message: message.to_owned(),

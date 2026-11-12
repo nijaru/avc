@@ -1,6 +1,6 @@
 # AVC user workflows and command/API contract
 
-**Design baseline 2026-11-04; authored commit/log added 2026-11-09; selected-history transfer, basic amend/undo and single-change rebase added 2026-11-11.** The README lists today's experimental commands. Basic authoring, first-parent history, selected-history transfer, tip amend, scoped undo and single-change rebase are implemented; advanced history editing, capture/checkpoints, workspaces and synchronization below remain **target workflows**, not available commands. Commands below are **selected target spellings**, subject to usability adjustment *before public release*. The [architecture](design.md) owns invariants, [format](format.md) owns immutable data/merge, [storage](storage.md) owns recovery, [sync](sync.md) owns native remote behavior, and [git](git.md) owns the Git adapter. Do not implement duplicate state machines in the CLI.
+**Design baseline 2026-11-04; authored commit/log added 2026-11-09; selected-history transfer, basic amend/undo and single-change rebase added 2026-11-11; local Git translation added 2026-11-12.** The README lists today's experimental commands. Basic authoring, first-parent history, selected-history transfer, tip amend, scoped undo, single-change rebase and a local Git translation subset are implemented; advanced history editing, capture/checkpoints, workspaces and synchronization below remain **target workflows**, not available commands. Commands below are **selected target spellings**, subject to usability adjustment *before public release*. The [architecture](design.md) owns invariants, [format](format.md) owns immutable data/merge, [storage](storage.md) owns recovery, [sync](sync.md) owns native remote behavior, and [git](git.md) owns the Git adapter. Do not implement duplicate state machines in the CLI.
 
 ## 1. User mental model
 
@@ -16,6 +16,8 @@ AVC has **source**, **changes**, **unfinished work**, and **sharing**.
 By default, `status`/`log` operate locally; `show`/`diff` can read-through-fetch promised immutable data under configured online policy. None of these read-only commands creates commits, checkpoints, moves refs, runs hooks or discloses private source. Use `--offline` to forbid fetches.
 
 ## 2. Starting and cloning
+
+**Available local Git subset:** `git import --git-dir DIR --commit OID --request-key KEY` imports one exact SHA-1 tip into an untouched store; `git export --git-dir DIR [--revision ID]` writes candidate objects, not refs. Both require `--experimental`. Without an exact `--revision`, export requires selected source equal to the authored head. `git origins` reports retained foreign boundaries without contacting Git. These do not implement the clone/fetch/push workflows below. See [Git](git.md#available-local-round-trip) for the example, metadata projection and current refusal of Git-anchored history export.
 
 ```sh
 avc init

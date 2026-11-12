@@ -1,6 +1,51 @@
 # AVC ↔ Git interoperability contract
 
-**2026-11-04.** Git is an **adoption and publication boundary**, not AVC's source storage, object format, conflict algebra, or native protocol. This document owns Git translation; native clone/partial semantics live in [sync](sync.md), canonical source in [format](format.md), and observable user behavior in [UX](ux.md).
+**Design baseline 2026-11-04; first local translation implemented 2026-11-12.** Git is an **adoption and publication boundary**, not AVC's source storage, object format, conflict algebra, or native protocol. This document owns Git translation; native clone/partial semantics live in [sync](sync.md), canonical source in [format](format.md), and observable user behavior in [UX](ux.md).
+
+## Available local round trip
+
+The experimental CLI implements a **local SHA-1 subset**, using an explicit Git administration directory and exact commit OID. It does not resolve refs, fetch, push, update a Git index/ref/worktree, run hooks or execute filters. SHA-256 repositories refuse. Git must support the `--no-lazy-fetch` and raw `cat-file` options used by the adapter; unavailable capabilities fail closed. Source bytes, executable modes, symlinks and LFS pointer bytes are preserved; gitlinks, malformed objects and unsupported metadata refuse. Git author/message must fit native UTF-8 metadata. The subset excludes pre-epoch dates and NUL-bearing commit metadata. Git and canonical source closures each have 16 MiB payload, 256 MiB aggregate and 100,000-object limits; Git conversion also bounds expanded entries at 100,000, depth at 256 components, paths at 4096 bytes and foreign parents at 16. Original commit bytes, tree and ordered foreign parents are retained in SQLite, atomically with the native anchor and import receipt. No historical Git ancestry is converted: the recorded foreign parents are a boundary, even if Git happens to have those objects locally. There is no remote or tracking-ref snapshot because this slice accepts exact OIDs only.
+
+- `avc --experimental git import --git-dir DIR --commit OID --request-key KEY` requires an untouched initialized native store. An exact retry returns its receipt even after native edits or removal of the Git store; the path is not part of identity.
+- `avc git origins [--revision NATIVE_ID]` inspects retained boundaries without contacting Git. Ordinary `status` does not traverse ancestry or certify Git completeness.
+- `avc --experimental git export --git-dir DIR [--revision NATIVE_ID]` prepares a complete representable candidate, writes immutable Git objects and records derived mappings. Without `--revision`, selected source must match the authored head. Selection/generation remain unchanged. Every native root must have a retained original mapping, and its exact Git commit must be available at the target; missing origins refuse rather than fabricate a root. New translated commits use mapped parents in native parent order.
+
+Empty top-level source is representable; standalone empty directory entries and unresolved source conflicts refuse. Export policy **`avc.git.export/v1`** uses the exact native author as both Git author and committer, with the native timezone. The identity must be a single-line representable `Name <email>`; no email is invented. Git time is `time_ns.div_euclid(1_000_000_000)` seconds. Exact nanoseconds and the native RevisionId remain in `avc-time-ns` and `avc-revision` audit headers. This is a declared Git precision projection, not a lossless native identity round trip. Reimport treats those headers as untrusted foreign data and creates the ordinary deterministic Git anchor; it does not recreate native parents from a claimed ID.
+
+All metadata/source/mapping checks precede Git writes. An I/O failure afterward may leave unreferenced candidate objects; retry is deterministic. Git object writes and SQLite mapping publication are **not one transaction**, and no Git ref has been published. Candidate objects may be pruned by Git until the user deliberately protects/publishes them. Repeated export validates native data and target objects again; the mapping is not an availability certificate or a second source authority.
+
+**Current portability limit:** `AVCHIS01` cannot carry foreign-origin records. Selected-history export refuses an owning graph containing a known Git anchor *before creating output*, rather than silently dropping its boundary. Source-only export still works, but does not back up authored history or Git origins. Preserve the original native store using a SQLite-consistent backup; copying only an active main database is unsafe. Portable Git-origin metadata is follow-up work. Amending/rebasing an import anchor itself refuses; author a native child first. Rewriting that child remains native, using exact known source comparisons rather than an invented old Git merge base.
+
+With a built `./target/debug/avc`, this local example needs only stock Git:
+
+```sh
+mkdir -p tmp
+demo=$(mktemp -d tmp/git-roundtrip.XXXXXX)
+git init --bare "$demo/foreign.git"
+blob=$(printf 'original\n' | git --git-dir "$demo/foreign.git" hash-object -w --stdin)
+tree=$(printf '100644 blob %s\thello\n' "$blob" | git --git-dir "$demo/foreign.git" mktree)
+tip=$(GIT_AUTHOR_NAME=Original GIT_AUTHOR_EMAIL=original@example.test \
+  GIT_COMMITTER_NAME=Original GIT_COMMITTER_EMAIL=original@example.test \
+  git --git-dir "$demo/foreign.git" commit-tree "$tree" -m original)
+mkdir "$demo/native"
+./target/debug/avc --repository "$demo/native" --experimental init
+./target/debug/avc --repository "$demo/native" --experimental git import \
+  --git-dir "$demo/foreign.git" --commit "$tip" --request-key import
+printf 'native edit\r\n' > "$demo/bytes"
+./target/debug/avc --repository "$demo/native" --experimental source put hello \
+  --file "$demo/bytes" --expected-generation 1 --request-key edit
+./target/debug/avc --repository "$demo/native" --experimental commit \
+  --author 'Native <native@example.test>' -m 'Native child' \
+  --expected-generation 2 --request-key child
+result=$(./target/debug/avc --repository "$demo/native" --experimental git export \
+  --git-dir "$demo/foreign.git")
+oid=${result#commit=sha1:}; oid=${oid%% *}
+test "$(git --git-dir "$demo/foreign.git" rev-parse "$oid^")" = "$tip"
+git --git-dir "$demo/foreign.git" cat-file -p "$oid"
+./target/debug/avc --repository "$demo/native" git origins
+```
+
+The sections below describe the broader interoperability target; refs, remote synchronization, foreign partial views and hosting are not implemented by this subset.
 
 ## The fundamental identity incompatibility
 
@@ -74,7 +119,7 @@ The bridge may use `git` subprocesses because that delegates object/pack/negotia
 
 ## Long-term Git compatibility: one engine, multiple protocols
 
-**Permanent product direction:** Retain Git import/export and remote synchronization for as long as AVC supports existing Git-hosted users. When AVC hosts its own native repositories, add an **optional Git smart-protocol frontend** that serves ordinary Git clients from **the same native source and ref authority**. **Do not build or maintain a second Git-backed AVC storage/revision/working-copy backend.** The native source/history core is partially implemented; the Git adapter and hosting frontend are not.
+**Permanent product direction:** Retain Git import/export and remote synchronization for as long as AVC supports existing Git-hosted users. When AVC hosts its own native repositories, add an **optional Git smart-protocol frontend** that serves ordinary Git clients from **the same native source and ref authority**. **Do not build or maintain a second Git-backed AVC storage/revision/working-copy backend.** The native source/history core is partially implemented; the initial local Git adapter is implemented; remote synchronization and the hosting frontend are not.
 
 ### Trust and representation boundaries
 

@@ -321,7 +321,7 @@ fn failed_live_reads_and_protected_subtree_pruning_publish_no_partial_candidate(
 }
 
 #[test]
-fn removal_requires_recursive_consent_and_still_refuses_missing_requested_scope_and_type_replacement()
+fn removal_requires_recursive_consent_and_refuses_missing_parents_untracked_scopes_and_type_replacement()
  {
     let project = tempfile::tempdir().unwrap();
     let input = tempfile::tempdir().unwrap();
@@ -352,11 +352,7 @@ fn removal_requires_recursive_consent_and_still_refuses_missing_requested_scope_
     assert!(String::from_utf8_lossy(&output.stderr).contains("--recursive"));
     assert!(repo.receipt("implicit").unwrap().is_none());
     fs::remove_dir_all(input.path().join("src/branch")).unwrap();
-    for (key, requested) in [
-        ("top", "src/branch"),
-        ("parent", "src/branch/a"),
-        ("new", "src/never-selected"),
-    ] {
+    for (key, requested) in [("parent", "src/branch/a"), ("new", "src/never-selected")] {
         let scope =
             CaptureScope::recursive_removing_missing(input.path(), vec![path(requested)]).unwrap();
         assert!(repo.capture(&scope, 1, key).is_err());

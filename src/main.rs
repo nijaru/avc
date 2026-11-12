@@ -132,7 +132,7 @@ struct Capture {
     expected_generation: u64,
     #[usage(long)]
     request_key: String,
-    /// Relative scopes; directories require --recursive. Missing requested scopes refuse.
+    /// Relative scopes; missing tracked paths need --remove-missing and an existing parent.
     #[usage(required)]
     paths: Vec<PathBuf>,
 }
@@ -350,7 +350,7 @@ fn print_receipt(receipt: &Receipt) {
                 avc::capture::CaptureMode::Recursive =>
                     "recursive (no ignore rules; missing selected paths refuse)",
                 avc::capture::CaptureMode::RecursiveRemovingMissing =>
-                    "recursive with removal of proven-missing bindings (existing directories only)",
+                    "recursive with removal of proven-missing bindings (parent coverage required)",
             }
         );
         for path in scope.paths() {

@@ -7,12 +7,15 @@
 //! no descendant is opened, and existing excluded Source bindings are preserved.
 //! Missing ordinary Source bindings refuse unless RecursiveRemovingMissing
 //! observes their absence in a fully scanned existing parent. Explicit missing
-//! scopes/parents and directory-to-leaf changes always refuse. Non-directory
-//! Source ancestors refuse partial selection.
+//! scopes may prune tracked bindings using membership-only parent enumeration:
+//! unselected siblings contribute names, never payload observations. Missing
+//! parents/root and directory-to-leaf changes refuse. Non-directory Source
+//! ancestors refuse partial selection.
 //!
 //! Requests: 1..=1024 disjoint paths, 64 KiB total component lengths plus one per
 //! component, canonical paths <=256 components/4096 bytes, names <=255 bytes.
-//! Expanded entries: <=100,000 (observations, preserved exclusions and absences),
+//! Expanded entries: <=100,000 (live names, scanned directories, old-only
+//! preserved exclusions and absences),
 //! 16 MiB per Blob, 256 MiB captured bytes. The entire resulting closure,
 //! including unselected Base, is checked at
 //! 100,000 objects/256 MiB/16 MiB per payload. Metadata has MAX_WITNESS_BYTES limit.
@@ -20,7 +23,8 @@
 //! Evidence detects observed races, NOT a simultaneous or complete filesystem
 //! snapshot. File/link pre-open lstat, open fstat, post-read fstat/lstat agree.
 //! Scanned directories have equal full stats before enumeration and after their
-//! subtree; ancestor/root guards compare identity and mode. Name-to-fd checks
+//! subtree (or membership-only proof); cached parent coverage requires matching
+//! full stats on reuse. Ancestor/root guards compare identity and mode. Name-to-fd checks
 //! surround reads. Relocation/restoration between guards can escape detection.
 //! macOS readlinkat uses guarded parent/name; Linux uses the pinned link fd.
 //! Regular files with nlink != 1 refuse before opening (including ordinary
@@ -46,7 +50,8 @@
 //! A stat is device u64, inode u64, full mode u64, size i64, mtime i64,
 //! mtime-nanoseconds i64, ctime i64, ctime-nanoseconds i64, nlink u64.
 //! Equal checks are encoded once; ancestor stats assert only identity/mode.
-//! Counts describe actual observations, not preserved excluded Source entries.
+//! Directory counts describe enumerations, not complete child-payload capture;
+//! file/link counts describe observations, not preserved excluded Source entries.
 //! `report` validates framing and derives diagnostics, not Source authority.
 //! Payload bytes belong only to Native Blobs and are never repeated in evidence.
 
@@ -945,10 +950,21 @@ mod unix {
         // Only pruned old directories need this metadata-only walk. Sharing a
         // directory at many logical paths must not repeatedly traverse its DAG.
         checked_prunable: std::collections::BTreeSet<Id>,
+        // Membership-only proofs retain names/stat, not descriptors or Source
+        // children. Reuse must validate the current anchored directory in full.
+        membership: std::collections::BTreeMap<crate::engine::Path, Coverage>,
+    }
+    enum Enumeration {
+        CaptureChildren,
+        MembershipOnly,
+    }
+    struct Coverage {
+        before: Stat,
+        names: Vec<Vec<u8>>,
     }
     struct Frame {
         path: crate::engine::Path,
-        names: std::vec::IntoIter<(Vec<u8>, usize)>,
+        names: std::vec::IntoIter<Vec<u8>>,
         entries: Vec<(Vec<u8>, Entry)>,
         prior: std::collections::BTreeMap<Vec<u8>, Entry>,
         before: Stat,
@@ -1023,10 +1039,26 @@ mod unix {
                 }
                 _ => std::collections::BTreeMap::new(),
             };
+            let coverage = self.enumerate(chain, &path, Enumeration::CaptureChildren)?;
+            Ok(Frame {
+                path,
+                names: coverage.names.into_iter(),
+                entries: Vec::new(),
+                prior,
+                before: coverage.before,
+            })
+        }
+        fn enumerate(
+            &mut self,
+            chain: &[Directory],
+            path: &[Vec<u8>],
+            policy: Enumeration,
+        ) -> Result<Coverage> {
+            let context = format!("{path:?}");
             guard(chain, &context)?;
             let fd = &chain.last().expect("root directory present").fd;
             let before = stat(fd, &context)?;
-            self.evidence.record(&path, 3, Some(&before), 0)?;
+            self.evidence.record(path, 3, Some(&before), 0)?;
             self.evidence.reserve(4)?; // full raw-name count, before enumeration
             let mut names = Vec::new();
             let mut dir = checked(&context, "enumerate directory", fs::Dir::read_from(fd))?;
@@ -1045,29 +1077,55 @@ mod unix {
                         "expanded path exceeds 256 components or 4096 bytes",
                     ));
                 }
-                let reserve = record_size(&path, 1) + 4 + name.len();
-                // Charge both the child record and the duplicate name in this
-                // directory's full enumeration BEFORE copying untrusted bytes.
-                self.evidence.reserve(reserve + 4 + name.len())?;
-                names.push((name.to_vec(), reserve));
+                let child_reserve = match policy {
+                    Enumeration::CaptureChildren => record_size(path, 1) + 4 + name.len(),
+                    Enumeration::MembershipOnly => 0,
+                };
+                // Charge every raw name BEFORE copying it. Only subtree capture
+                // reserves future child records; membership never observes them.
+                self.evidence.reserve(child_reserve + 4 + name.len())?;
+                names.push(name.to_vec());
             }
-            names.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            if names.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            names.sort_unstable();
+            if names.windows(2).any(|pair| pair[0] == pair[1]) {
                 return Err(refused(&context, "duplicate enumerated directory name"));
             }
             self.evidence.reserved -= 4;
             self.evidence.count(names.len())?;
-            for (name, _) in &names {
+            for name in &names {
                 self.evidence.reserved -= 4 + name.len();
                 self.evidence.raw(name)?;
             }
-            Ok(Frame {
-                path,
-                names: names.into_iter(),
-                entries: Vec::new(),
-                prior,
-                before,
-            })
+            guard_enumerated(chain, &before, &context)?;
+            Ok(Coverage { before, names })
+        }
+        fn remove_missing(
+            &mut self,
+            chain: &[Directory],
+            path: &[Vec<u8>],
+            prior: &Entry,
+        ) -> Result<()> {
+            let context = format!("{path:?}");
+            let (name, parent) = path.split_last().expect("missing scope is nonempty");
+            guard(chain, &context)?;
+            self.require_prunable(prior)?;
+            if !self.membership.contains_key(parent) {
+                // The outer loop charged the absent scope. This additional slot
+                // is the scanned parent; no Native child map is needed.
+                self.entry_budget()?;
+                let coverage = self.enumerate(chain, parent, Enumeration::MembershipOnly)?;
+                self.membership.insert(parent.to_vec(), coverage);
+            }
+            let coverage = &self.membership[parent];
+            guard_enumerated(chain, &coverage.before, &context)?;
+            if coverage.names.binary_search(name).is_ok() {
+                return Err(refused(
+                    &context,
+                    "requested basename present in raw parent names",
+                ));
+            }
+            self.evidence.record(path, 5, None, 0)?;
+            guard_enumerated(chain, &coverage.before, &context)
         }
         fn require_prunable(&mut self, entry: &Entry) -> Result<()> {
             let mut pending = Vec::new();
@@ -1118,10 +1176,10 @@ mod unix {
             let mut stack = vec![self.frame(chain, path, prior)?];
             loop {
                 let frame = stack.last_mut().expect("active scan frame");
-                if let Some((name, reserve)) = frame.names.next() {
+                if let Some(name) = frame.names.next() {
+                    self.evidence.reserved -= record_size(&frame.path, 1) + 4 + name.len();
                     let mut path = frame.path.clone();
                     path.push(name.clone());
-                    self.evidence.reserved -= reserve;
                     let context = format!("{path:?}");
                     let prior = frame.prior.remove(&name).unwrap_or(Entry::Absent);
                     let fd = &chain.last().expect("scan directory present").fd;
@@ -1199,19 +1257,7 @@ mod unix {
                     }
                 }
                 let context = format!("{:?}", frame.path);
-                guard(chain, &context)?;
-                let directory = chain.last().expect("scan directory present");
-                require_directory_same(&frame.before, &stat(&directory.fd, &context)?, &context)?;
-                let named = if chain.len() == 1 {
-                    lstat(fs::CWD, OsStr::new("/"), &context)?
-                } else {
-                    lstat(
-                        &chain[chain.len() - 2].fd,
-                        OsStr::from_bytes(&directory.name),
-                        &context,
-                    )?
-                };
-                require_directory_same(&frame.before, &Stat::from(named, &context)?, &context)?;
+                guard_enumerated(chain, &frame.before, &context)?;
                 let value = Entry::Directory(self.engine.directory(frame.entries)?);
                 if let Some(parent) = stack.last_mut() {
                     let name = frame.path.pop().expect("child directory has basename");
@@ -1222,6 +1268,21 @@ mod unix {
                 }
             }
         }
+    }
+    fn guard_enumerated(chain: &[Directory], before: &Stat, context: &str) -> Result<()> {
+        guard(chain, context)?;
+        let directory = chain.last().expect("scan directory present");
+        require_directory_same(before, &stat(&directory.fd, context)?, context)?;
+        let named = if chain.len() == 1 {
+            lstat(fs::CWD, OsStr::new("/"), context)?
+        } else {
+            lstat(
+                &chain[chain.len() - 2].fd,
+                OsStr::from_bytes(&directory.name),
+                context,
+            )?
+        };
+        require_directory_same(before, &Stat::from(named, context)?, context)
     }
     fn require_directory_same(before: &Stat, after: &Stat, context: &str) -> Result<()> {
         if before != after {
@@ -1279,6 +1340,7 @@ mod unix {
             expanded: 0,
             mode,
             checked_prunable: std::collections::BTreeSet::new(),
+            membership: std::collections::BTreeMap::new(),
         };
         let mut root = base;
         let mut previous_parents: &[Vec<u8>] = &[];
@@ -1324,7 +1386,7 @@ mod unix {
             scanner.entry_budget()?;
             let prior = scanner.engine.read(root, path)?;
             let is_directory = if path.is_empty() {
-                true
+                Some(true)
             } else {
                 let named = fs::statat(
                     &chain.last().expect("root directory present").fd,
@@ -1332,21 +1394,28 @@ mod unix {
                     AtFlags::SYMLINK_NOFOLLOW,
                 );
                 match named {
-                    Ok(raw) => FileType::from_raw_mode(raw.st_mode).is_dir(),
+                    Ok(raw) => Some(FileType::from_raw_mode(raw.st_mode).is_dir()),
                     Err(rustix::io::Errno::NOENT)
-                        if mode != CaptureMode::Leaves && prior != Entry::Absent =>
+                        if mode == CaptureMode::RecursiveRemovingMissing
+                            && prior != Entry::Absent =>
                     {
-                        let reason = if mode == CaptureMode::RecursiveRemovingMissing {
-                            "missing previously-selected path; deletion unsupported for explicit scopes; select an existing parent recursively"
-                        } else {
-                            "missing previously-selected path; deletion unsupported"
-                        };
-                        return Err(refused(&context, reason));
+                        None
+                    }
+                    Err(rustix::io::Errno::NOENT)
+                        if mode == CaptureMode::Recursive && prior != Entry::Absent =>
+                    {
+                        return Err(refused(
+                            &context,
+                            "missing previously-selected path; deletion unsupported",
+                        ));
                     }
                     Err(error) => return Err(refused(&context, format_args!("lstat: {error}"))),
                 }
             };
-            let value = if mode != CaptureMode::Leaves && is_directory {
+            let value = if is_directory.is_none() {
+                scanner.remove_missing(&chain, path, &prior)?;
+                Entry::Absent
+            } else if mode != CaptureMode::Leaves && is_directory == Some(true) {
                 if let Some(name) = path.last() {
                     let child = open_directory(
                         &chain.last().expect("root directory present").fd,
@@ -1382,6 +1451,11 @@ mod unix {
         }
         scanner.evidence.bytes[report_offset + 32..report_offset + 36]
             .copy_from_slice(&scanner.evidence.records.to_le_bytes());
+        // Mixed membership-only coverage and positive OS aliases must still
+        // describe the exact requested raw paths. Keep the strict parser as the
+        // single owner of cross-record consistency; never return contradictory
+        // evidence (or normalize Native paths to make it fit).
+        super::report(&scanner.evidence.bytes)?;
         // Engine verification bounds the complete selected closure. Its API has
         // no per-object limit, so check encoded payloads in that closure too.
         scanner.engine.verify(
@@ -1514,6 +1588,7 @@ mod unix {
                 expanded: MAX_ENTRIES - 1,
                 mode: CaptureMode::Leaves,
                 checked_prunable: std::collections::BTreeSet::new(),
+                membership: std::collections::BTreeMap::new(),
             };
             scanner.entry_budget().unwrap();
             assert!(scanner.entry_budget().is_err());
@@ -1566,6 +1641,7 @@ mod unix {
                         expanded: MAX_ENTRIES - remaining,
                         mode,
                         checked_prunable: std::collections::BTreeSet::new(),
+                        membership: std::collections::BTreeMap::new(),
                     };
                     assert_eq!(
                         scanner
@@ -1609,6 +1685,7 @@ mod unix {
                 expanded: 0,
                 mode: CaptureMode::RecursiveRemovingMissing,
                 checked_prunable: std::collections::BTreeSet::new(),
+                membership: std::collections::BTreeMap::new(),
             };
             for _ in 0..2 {
                 scanner.require_prunable(&Entry::Directory(root)).unwrap();
@@ -1647,6 +1724,7 @@ mod unix {
                     expanded: 0,
                     mode: CaptureMode::RecursiveRemovingMissing,
                     checked_prunable: std::collections::BTreeSet::new(),
+                    membership: std::collections::BTreeMap::new(),
                 };
                 scanner
                     .evidence
@@ -1665,6 +1743,127 @@ mod unix {
                         scanner.evidence.bytes.len() + scanner.evidence.reserved,
                         MAX_WITNESS_BYTES
                     );
+                }
+            }
+        }
+
+        fn membership_scanner(engine: &mut Engine) -> Scanner<'_> {
+            Scanner {
+                engine,
+                evidence: Evidence {
+                    bytes: Vec::new(),
+                    reserved: 0,
+                    records: 0,
+                    counts: [0; 4],
+                },
+                captured: 0,
+                expanded: 0,
+                mode: CaptureMode::RecursiveRemovingMissing,
+                checked_prunable: std::collections::BTreeSet::new(),
+                membership: std::collections::BTreeMap::new(),
+            }
+        }
+
+        #[test]
+        fn cached_membership_requires_unchanged_full_parent_stat_on_every_reuse() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            std::fs::write(root.join("sibling"), b"before").unwrap();
+            let mut chain = vec![open_directory(fs::CWD, b"/", "test").unwrap()];
+            for name in root_components(&root).unwrap() {
+                chain.push(open_directory(&chain.last().unwrap().fd, name, "test").unwrap());
+            }
+            let directory = File::open(&root).unwrap();
+            directory.set_modified(std::time::UNIX_EPOCH).unwrap();
+            let mut engine = Engine::new();
+            let prior = Entry::Symlink(engine.blob(b"never-follow".to_vec()).unwrap());
+            let mut scanner = membership_scanner(&mut engine);
+            for name in [b"missing-one".as_slice(), b"missing-two"] {
+                scanner.entry_budget().unwrap(); // explicit scope
+                scanner
+                    .remove_missing(&chain, &[name.to_vec()], &prior)
+                    .unwrap();
+                // Sibling payload edits are not membership changes and never
+                // require observing that payload to reuse this proof.
+                std::fs::write(root.join("sibling"), b"modified sibling").unwrap();
+            }
+            assert_eq!(scanner.evidence.counts, [0, 0, 1, 2]);
+            assert_eq!(scanner.expanded, 4); // two scopes + parent + sibling name
+            assert_eq!(scanner.membership.len(), 1);
+            assert_eq!(scanner.captured, 0);
+            assert_eq!(scanner.evidence.reserved, 0);
+            std::fs::write(root.join("new-member"), b"new").unwrap();
+            scanner.entry_budget().unwrap();
+            let error = scanner
+                .remove_missing(&chain, &[b"missing-three".to_vec()], &prior)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("enumerated directory changed"), "{error}");
+            assert_eq!(scanner.evidence.counts, [0, 0, 1, 2]);
+            assert_eq!(scanner.membership.len(), 1); // never refresh/duplicate proof
+        }
+
+        #[test]
+        fn membership_names_use_exact_metadata_budget_without_child_reservations() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            std::fs::write(root.join("child"), b"not read").unwrap();
+            let mut chain = vec![open_directory(fs::CWD, b"/", "test").unwrap()];
+            for name in root_components(&root).unwrap() {
+                chain.push(open_directory(&chain.last().unwrap().fd, name, "test").unwrap());
+            }
+            let required = record_size(&[], 3) + 4 + 4 + b"child".len();
+            let mut engine = Engine::new();
+            for short in [0, 1] {
+                let mut scanner = membership_scanner(&mut engine);
+                scanner
+                    .evidence
+                    .reserve(MAX_WITNESS_BYTES - required + short)
+                    .unwrap();
+                let result = scanner.enumerate(&chain, &[], Enumeration::MembershipOnly);
+                assert_eq!(result.is_err(), short == 1);
+                assert_eq!(scanner.expanded, 1); // live raw name, no child observation
+                assert_eq!(scanner.captured, 0);
+                assert_eq!(scanner.evidence.counts, [0, 0, 1, 0]);
+                if short == 0 {
+                    assert_eq!(result.unwrap().names, vec![b"child".to_vec()]);
+                    assert_eq!(scanner.evidence.bytes.len(), required);
+                    assert_eq!(
+                        scanner.evidence.bytes.len() + scanner.evidence.reserved,
+                        MAX_WITNESS_BYTES
+                    );
+                } else {
+                    // The name's bytes were not appended on failed reservation.
+                    assert_eq!(scanner.evidence.bytes.len(), record_size(&[], 3));
+                }
+            }
+        }
+
+        #[test]
+        fn direct_absence_charges_scope_parent_and_all_live_names_once() {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            std::fs::write(root.join("sibling"), b"not read").unwrap();
+            let mut chain = vec![open_directory(fs::CWD, b"/", "test").unwrap()];
+            for name in root_components(&root).unwrap() {
+                chain.push(open_directory(&chain.last().unwrap().fd, name, "test").unwrap());
+            }
+            let mut engine = Engine::new();
+            let prior = Entry::Symlink(engine.blob(b"old".to_vec()).unwrap());
+            for remaining in [2, 3] {
+                let mut scanner = membership_scanner(&mut engine);
+                scanner.expanded = MAX_ENTRIES - remaining;
+                scanner.entry_budget().unwrap();
+                let result = scanner.remove_missing(&chain, &[b"gone".to_vec()], &prior);
+                assert_eq!(result.is_ok(), remaining == 3);
+                assert_eq!(scanner.expanded, MAX_ENTRIES);
+                assert_eq!(scanner.captured, 0);
+                if remaining == 3 {
+                    assert_eq!(scanner.evidence.counts, [0, 0, 1, 1]);
+                    assert_eq!(scanner.evidence.reserved, 0);
+                } else {
+                    assert!(scanner.membership.is_empty());
+                    assert_eq!(scanner.evidence.counts[3], 0);
                 }
             }
         }

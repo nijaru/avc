@@ -22,9 +22,10 @@ impl CaptureScope {
     pub fn recursive(directory: &Path, paths: Vec<Vec<Vec<u8>>>) -> Result<Self> {
         Self::with_mode(directory, paths, CaptureMode::Recursive)
     }
-    /// Also remove missing raw-name bindings beneath existing selected
-    /// directories after complete successful enumeration. Missing requested
-    /// scopes and directory-to-leaf replacements still refuse.
+    /// Also remove selected missing raw-name bindings using complete successful
+    /// parent enumeration, including directly requested tracked paths. Missing
+    /// filesystem parents, untracked typos and directory-to-leaf replacements
+    /// still refuse; unselected sibling payloads are not captured.
     pub fn recursive_removing_missing(directory: &Path, paths: Vec<Vec<Vec<u8>>>) -> Result<Self> {
         Self::with_mode(directory, paths, CaptureMode::RecursiveRemovingMissing)
     }
@@ -185,7 +186,6 @@ impl Repository {
         if observation.witnesses.is_empty() || observation.witnesses.len() > MAX_WITNESS_BYTES {
             return Err(Error::Limit("capture observation witness bytes"));
         }
-        crate::capture::report(&observation.witnesses)?;
         let records = collect_closure([observation.root], |id| encode_bounded(engine.object(id)?))?;
         engine.verify(observation.root, limits())?;
         let prepared = self.prepare_objects(records)?;

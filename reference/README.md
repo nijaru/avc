@@ -134,6 +134,56 @@ repository backup or a source-custody qualification. Tests construct streams
 independently, including repaired-checksum attacks, without using the Rust
 exporter; parent end-to-end tests can also feed real CLI exports to this parser.
 
+## Selected authored-history streams
+
+Use `--history` to select the separate `AVCHIS01` parser. The default parser and
+`verify_stream` / `verify_file` APIs still accept only `AVCEXP01`; there is no
+automatic format detection. Canonical v1 object payloads are unchanged.
+
+```sh
+uv run reference/bundle.py history.avchis --history
+uv run reference/bundle.py history.avchis --history --json > history-corpus.json
+uv run reference/check.py --verify history-corpus.json
+```
+
+The wire fields, in order, are:
+
+- Eight-byte magic `AVCHIS01`.
+- A 33-byte typed selected source root: map kind `02`/`03` or root Conflict `04`.
+- A one-byte authored-head tag, exactly `0` or `1`. Tag `1` is followed by a
+  33-byte typed Revision `05` head; tag `0` has no head field.
+- A `u64le` record count, from 1 through 100,000. Each record is a 33-byte typed
+  ID, a `u64le` canonical payload length, and that payload. IDs must be strictly
+  sorted and unique.
+- Eight-byte completion marker `AVCHEND1`, then the 32-byte BLAKE3 digest of
+  every preceding byte, including the completion marker. EOF is mandatory.
+
+`verify_history_stream` / `verify_history_file` return the same canonical JSON
+shape as the source-only APIs. Its verification roots are the selected source,
+then the authored head when present. The selected source may differ from the
+head Revision's source: uncommitted selection must not be replaced by the last
+authored source. No head is valid for an unborn source selection, including an
+empty map.
+
+Records must be the **exact union** of both owning closures: all selected-source
+dependencies, the head, every ancestor Revision, and all their source
+dependencies. Shared objects occur only once. Negative conflict alternatives own
+dependencies too. The checker rejects path conflicts in source-root contexts,
+missing ancestry or sources, and surplus records even with a valid outer
+checksum. Framing and bounded-read logic are shared with the source-only parser.
+
+History payload caps are 16 MiB per object and 256 MiB aggregate unique payload;
+the object count cap is 100,000. The same limit flags can tighten these caps, but
+cannot relax them. The history whole-file default adds 34 bytes for the optional
+head header: `256 MiB + 41 × 100,000 + 123` bytes. `--max-file-bytes` overrides
+that framing budget. Both parsers emit JSON only after full verification.
+
+No local generations, request keys, instance identity, workspace state, operation
+receipts, or foreign-Git metadata are encoded. Foreign-Git mapping is not
+implemented. This selected history transfer is not a full repository backup.
+Tests construct the stream and Revision payloads independently of the Rust
+implementation and exercise the JSON output through `check.py`.
+
 ## Bounds and semantic decisions
 
 `check.py` defaults: 64 MiB JSON input/aggregate payload/recovered-key workspace budgets,

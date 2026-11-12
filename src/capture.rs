@@ -129,6 +129,27 @@ pub fn observe(
     }
 }
 
+/// Open an explicitly supplied regular byte input, not a source observation.
+/// The explicit input may be a symlink; resolve it first, then anchor its actual
+/// parents and refuse SQLite administration files, hardlinks and special files
+/// before opening the payload. Explicit exports within `.avc/exports` remain
+/// readable: file identity, not the whole administration subtree, is protected. The caller owns read-size bounds;
+/// this does not promise stable contents or an atomic filesystem snapshot.
+pub fn open_input(path: &Path) -> Result<std::fs::File> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        unix::open_input(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = path;
+        Err(refused(
+            "input",
+            "requires Linux or macOS directory descriptors",
+        ))
+    }
+}
+
 /// Parse bounded private evidence for post-publication diagnostics. Damaged or
 /// unknown evidence is an error, never a reason to undo an acknowledged capture.
 pub fn report(witnesses: &[u8]) -> Result<CaptureReport> {
@@ -384,14 +405,17 @@ mod unix {
         opened: Stat,
     }
     fn open_directory(parent: impl AsFd, name: &[u8], context: &str) -> Result<Directory> {
-        let name_os = OsStr::from_bytes(name);
-        let before = Stat::from(lstat(&parent, name_os, context)?, context)?;
-        // Name spelling is not authority on case/normalization-insensitive
-        // filesystems. Refuse aliases of an actual administrative directory,
-        // before any descendant (potentially SQLite-owned) file is opened.
-        if administrative_identity(&parent, &before, context)? {
+        let directory = directory_handle(&parent, name, context)?;
+        // Directory descriptors do not own SQLite file locks. Check identity
+        // before any descendant file is opened, including normalized aliases.
+        if administrative_identity(parent, &directory.opened, context)? {
             return Err(refused(context, "administrative directory identity"));
         }
+        Ok(directory)
+    }
+    fn directory_handle(parent: impl AsFd, name: &[u8], context: &str) -> Result<Directory> {
+        let name_os = OsStr::from_bytes(name);
+        let before = Stat::from(lstat(&parent, name_os, context)?, context)?;
         let fd = checked(
             context,
             "open directory without symlinks",
@@ -518,7 +542,7 @@ mod unix {
             }
     }
 
-    fn root_components(directory: &Path) -> Result<Vec<&[u8]>> {
+    fn directory_components(directory: &Path) -> Result<Vec<&[u8]>> {
         let raw = directory.as_os_str().as_bytes();
         if !directory.is_absolute() || raw.len() > 4096 || raw.contains(&0) {
             return Err(refused(
@@ -532,11 +556,99 @@ mod unix {
             .collect();
         for name in &components {
             checked("root", "basename", crate::validate_name(name))?;
-            if administrative(name) {
-                return Err(refused("root", "administrative basename .avc or .git"));
-            }
         }
         Ok(components)
+    }
+    fn root_components(directory: &Path) -> Result<Vec<&[u8]>> {
+        let components = directory_components(directory)?;
+        if components.iter().any(|name| administrative(name)) {
+            return Err(refused("root", "administrative basename .avc or .git"));
+        }
+        Ok(components)
+    }
+
+    pub(super) fn open_input(path: &Path) -> Result<File> {
+        let context = format!("input {path:?}");
+        let physical = checked(&context, "resolve explicit input", path.canonicalize())?;
+        let parent = physical
+            .parent()
+            .ok_or_else(|| refused(&context, "input has no parent"))?;
+        let name = physical
+            .file_name()
+            .ok_or_else(|| refused(&context, "input has no basename"))?
+            .as_bytes();
+        crate::validate_name(name)?;
+        let components = directory_components(parent)?;
+        let mut chain = vec![directory_handle(fs::CWD, b"/", &context)?];
+        let mut administrations = Vec::new();
+        for name in components {
+            let parent = &chain.last().expect("root present").fd;
+            let directory = directory_handle(parent, name, &context)?;
+            let native = match fs::statat(parent, ".avc", AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(raw) => directory.opened.0[..16] == Stat::from(raw, &context)?.0[..16],
+                Err(rustix::io::Errno::NOENT) => false,
+                Err(error) => {
+                    return Err(refused(
+                        &context,
+                        format_args!("check native administration: {error}"),
+                    ));
+                }
+            };
+            chain.push(directory);
+            if native || name.eq_ignore_ascii_case(b".avc") {
+                administrations.push(chain.len() - 1);
+            }
+        }
+        guard(&chain, &context)?;
+        let directory = &chain.last().expect("root present").fd;
+        let name = OsStr::from_bytes(name);
+        let raw = lstat(directory, name, &context)?;
+        if !FileType::from_raw_mode(raw.st_mode).is_file() {
+            return Err(refused(
+                &context,
+                "byte input must be an ordinary regular file",
+            ));
+        }
+        if raw.st_nlink != 1 {
+            return Err(refused(&context, "hardlinked byte inputs are unsupported"));
+        }
+        let before = Stat::from(raw, &context)?;
+        // Explicit byte suppliers may live below administration (e.g. exports),
+        // but no descriptor may independently open a SQLite-owned inode.
+        for index in administrations {
+            for resource in ["store.sqlite", "store.sqlite-wal", "store.sqlite-shm"] {
+                match fs::statat(&chain[index].fd, resource, AtFlags::SYMLINK_NOFOLLOW) {
+                    Ok(raw) if before.0[..16] == Stat::from(raw, &context)?.0[..16] => {
+                        return Err(refused(&context, "SQLite administration byte input"));
+                    }
+                    Ok(_) | Err(rustix::io::Errno::NOENT) => {}
+                    Err(error) => {
+                        return Err(refused(
+                            &context,
+                            format_args!("check SQLite resource identity: {error}"),
+                        ));
+                    }
+                }
+            }
+        }
+        let fd = checked(
+            &context,
+            "open byte input",
+            fs::openat(
+                directory,
+                name,
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            ),
+        )?;
+        require_same(&before, &stat(&fd, &context)?, &context)?;
+        require_same(
+            &before,
+            &Stat::from(lstat(directory, name, &context)?, &context)?,
+            &context,
+        )?;
+        guard(&chain, &context)?;
+        Ok(File::from(fd))
     }
 
     struct Request<'a> {

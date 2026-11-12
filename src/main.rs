@@ -3,7 +3,6 @@ use avc::engine::{Edit, Engine, Limits, MergeBudget, Relocate};
 use avc::repository::{Receipt, Repository, Selection};
 use avc::{Entry, Id, Object};
 use std::{
-    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -430,10 +429,7 @@ fn mutation_base(
 fn file_bytes(path: &Path) -> Result<Vec<u8>> {
     // Input is an explicitly named byte supplier, not a simultaneous workspace
     // snapshot. Read bound applies even when metadata changes or is misleading.
-    let file = File::open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err("input must be an ordinary file".into());
-    }
+    let file = avc::capture::open_input(path)?;
     let mut bytes = Vec::new();
     file.take((avc::repository::MAX_OBJECT_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
@@ -726,7 +722,7 @@ fn run(cli: CommandLine) -> Result<()> {
             }
         }
         Command::Import(args) => {
-            let input = File::open(args.input)?;
+            let input = avc::capture::open_input(&args.input)?;
             let receipt = if args.history {
                 repo.import_history(input, &args.request_key)?
             } else {

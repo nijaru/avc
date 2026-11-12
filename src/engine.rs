@@ -149,6 +149,15 @@ impl Engine {
         root: Id,
         limits: Limits,
     ) -> Result<()> {
+        self.import_roots(records, [root], limits)
+    }
+
+    pub(crate) fn import_roots(
+        &mut self,
+        records: impl IntoIterator<Item = (Id, Vec<u8>)>,
+        roots: impl IntoIterator<Item = Id>,
+        limits: Limits,
+    ) -> Result<()> {
         let mut objects = BTreeMap::new();
         let mut total = 0usize;
         for (id, payload) in records {
@@ -171,7 +180,9 @@ impl Engine {
             }
         }
         let mut verifier = Verifier::new(&objects, limits);
-        verifier.verify(root)?;
+        for root in roots {
+            verifier.verify(root)?;
+        }
         for (id, object) in &objects {
             if let Some(prior) = self.objects.get(id)
                 && prior != object

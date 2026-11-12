@@ -38,6 +38,7 @@ enum Command {
     Commit(Commit),
     /// Rewrite the selected tip using selected source, preserving ChangeId and parents.
     Amend(Commit),
+    Rebase(Rebase),
     History(History),
     Log(Log),
 }
@@ -109,6 +110,16 @@ struct Commit {
     author: String,
     #[usage(long, short = 'm')]
     message: String,
+    #[usage(long)]
+    expected_generation: u64,
+    #[usage(long)]
+    request_key: String,
+}
+/// Replay one clean selected change onto an exact native revision; no restacking.
+#[derive(Args)]
+struct Rebase {
+    #[usage(long)]
+    onto: Id,
     #[usage(long)]
     expected_generation: u64,
     #[usage(long)]
@@ -246,7 +257,8 @@ fn print_receipt(receipt: &Receipt) {
         .revision
         .map(|id| format!(" revision={id}"))
         .unwrap_or_default();
-    let undo = match &receipt.operation {
+    let target = match &receipt.operation {
+        avc::repository::Operation::Rebase { onto } => format!(" onto={onto}"),
         avc::repository::Operation::Undo { target } => format!(" undo={}", target.escape_debug()),
         _ => String::new(),
     };
@@ -256,26 +268,28 @@ fn print_receipt(receipt: &Receipt) {
         receipt.after.generation,
         receipt.request_key.escape_debug(),
         revision,
-        undo
+        target
     );
 }
 // Publication is already acknowledged before these optional comparisons run.
 // Damaged comparison metadata must not hide a committed/recovered receipt.
-fn amend_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
+fn rewrite_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
     let before = repo.revision(
         receipt
             .before
             .revision
-            .ok_or("amend receipt has no predecessor")?,
+            .ok_or("rewrite receipt has no predecessor")?,
     )?;
     let after = repo.revision(
         receipt
             .after
             .revision
-            .ok_or("amend receipt has no revision")?,
+            .ok_or("rewrite receipt has no revision")?,
     )?;
-    if before.root == after.root {
-        eprintln!("Source unchanged from predecessor; a new immutable revision was authored.");
+    if receipt.before.revision == receipt.after.revision {
+        eprintln!("Revision unchanged: already on this exact parent; generation advanced.");
+    } else if before.root == after.root {
+        eprintln!("Source unchanged from predecessor; a new immutable revision was published.");
     }
     let empty = match after.parents.as_slice() {
         [] => after.root == Object::Map(avc::Node::Leaf(Vec::new())).id()?,
@@ -284,6 +298,15 @@ fn amend_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
     };
     if empty {
         eprintln!("Empty change: source equals its comparison base; predecessor retained.");
+    }
+    if matches!(receipt.operation, avc::repository::Operation::Rebase { .. }) {
+        let engine = repo.load_root(after.root)?;
+        if engine
+            .objects()
+            .any(|(_, o)| matches!(o, Object::Conflict(_)))
+        {
+            eprintln!("Unresolved source conflicts preserved in the published revision.");
+        }
     }
     Ok(())
 }
@@ -430,6 +453,7 @@ fn run(cli: CommandLine) -> Result<()> {
             | Command::Restore(_)
             | Command::Commit(_)
             | Command::Amend(_)
+            | Command::Rebase(_)
             | Command::History(_)
     );
     if mutating && !cli.experimental {
@@ -578,8 +602,15 @@ fn run(cli: CommandLine) -> Result<()> {
                 &args.request_key,
             )?;
             print_receipt(&receipt);
-            if let Err(error) = amend_diagnostics(&repo, &receipt) {
+            if let Err(error) = rewrite_diagnostics(&repo, &receipt) {
                 eprintln!("Amend committed; comparison diagnostics unavailable: {error}");
+            }
+        }
+        Command::Rebase(args) => {
+            let receipt = repo.rebase(args.onto, args.expected_generation, &args.request_key)?;
+            print_receipt(&receipt);
+            if let Err(error) = rewrite_diagnostics(&repo, &receipt) {
+                eprintln!("Rebase committed; comparison diagnostics unavailable: {error}");
             }
         }
         Command::History(args) => match args.command {

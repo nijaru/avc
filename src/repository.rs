@@ -39,9 +39,10 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 mod history;
+mod rebase;
 mod transfer;
 
 #[derive(Debug)]
@@ -135,6 +136,7 @@ pub enum Operation {
     Source,
     Commit,
     Amend,
+    Rebase { onto: Id },
     ImportHistory,
     Undo { target: String },
 }
@@ -144,8 +146,15 @@ impl Operation {
             Self::Source => "source",
             Self::Commit => "commit",
             Self::Amend => "amend",
+            Self::Rebase { .. } => "rebase",
             Self::ImportHistory => "import-history",
             Self::Undo { .. } => "undo",
+        }
+    }
+    fn rebase_onto(&self) -> Option<Id> {
+        match self {
+            Self::Rebase { onto } => Some(*onto),
+            _ => None,
         }
     }
     fn undo_target(&self) -> Option<&str> {
@@ -174,6 +183,11 @@ enum Mutation<'a> {
     Undo {
         target: &'a str,
     },
+    Rebase {
+        onto: Id,
+        root: Id,
+        revision: Id,
+    },
 }
 impl Mutation<'_> {
     fn operation(self) -> Operation {
@@ -187,6 +201,7 @@ impl Mutation<'_> {
                 }
             }
             Self::ImportHistory { .. } => Operation::ImportHistory,
+            Self::Rebase { onto, .. } => Operation::Rebase { onto },
             Self::Undo { target } => Operation::Undo {
                 target: target.to_owned(),
             },
@@ -458,6 +473,11 @@ impl Repository {
                 revision,
                 generation: next as u64,
             },
+            Mutation::Rebase { root, revision, .. } => Selection {
+                root,
+                revision: Some(revision),
+                generation: next as u64,
+            },
             Mutation::Source { root, .. } => Selection {
                 root,
                 generation: next as u64,
@@ -494,8 +514,9 @@ impl Repository {
             return Err(invalid("selection singleton/CAS invariant"));
         }
         let operation = mutation.operation();
+        let onto = operation.rebase_onto().map(Id::to_bytes).transpose()?;
         tx.execute(
-            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 request_key,
                 operation.as_str(),
@@ -505,7 +526,8 @@ impl Repository {
                 after.root.to_bytes()?.as_slice(),
                 next,
                 after_revision.as_ref().map(|id| id.as_slice()),
-                operation.undo_target()
+                operation.undo_target(),
+                onto.as_ref().map(|id| id.as_slice())
             ],
         )?;
         tx.commit()?;
@@ -518,6 +540,9 @@ impl Repository {
     }
 
     fn reconcile(&self, prior: Receipt, expected: u64, mutation: Mutation<'_>) -> Result<Receipt> {
+        if let Mutation::Rebase { onto, .. } = mutation {
+            return self.reconcile_rebase(prior, expected, onto);
+        }
         let same = prior.before.generation == expected
             && match (&prior.operation, mutation) {
                 (Operation::ImportHistory, Mutation::ImportHistory { root, revision }) => {
@@ -592,7 +617,7 @@ CREATE TABLE selection (
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit', 'amend', 'import-history', 'undo')),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'commit', 'amend', 'rebase', 'import-history', 'undo')),
     before_root BLOB NOT NULL REFERENCES objects(id),
     before_generation INTEGER NOT NULL CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
@@ -600,11 +625,14 @@ CREATE TABLE operations (
     after_generation INTEGER NOT NULL CHECK(after_generation = before_generation + 1),
     after_revision BLOB REFERENCES objects(id),
     undo_target TEXT REFERENCES operations(request_key),
+    onto_revision BLOB REFERENCES objects(id),
+    CHECK((kind = 'rebase' AND onto_revision IS NOT NULL) OR (kind != 'rebase' AND onto_revision IS NULL)),
     CHECK((kind = 'undo' AND undo_target IS NOT NULL) OR (kind != 'undo' AND undo_target IS NULL)),
     CHECK((kind = 'source' AND before_revision IS after_revision) OR
           (kind = 'commit' AND before_root = after_root AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
           (kind = 'amend' AND before_root = after_root AND before_revision IS NOT NULL AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
           (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL) OR
+          (kind = 'rebase' AND before_revision IS NOT NULL AND after_revision IS NOT NULL) OR
           kind = 'undo')
 ) STRICT;
 CREATE TRIGGER objects_no_update BEFORE UPDATE ON objects BEGIN SELECT RAISE(ABORT, 'immutable object'); END;
@@ -724,11 +752,18 @@ fn selection(connection: &Connection) -> Result<Selection> {
     )?)
 }
 fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
-    let row: Option<(String, StoredSelection, StoredSelection, Option<String>)> = connection.query_row(
-        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target FROM operations WHERE request_key = ?1",
-        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?)),
+    type StoredReceipt = (
+        String,
+        StoredSelection,
+        StoredSelection,
+        Option<String>,
+        Option<Vec<u8>>,
+    );
+    let row: Option<StoredReceipt> = connection.query_row(
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision FROM operations WHERE request_key = ?1",
+        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?)),
     ).optional()?;
-    row.map(|(kind, before, after, target)| {
+    row.map(|(kind, before, after, target, onto)| {
         let before = decode_selection(before)?;
         let after = decode_selection(after)?;
         if before.generation.checked_add(1) != Some(after.generation) {
@@ -736,6 +771,9 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
         }
         if (kind == "undo") != target.is_some() {
             return Err(invalid("receipt undo target"));
+        }
+        if (kind == "rebase") != onto.is_some() {
+            return Err(invalid("receipt rebase target"));
         }
         let operation = match kind.as_str() {
             "source" if before.revision == after.revision => Operation::Source,
@@ -753,6 +791,13 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
                     && before.revision != after.revision =>
             {
                 Operation::Amend
+            }
+            "rebase" if before.revision.is_some() && after.revision.is_some() => {
+                let onto = Id::from_bytes(&onto.ok_or_else(|| invalid("receipt rebase target"))?)?;
+                if onto.kind != crate::REVISION_KIND {
+                    return Err(invalid("receipt rebase target kind"));
+                }
+                Operation::Rebase { onto }
             }
             "undo" => {
                 let target = target.ok_or_else(|| invalid("receipt undo target"))?;

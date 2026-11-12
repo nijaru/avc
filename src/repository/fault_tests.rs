@@ -151,6 +151,10 @@ fn failed_commit_and_failed_rollback_cannot_acknowledge_own_uncommitted_receipt(
         Err(Error::RecoveryRequired)
     ));
     assert!(matches!(
+        repo.rebase(next_root, before.generation, "must-not-rebase"),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(
         repo.export_history(&mut output),
         Err(Error::RecoveryRequired)
     ));

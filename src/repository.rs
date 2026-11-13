@@ -39,7 +39,7 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 mod capture;
 pub use capture::CaptureScope;
@@ -167,6 +167,7 @@ pub enum Operation {
     Source,
     Capture { scope: CaptureScope },
     Commit,
+    MergeCommit { parent: Id },
     Amend,
     Rebase { onto: Id },
     Select { revision: Id },
@@ -180,6 +181,7 @@ impl Operation {
             Self::Source => "source",
             Self::Capture { .. } => "capture",
             Self::Commit => "commit",
+            Self::MergeCommit { .. } => "merge-commit",
             Self::Amend => "amend",
             Self::Rebase { .. } => "rebase",
             Self::Select { .. } => "select",
@@ -206,10 +208,32 @@ impl Operation {
             _ => None,
         }
     }
+    fn merge_parent(&self) -> Option<Id> {
+        match self {
+            Self::MergeCommit { parent } => Some(*parent),
+            _ => None,
+        }
+    }
     fn undo_target(&self) -> Option<&str> {
         match self {
             Self::Undo { target } => Some(target),
             _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Authoring {
+    Commit,
+    Merge { parent: Id },
+    Amend,
+}
+impl Authoring {
+    fn operation(self) -> Operation {
+        match self {
+            Self::Commit => Operation::Commit,
+            Self::Merge { parent } => Operation::MergeCommit { parent },
+            Self::Amend => Operation::Amend,
         }
     }
 }
@@ -228,7 +252,7 @@ enum Mutation<'a> {
     Author {
         author: &'a str,
         message: &'a str,
-        amend: bool,
+        kind: Authoring,
     },
     ImportHistory {
         root: Id,
@@ -259,13 +283,7 @@ impl Mutation<'_> {
             Self::Capture { scope, .. } => Operation::Capture {
                 scope: scope.clone(),
             },
-            Self::Author { amend, .. } => {
-                if amend {
-                    Operation::Amend
-                } else {
-                    Operation::Commit
-                }
-            }
+            Self::Author { kind, .. } => kind.operation(),
             Self::ImportHistory { .. } => Operation::ImportHistory,
             Self::ImportGit { origin, .. } => Operation::ImportGit {
                 commit: origin.commit,
@@ -619,9 +637,9 @@ impl Repository {
             Mutation::Author {
                 author,
                 message,
-                amend,
+                kind,
             } => {
-                let (id, payload) = history::prepare(&tx, before, author, message, amend)?;
+                let (id, payload) = history::prepare(&tx, before, author, message, kind)?;
                 insert_objects(&tx, [(id, payload)])?;
                 Selection {
                     root: before.root,
@@ -642,8 +660,9 @@ impl Repository {
         let operation = mutation.operation();
         let onto = operation.rebase_onto().map(Id::to_bytes).transpose()?;
         let git_commit = operation.git_commit().map(|oid| oid.to_bytes());
+        let merge_parent = operation.merge_parent().map(Id::to_bytes).transpose()?;
         tx.execute(
-            "INSERT INTO operations (request_key, kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO operations (request_key, kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, merge_parent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 request_key,
                 operation.as_str(),
@@ -658,6 +677,7 @@ impl Repository {
                 git_commit.as_ref().map(|oid| oid.as_slice()),
                 operation.capture_scope(),
                 match mutation { Mutation::ImportHistory { scope, .. } => Some(scope.bytes()), _ => None },
+                merge_parent.as_ref().map(|id| id.as_slice()),
             ],
         )?;
         tx.commit()?;
@@ -716,15 +736,9 @@ impl Repository {
                     Mutation::Author {
                         author,
                         message,
-                        amend,
+                        kind,
                     },
-                ) if *operation
-                    == if amend {
-                        Operation::Amend
-                    } else {
-                        Operation::Commit
-                    } =>
-                {
+                ) if *operation == kind.operation() => {
                     let id = prior
                         .after
                         .revision
@@ -733,19 +747,27 @@ impl Repository {
                     revision.author == author
                         && revision.message == message
                         && revision.root == prior.after.root
-                        && if amend {
-                            let predecessor = history::read_revision(
-                                &self.connection,
-                                prior
-                                    .before
-                                    .revision
-                                    .ok_or_else(|| invalid("amend receipt has no predecessor"))?,
-                            )?;
-                            revision.parents == predecessor.parents
-                                && revision.change == predecessor.change
-                        } else {
-                            revision.parents
-                                == prior.before.revision.into_iter().collect::<Vec<_>>()
+                        && match kind {
+                            Authoring::Amend => {
+                                let predecessor = history::read_revision(
+                                    &self.connection,
+                                    prior.before.revision.ok_or_else(|| {
+                                        invalid("amend receipt has no predecessor")
+                                    })?,
+                                )?;
+                                revision.parents == predecessor.parents
+                                    && revision.change == predecessor.change
+                            }
+                            Authoring::Commit => {
+                                revision.parents
+                                    == prior.before.revision.into_iter().collect::<Vec<_>>()
+                            }
+                            Authoring::Merge { parent } => {
+                                let head = prior.before.revision.ok_or_else(|| {
+                                    invalid("merge commit receipt has no predecessor")
+                                })?;
+                                revision.parents == [head, parent]
+                            }
                         }
                 }
                 _ => false,
@@ -791,7 +813,7 @@ CREATE TABLE git_exports (
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo', 'select', 'ref-set')),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'merge-commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo', 'select', 'ref-set')),
     before_root BLOB REFERENCES objects(id),
     before_generation INTEGER CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
@@ -807,9 +829,11 @@ CREATE TABLE operations (
     before_ref_generation INTEGER CHECK(before_ref_generation BETWEEN 1 AND 9223372036854775806),
     after_ref_generation INTEGER CHECK(after_ref_generation > 0 AND after_ref_generation = coalesce(before_ref_generation, 0) + 1),
     after_ref_revision BLOB REFERENCES objects(id) CHECK(length(after_ref_revision) = 33 AND substr(after_ref_revision, 1, 1) = X'05'),
+    merge_parent BLOB REFERENCES objects(id) CHECK(merge_parent IS NULL OR (length(merge_parent) = 33 AND substr(merge_parent, 1, 1) = X'05')),
     FOREIGN KEY(ref_name, before_ref_generation) REFERENCES operations(ref_name, after_ref_generation),
     CHECK((kind != 'ref-set' AND before_root IS NOT NULL AND before_generation IS NOT NULL AND after_root IS NOT NULL AND after_generation IS NOT NULL AND ref_name IS NULL AND before_ref_generation IS NULL AND after_ref_generation IS NULL AND after_ref_revision IS NULL) OR
           (kind = 'ref-set' AND before_root IS NULL AND before_generation IS NULL AND before_revision IS NULL AND after_root IS NULL AND after_generation IS NULL AND after_revision IS NULL AND undo_target IS NULL AND onto_revision IS NULL AND git_commit IS NULL AND capture_scope IS NULL AND import_origins IS NULL AND ref_name IS NOT NULL AND after_ref_generation IS NOT NULL AND after_ref_revision IS NOT NULL)),
+    CHECK((kind = 'merge-commit' AND merge_parent IS NOT NULL) OR (kind != 'merge-commit' AND merge_parent IS NULL)),
     CHECK((kind = 'import-history' AND import_origins IS NOT NULL) OR (kind != 'import-history' AND import_origins IS NULL)),
     CHECK((kind = 'capture' AND capture_scope IS NOT NULL) OR (kind != 'capture' AND capture_scope IS NULL)),
     CHECK((kind = 'import-git' AND git_commit IS NOT NULL) OR (kind != 'import-git' AND git_commit IS NULL)),
@@ -817,6 +841,7 @@ CREATE TABLE operations (
     CHECK((kind = 'undo' AND undo_target IS NOT NULL) OR (kind != 'undo' AND undo_target IS NULL)),
     CHECK((kind IN ('source', 'capture') AND before_revision IS after_revision) OR
           (kind = 'commit' AND before_root = after_root AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
+          (kind = 'merge-commit' AND before_root = after_root AND before_revision IS NOT NULL AND after_revision IS NOT NULL AND before_revision IS NOT after_revision AND merge_parent IS NOT before_revision) OR
           (kind = 'amend' AND before_root = after_root AND before_revision IS NOT NULL AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
           (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL) OR
           (kind = 'import-git' AND before_generation = 0 AND before_revision IS NULL AND after_revision IS NOT NULL) OR
@@ -968,27 +993,41 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
         Option<Vec<u8>>,
         Option<Vec<u8>>,
         Option<Vec<u8>>,
+        Option<Vec<u8>>,
     );
     enum Stored {
         Selection(StoredReceipt),
-        Ref(references::StoredRefReceipt),
+        Ref(references::StoredRefReceipt, Option<Vec<u8>>),
     }
     let row = connection.query_row(
-        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, ref_name, before_ref_generation, after_ref_generation, after_ref_revision FROM operations WHERE request_key = ?1",
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, ref_name, before_ref_generation, after_ref_generation, after_ref_revision, merge_parent FROM operations WHERE request_key = ?1",
         [key], |r| {
             let kind: String = r.get(0)?;
             if kind == "ref-set" {
-                Ok(Stored::Ref((r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?)))
+                Ok(Stored::Ref((r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?), r.get(16)?))
             } else {
-                Ok(Stored::Selection((kind, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?)))
+                Ok(Stored::Selection((kind, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(16)?)))
             }
         },
     ).optional()?;
     let Some(row) = row else {
         return Ok(None);
     };
-    let (kind, before, after, target, onto, git_commit, capture_scope, import_origins) = match row {
-        Stored::Ref(stored) => {
+    let (
+        kind,
+        before,
+        after,
+        target,
+        onto,
+        git_commit,
+        capture_scope,
+        import_origins,
+        merge_parent,
+    ) = match row {
+        Stored::Ref(stored, merge_parent) => {
+            if merge_parent.is_some() {
+                return Err(invalid("reference receipt has a merge parent"));
+            }
             return Ok(Some(Receipt::Ref(references::decode_receipt(
                 connection, key, stored,
             )?)));
@@ -1002,6 +1041,9 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
     }
     if (kind == "undo") != target.is_some() {
         return Err(invalid("receipt undo target"));
+    }
+    if (kind == "merge-commit") != merge_parent.is_some() {
+        return Err(invalid("receipt merge parent"));
     }
     if (kind == "rebase") != onto.is_some() {
         return Err(invalid("receipt rebase target"));
@@ -1031,6 +1073,19 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
                 && before.revision != after.revision =>
         {
             Operation::Commit
+        }
+        "merge-commit"
+            if before.root == after.root
+                && before.revision.is_some()
+                && after.revision.is_some()
+                && before.revision != after.revision =>
+        {
+            let parent =
+                Id::from_bytes(&merge_parent.ok_or_else(|| invalid("receipt merge parent"))?)?;
+            if parent.kind != crate::REVISION_KIND || Some(parent) == before.revision {
+                return Err(invalid("receipt merge parent kind or duplicate"));
+            }
+            Operation::MergeCommit { parent }
         }
         "amend"
             if before.root == after.root

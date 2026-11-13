@@ -38,7 +38,7 @@ enum Command {
     Commit(Commit),
     Capture(Capture),
     /// Rewrite the selected tip using selected source, preserving ChangeId and parents.
-    Amend(Commit),
+    Amend(AuthorArgs),
     Rebase(Rebase),
     Git(Git),
     History(History),
@@ -147,6 +147,14 @@ struct RefSet {
 /// Author the selected source, not live filesystem files. Does not scan a workspace.
 #[derive(Args)]
 struct Commit {
+    #[usage(flatten)]
+    authoring: AuthorArgs,
+    /// Record this exact second parent after the selected head; does not compute a merge.
+    #[usage(long)]
+    merge_parent: Option<String>,
+}
+#[derive(Args)]
+struct AuthorArgs {
     /// Author identity, supplied explicitly or through AVC_AUTHOR.
     #[usage(long, env = "AVC_AUTHOR")]
     author: String,
@@ -390,6 +398,7 @@ fn print_receipt(receipt: &SelectionReceipt) {
         .unwrap_or_default();
     let target = match &receipt.operation {
         avc::repository::Operation::Rebase { onto } => format!(" onto={onto}"),
+        avc::repository::Operation::MergeCommit { parent } => format!(" merge-parent={parent}"),
         avc::repository::Operation::Undo { target } => format!(" undo={}", target.escape_debug()),
         avc::repository::Operation::ImportGit { commit } => format!(" foreign={commit}"),
         avc::repository::Operation::Capture { scope } => {
@@ -910,13 +919,26 @@ fn run(cli: CommandLine) -> Result<()> {
                 "Use the same --repository; replace CAPTURE_KEY with the request key above and NEW_KEY with a fresh key."
             );
         }
-        Command::Commit(args) => {
-            let receipt = repo.commit(
-                &args.author,
-                &args.message,
-                args.expected_generation,
-                &args.request_key,
-            )?;
+        Command::Commit(Commit {
+            authoring: args,
+            merge_parent,
+        }) => {
+            let receipt = if let Some(parent) = merge_parent {
+                repo.commit_merge(
+                    parent.parse()?,
+                    &args.author,
+                    &args.message,
+                    args.expected_generation,
+                    &args.request_key,
+                )?
+            } else {
+                repo.commit(
+                    &args.author,
+                    &args.message,
+                    args.expected_generation,
+                    &args.request_key,
+                )?
+            };
             print_receipt(&receipt);
         }
         Command::Amend(args) => {

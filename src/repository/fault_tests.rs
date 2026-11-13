@@ -138,6 +138,10 @@ fn failed_commit_and_failed_rollback_cannot_acknowledge_own_uncommitted_receipt(
         Err(Error::RecoveryRequired)
     ));
     assert!(matches!(
+        repo.commit_merge(next_root, "", "", before.generation, "must-not-merge"),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(
         repo.revision(next_root),
         Err(Error::RecoveryRequired)
     ));

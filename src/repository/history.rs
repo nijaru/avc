@@ -5,6 +5,10 @@ use crate::Revision;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
+#[path = "merge_tests.rs"]
+mod merge_tests;
+
+#[cfg(test)]
 #[path = "selection_tests.rs"]
 mod selection_tests;
 
@@ -20,7 +24,34 @@ impl Repository {
         expected_generation: u64,
         request_key: &str,
     ) -> Result<SelectionReceipt> {
-        self.author(author, message, expected_generation, request_key, false)
+        self.author(
+            author,
+            message,
+            expected_generation,
+            request_key,
+            Authoring::Commit,
+        )
+    }
+
+    /// Author selected source with ordered parents [selected head, parent].
+    /// Requires two distinct stored revisions, but does not infer a merge base
+    /// or prove that the selected bytes contain either parent's changes. Dirty,
+    /// unchanged and conflicted source are allowed; files and refs are untouched.
+    pub fn commit_merge(
+        &mut self,
+        parent: Id,
+        author: &str,
+        message: &str,
+        expected_generation: u64,
+        request_key: &str,
+    ) -> Result<SelectionReceipt> {
+        self.author(
+            author,
+            message,
+            expected_generation,
+            request_key,
+            Authoring::Merge { parent },
+        )
     }
 
     /// Replace the selected tip with a new immutable revision of the same change.
@@ -33,7 +64,13 @@ impl Repository {
         expected_generation: u64,
         request_key: &str,
     ) -> Result<SelectionReceipt> {
-        self.author(author, message, expected_generation, request_key, true)
+        self.author(
+            author,
+            message,
+            expected_generation,
+            request_key,
+            Authoring::Amend,
+        )
     }
 
     fn author(
@@ -42,14 +79,14 @@ impl Repository {
         message: &str,
         expected_generation: u64,
         request_key: &str,
-        amend: bool,
+        kind: Authoring,
     ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
         let mutation = Mutation::Author {
             author,
             message,
-            amend,
+            kind,
         };
         if let Some(prior) = self.selection_receipt(request_key)? {
             return self.reconcile(prior, expected_generation, mutation);
@@ -70,7 +107,7 @@ impl Repository {
                 actual: current.generation,
             });
         }
-        if amend {
+        if matches!(kind, Authoring::Amend) {
             let head = current
                 .revision
                 .ok_or_else(|| invalid("amend requires an authored head"))?;
@@ -254,24 +291,39 @@ pub(super) fn prepare(
     before: Selection,
     author: &str,
     message: &str,
-    amend: bool,
+    kind: Authoring,
 ) -> Result<(Id, Vec<u8>)> {
-    let (parents, change, previous_time) = if amend {
-        let id = before
-            .revision
-            .ok_or_else(|| invalid("amend requires an authored head"))?;
-        let previous = read_revision(connection, id)?;
-        (previous.parents, previous.change, Some(previous.time_ns))
-    } else {
-        let mut change = [0; 16];
-        getrandom::fill(&mut change).map_err(std::io::Error::other)?;
-        (before.revision.into_iter().collect(), change, None)
+    let (parents, predecessor) = match kind {
+        Authoring::Commit => (before.revision.into_iter().collect(), None),
+        Authoring::Merge { parent } => {
+            let head = before
+                .revision
+                .ok_or_else(|| invalid("merge commit requires an authored head"))?;
+            if head == parent {
+                return Err(invalid("merge commit requires distinct parents"));
+            }
+            (vec![head, parent], None)
+        }
+        Authoring::Amend => {
+            let id = before
+                .revision
+                .ok_or_else(|| invalid("amend requires an authored head"))?;
+            let previous = read_revision(connection, id)?;
+            (previous.parents, Some((previous.change, previous.time_ns)))
+        }
     };
     // An amend's actual parents are its predecessor's parents, not the
     // predecessor itself. Check those direct metadata rows before publication.
     for &parent in &parents {
         read_revision(connection, parent)?;
     }
+    let (change, previous_time) = if let Some((change, time)) = predecessor {
+        (change, Some(time))
+    } else {
+        let mut change = [0; 16];
+        getrandom::fill(&mut change).map_err(std::io::Error::other)?;
+        (change, None)
+    };
     let mut time_ns: i64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(std::io::Error::other)?

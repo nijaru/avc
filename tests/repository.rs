@@ -112,6 +112,10 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
         .revision
         .unwrap();
     let selected = repo.select_revision(revision, 2, "select").unwrap();
+    repo.commit("Author", "child", 3, "child").unwrap();
+    let merged = repo
+        .commit_merge(revision, "Author", "merge", 4, "merge")
+        .unwrap();
     let name = "saved".parse().unwrap();
     let pinned = repo.set_reference(&name, revision, 0, "ref").unwrap();
     drop(repo);
@@ -119,9 +123,9 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        13
+        14
     );
-    db.pragma_update(None, "user_version", 12).unwrap();
+    db.pragma_update(None, "user_version", 13).unwrap();
     drop(db);
     // Retain a witness in the obsolete raw-file layout as well as the database.
     let objects = project.path().join(".avc/objects/sealed");
@@ -135,7 +139,7 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
         Err(error) => error,
     };
     assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 12"))
+        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 13"))
     );
     assert_eq!(fs::read(&database_path).unwrap(), before);
     assert_eq!(fs::read(witness).unwrap(), b"preserve old payload");
@@ -147,12 +151,16 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        12
+        13
     );
-    db.pragma_update(None, "user_version", 13).unwrap();
+    db.pragma_update(None, "user_version", 14).unwrap();
     drop(db);
     let repo = Repository::open(project.path()).unwrap();
-    assert_eq!(repo.status().unwrap(), selected.after);
+    assert_eq!(repo.status().unwrap(), merged.after);
+    assert_eq!(
+        repo.receipt("merge").unwrap(),
+        Some(avc::repository::Receipt::Selection(merged))
+    );
     assert_eq!(
         repo.receipt("select").unwrap(),
         Some(avc::repository::Receipt::Selection(selected))

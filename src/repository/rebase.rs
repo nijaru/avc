@@ -2,6 +2,27 @@
 //! the existing selection CAS and typed receipt own its atomic visibility.
 use super::*;
 
+/// Replay against the original comparison source, retaining all authored metadata.
+/// Source-only scratch engines need not own the replacement parent revision.
+pub(super) fn replay(
+    engine: &mut Engine,
+    mut revision: crate::Revision,
+    base: Id,
+    onto: Id,
+    onto_root: Id,
+) -> Result<crate::Revision> {
+    revision.root = engine
+        .merge(
+            base,
+            onto_root,
+            revision.root,
+            crate::engine::MergeBudget::default(),
+        )?
+        .root;
+    revision.parents = vec![onto];
+    Ok(revision)
+}
+
 impl Repository {
     /// Replay the selected change onto an exact native revision. Requires clean
     /// selected source and at most one original parent. Preserves ChangeId and
@@ -38,7 +59,7 @@ impl Repository {
                 "cannot rebase a foreign import anchor as a Git change; author a native child first",
             ));
         }
-        let mut revision = self.revision(head)?;
+        let revision = self.revision(head)?;
         if current.root != revision.root {
             return Err(invalid("rebase refuses selected-but-uncommitted source"));
         }
@@ -78,14 +99,9 @@ impl Repository {
         let Object::Revision(target) = engine.object(onto)? else {
             return Err(invalid("rebase target must be a revision"));
         };
-        let merged = engine.merge(
-            base,
-            target.root,
-            revision.root,
-            crate::engine::MergeBudget::default(),
-        )?;
-        revision.root = merged.root;
-        revision.parents = vec![onto];
+        let target_root = target.root;
+        let revision = replay(&mut engine, revision, base, onto, target_root)?;
+        let root = revision.root;
         let id = engine.store(Object::Revision(revision))?;
         let records = collect_closure([id], |id| encode_bounded(engine.object(id)?))?;
         engine.verify(id, limits())?;
@@ -96,7 +112,7 @@ impl Repository {
             prepared,
             Mutation::Rebase {
                 onto,
-                root: merged.root,
+                root,
                 revision: id,
             },
         )

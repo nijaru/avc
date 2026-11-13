@@ -40,6 +40,7 @@ enum Command {
     /// Rewrite the selected tip using selected source, preserving ChangeId and parents.
     Amend(AuthorArgs),
     Rebase(Rebase),
+    Restack(Restack),
     Git(Git),
     History(History),
     Log(Log),
@@ -190,6 +191,20 @@ struct Capture {
 struct Rebase {
     #[usage(long)]
     onto: Id,
+    #[usage(long)]
+    expected_generation: u64,
+    #[usage(long)]
+    request_key: String,
+}
+/// Replay BASE's selected linear descendants onto ONTO atomically; no files or refs change.
+#[derive(Args)]
+struct Restack {
+    /// Exact revision boundary, excluded from the nonempty linear range.
+    #[usage(long)]
+    base: String,
+    /// Exact replacement parent for the oldest included revision.
+    #[usage(long)]
+    onto: String,
     #[usage(long)]
     expected_generation: u64,
     #[usage(long)]
@@ -398,6 +413,11 @@ fn print_receipt(receipt: &SelectionReceipt) {
         .unwrap_or_default();
     let target = match &receipt.operation {
         avc::repository::Operation::Rebase { onto } => format!(" onto={onto}"),
+        avc::repository::Operation::Restack {
+            base,
+            onto,
+            rewrites,
+        } => format!(" base={base} onto={onto} rewrites={}", rewrites.len()),
         avc::repository::Operation::MergeCommit { parent } => format!(" merge-parent={parent}"),
         avc::repository::Operation::Undo { target } => format!(" undo={}", target.escape_debug()),
         avc::repository::Operation::ImportGit { commit } => format!(" foreign={commit}"),
@@ -414,6 +434,11 @@ fn print_receipt(receipt: &SelectionReceipt) {
         revision,
         target
     );
+    if let avc::repository::Operation::Restack { rewrites, .. } = &receipt.operation {
+        for pair in rewrites {
+            println!("Rewrite: {} -> {}", pair.before, pair.after);
+        }
+    }
     if let avc::repository::Operation::Capture { scope } = &receipt.operation {
         println!(
             "Capture directory: {}",
@@ -649,6 +674,7 @@ fn run(cli: CommandLine) -> Result<()> {
             | Command::Capture(_)
             | Command::Amend(_)
             | Command::Rebase(_)
+            | Command::Restack(_)
             | Command::History(_)
             | Command::Ref(References {
                 command: RefCommand::Set(_)
@@ -959,6 +985,15 @@ fn run(cli: CommandLine) -> Result<()> {
             if let Err(error) = rewrite_diagnostics(&repo, &receipt) {
                 eprintln!("Rebase committed; comparison diagnostics unavailable: {error}");
             }
+        }
+        Command::Restack(args) => {
+            let receipt = repo.restack(
+                args.base.parse()?,
+                args.onto.parse()?,
+                args.expected_generation,
+                &args.request_key,
+            )?;
+            print_receipt(&receipt);
         }
         Command::History(args) => match args.command {
             HistoryCommand::Select(args) => {

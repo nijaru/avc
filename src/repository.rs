@@ -39,7 +39,7 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 
 mod capture;
 pub use capture::CaptureScope;
@@ -49,6 +49,10 @@ mod history;
 mod origin_scope;
 use origin_scope::OriginScope;
 mod rebase;
+mod restack;
+mod restack_scope;
+use restack_scope::RestackScope;
+pub use restack_scope::RevisionRewrite;
 mod references;
 pub use references::{NamedRef, RefName, RefReceipt, RefValue};
 mod transfer;
@@ -165,15 +169,32 @@ pub struct Selection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     Source,
-    Capture { scope: CaptureScope },
+    Capture {
+        scope: CaptureScope,
+    },
     Commit,
-    MergeCommit { parent: Id },
+    MergeCommit {
+        parent: Id,
+    },
     Amend,
-    Rebase { onto: Id },
-    Select { revision: Id },
+    Rebase {
+        onto: Id,
+    },
+    Restack {
+        base: Id,
+        onto: Id,
+        rewrites: Vec<RevisionRewrite>,
+    },
+    Select {
+        revision: Id,
+    },
     ImportHistory,
-    ImportGit { commit: crate::git::GitOid },
-    Undo { target: String },
+    ImportGit {
+        commit: crate::git::GitOid,
+    },
+    Undo {
+        target: String,
+    },
 }
 impl Operation {
     fn as_str(&self) -> &'static str {
@@ -184,6 +205,7 @@ impl Operation {
             Self::MergeCommit { .. } => "merge-commit",
             Self::Amend => "amend",
             Self::Rebase { .. } => "rebase",
+            Self::Restack { .. } => "restack",
             Self::Select { .. } => "select",
             Self::ImportHistory => "import-history",
             Self::ImportGit { .. } => "import-git",
@@ -275,6 +297,11 @@ enum Mutation<'a> {
         root: Id,
         revision: Id,
     },
+    Restack {
+        root: Id,
+        revision: Id,
+        scope: &'a RestackScope,
+    },
 }
 impl Mutation<'_> {
     fn operation(self) -> Operation {
@@ -289,6 +316,7 @@ impl Mutation<'_> {
                 commit: origin.commit,
             },
             Self::Rebase { onto, .. } => Operation::Rebase { onto },
+            Self::Restack { scope, .. } => scope.operation(),
             Self::Select { revision } => Operation::Select { revision },
             Self::Undo { target } => Operation::Undo {
                 target: target.to_owned(),
@@ -596,11 +624,13 @@ impl Repository {
                     generation: next as u64,
                 }
             }
-            Mutation::Rebase { root, revision, .. } => Selection {
-                root,
-                revision: Some(revision),
-                generation: next as u64,
-            },
+            Mutation::Rebase { root, revision, .. } | Mutation::Restack { root, revision, .. } => {
+                Selection {
+                    root,
+                    revision: Some(revision),
+                    generation: next as u64,
+                }
+            }
             Mutation::Select { revision } => {
                 history::require_clean_selection(&tx, before)?;
                 let target = history::read_revision(&tx, revision)?;
@@ -662,7 +692,7 @@ impl Repository {
         let git_commit = operation.git_commit().map(|oid| oid.to_bytes());
         let merge_parent = operation.merge_parent().map(Id::to_bytes).transpose()?;
         tx.execute(
-            "INSERT INTO operations (request_key, kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, merge_parent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO operations (request_key, kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, merge_parent, restack_scope) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 request_key,
                 operation.as_str(),
@@ -678,6 +708,7 @@ impl Repository {
                 operation.capture_scope(),
                 match mutation { Mutation::ImportHistory { scope, .. } => Some(scope.bytes()), _ => None },
                 merge_parent.as_ref().map(|id| id.as_slice()),
+                match mutation { Mutation::Restack { scope, .. } => Some(scope.bytes()), _ => None },
             ],
         )?;
         tx.commit()?;
@@ -703,6 +734,9 @@ impl Repository {
         }
         if let Mutation::Rebase { onto, .. } = mutation {
             return self.reconcile_rebase(prior, expected, onto);
+        }
+        if let Mutation::Restack { scope, .. } = mutation {
+            return restack::reconcile(prior, expected, scope.base(), scope.onto());
         }
         let same = prior.before.generation == expected
             && match (&prior.operation, mutation) {
@@ -813,7 +847,7 @@ CREATE TABLE git_exports (
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'merge-commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo', 'select', 'ref-set')),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'merge-commit', 'amend', 'rebase', 'restack', 'import-history', 'import-git', 'undo', 'select', 'ref-set')),
     before_root BLOB REFERENCES objects(id),
     before_generation INTEGER CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
@@ -830,9 +864,11 @@ CREATE TABLE operations (
     after_ref_generation INTEGER CHECK(after_ref_generation > 0 AND after_ref_generation = coalesce(before_ref_generation, 0) + 1),
     after_ref_revision BLOB REFERENCES objects(id) CHECK(length(after_ref_revision) = 33 AND substr(after_ref_revision, 1, 1) = X'05'),
     merge_parent BLOB REFERENCES objects(id) CHECK(merge_parent IS NULL OR (length(merge_parent) = 33 AND substr(merge_parent, 1, 1) = X'05')),
+    restack_scope BLOB CHECK(restack_scope IS NULL OR length(restack_scope) BETWEEN 176 AND 6600110),
     FOREIGN KEY(ref_name, before_ref_generation) REFERENCES operations(ref_name, after_ref_generation),
     CHECK((kind != 'ref-set' AND before_root IS NOT NULL AND before_generation IS NOT NULL AND after_root IS NOT NULL AND after_generation IS NOT NULL AND ref_name IS NULL AND before_ref_generation IS NULL AND after_ref_generation IS NULL AND after_ref_revision IS NULL) OR
           (kind = 'ref-set' AND before_root IS NULL AND before_generation IS NULL AND before_revision IS NULL AND after_root IS NULL AND after_generation IS NULL AND after_revision IS NULL AND undo_target IS NULL AND onto_revision IS NULL AND git_commit IS NULL AND capture_scope IS NULL AND import_origins IS NULL AND ref_name IS NOT NULL AND after_ref_generation IS NOT NULL AND after_ref_revision IS NOT NULL)),
+    CHECK((kind = 'restack' AND restack_scope IS NOT NULL) OR (kind != 'restack' AND restack_scope IS NULL)),
     CHECK((kind = 'merge-commit' AND merge_parent IS NOT NULL) OR (kind != 'merge-commit' AND merge_parent IS NULL)),
     CHECK((kind = 'import-history' AND import_origins IS NOT NULL) OR (kind != 'import-history' AND import_origins IS NULL)),
     CHECK((kind = 'capture' AND capture_scope IS NOT NULL) OR (kind != 'capture' AND capture_scope IS NULL)),
@@ -845,7 +881,7 @@ CREATE TABLE operations (
           (kind = 'amend' AND before_root = after_root AND before_revision IS NOT NULL AND after_revision IS NOT NULL AND before_revision IS NOT after_revision) OR
           (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL) OR
           (kind = 'import-git' AND before_generation = 0 AND before_revision IS NULL AND after_revision IS NOT NULL) OR
-          (kind = 'rebase' AND before_revision IS NOT NULL AND after_revision IS NOT NULL) OR
+          (kind IN ('rebase', 'restack') AND before_revision IS NOT NULL AND after_revision IS NOT NULL) OR
           (kind = 'select' AND after_revision IS NOT NULL) OR
           kind IN ('undo', 'ref-set'))
 ) STRICT;
@@ -984,36 +1020,48 @@ fn selection(connection: &Connection) -> Result<Selection> {
     )?)
 }
 fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
-    type StoredReceipt = (
-        String,
-        StoredSelection,
-        StoredSelection,
-        Option<String>,
-        Option<Vec<u8>>,
-        Option<Vec<u8>>,
-        Option<Vec<u8>>,
-        Option<Vec<u8>>,
-        Option<Vec<u8>>,
-    );
+    struct StoredReceipt {
+        kind: String,
+        before: StoredSelection,
+        after: StoredSelection,
+        target: Option<String>,
+        onto: Option<Vec<u8>>,
+        git_commit: Option<Vec<u8>>,
+        capture_scope: Option<Vec<u8>>,
+        import_origins: Option<Vec<u8>>,
+        merge_parent: Option<Vec<u8>>,
+        restack_scope: Option<Vec<u8>>,
+    }
     enum Stored {
         Selection(StoredReceipt),
-        Ref(references::StoredRefReceipt, Option<Vec<u8>>),
+        Ref(
+            references::StoredRefReceipt,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+        ),
     }
     let row = connection.query_row(
-        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, ref_name, before_ref_generation, after_ref_generation, after_ref_revision, merge_parent FROM operations WHERE request_key = ?1",
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, ref_name, before_ref_generation, after_ref_generation, after_ref_revision, merge_parent, restack_scope FROM operations WHERE request_key = ?1",
         [key], |r| {
             let kind: String = r.get(0)?;
             if kind == "ref-set" {
-                Ok(Stored::Ref((r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?), r.get(16)?))
+                Ok(Stored::Ref((r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?), r.get(16)?, r.get(17)?))
             } else {
-                Ok(Stored::Selection((kind, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(16)?)))
+                Ok(Stored::Selection(StoredReceipt {
+                    kind,
+                    before: (r.get(1)?, r.get(2)?, r.get(3)?),
+                    after: (r.get(4)?, r.get(5)?, r.get(6)?),
+                    target: r.get(7)?, onto: r.get(8)?, git_commit: r.get(9)?,
+                    capture_scope: r.get(10)?, import_origins: r.get(11)?,
+                    merge_parent: r.get(16)?, restack_scope: r.get(17)?,
+                }))
             }
         },
     ).optional()?;
     let Some(row) = row else {
         return Ok(None);
     };
-    let (
+    let StoredReceipt {
         kind,
         before,
         after,
@@ -1023,10 +1071,11 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
         capture_scope,
         import_origins,
         merge_parent,
-    ) = match row {
-        Stored::Ref(stored, merge_parent) => {
-            if merge_parent.is_some() {
-                return Err(invalid("reference receipt has a merge parent"));
+        restack_scope,
+    } = match row {
+        Stored::Ref(stored, merge_parent, restack_scope) => {
+            if merge_parent.is_some() || restack_scope.is_some() {
+                return Err(invalid("reference receipt has selection-only metadata"));
             }
             return Ok(Some(Receipt::Ref(references::decode_receipt(
                 connection, key, stored,
@@ -1044,6 +1093,9 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
     }
     if (kind == "merge-commit") != merge_parent.is_some() {
         return Err(invalid("receipt merge parent"));
+    }
+    if (kind == "restack") != restack_scope.is_some() {
+        return Err(invalid("receipt restack scope"));
     }
     if (kind == "rebase") != onto.is_some() {
         return Err(invalid("receipt rebase target"));
@@ -1101,6 +1153,13 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
                 return Err(invalid("receipt rebase target kind"));
             }
             Operation::Rebase { onto }
+        }
+        "restack" => {
+            let scope = RestackScope::decode(
+                restack_scope.ok_or_else(|| invalid("receipt restack scope"))?,
+            )?;
+            scope.check_endpoints(before, after)?;
+            scope.operation()
         }
         "select" => {
             let revision = after
@@ -1196,28 +1255,54 @@ fn budget(total: &mut usize, length: usize) -> Result<()> {
 /// Walk only owning references, never Engine::objects() (which includes orphans).
 fn collect_closure(
     roots: impl IntoIterator<Item = Id>,
-    mut fetch: impl FnMut(Id) -> Result<Vec<u8>>,
+    fetch: impl FnMut(Id) -> Result<Vec<u8>>,
 ) -> Result<BTreeMap<Id, Vec<u8>>> {
-    let mut records = BTreeMap::new();
-    let mut discovered: BTreeSet<_> = roots.into_iter().collect();
-    let mut pending: Vec<_> = discovered.iter().copied().collect();
-    let mut total = 0;
-    while let Some(id) = pending.pop() {
-        let payload = fetch(id)?;
-        bounded_length(payload.len() as u64)?;
-        budget(&mut total, payload.len())?;
-        let object = Object::decode(id, &payload)?;
-        for child in owning_refs(&object) {
-            if discovered.insert(child) {
-                if discovered.len() > MAX_OBJECTS {
-                    return Err(Error::Limit("closure objects"));
-                }
-                pending.push(child);
-            }
+    let mut closure = ClosureBuilder::default();
+    closure.extend(roots, fetch)?;
+    Ok(closure.records)
+}
+
+/// One cumulative owning-graph budget. Failed extensions leave it unchanged.
+#[derive(Default)]
+struct ClosureBuilder {
+    records: BTreeMap<Id, Vec<u8>>,
+    bytes: usize,
+}
+impl ClosureBuilder {
+    fn extend(
+        &mut self,
+        roots: impl IntoIterator<Item = Id>,
+        mut fetch: impl FnMut(Id) -> Result<Vec<u8>>,
+    ) -> Result<()> {
+        let mut discovered: BTreeSet<_> = roots
+            .into_iter()
+            .filter(|id| !self.records.contains_key(id))
+            .collect();
+        if self.records.len() + discovered.len() > MAX_OBJECTS {
+            return Err(Error::Limit("closure objects"));
         }
-        records.insert(id, payload);
+        let mut pending: Vec<_> = discovered.iter().copied().collect();
+        let mut additions = BTreeMap::new();
+        let mut bytes = self.bytes;
+        while let Some(id) = pending.pop() {
+            let payload = fetch(id)?;
+            bounded_length(payload.len() as u64)?;
+            budget(&mut bytes, payload.len())?;
+            let object = Object::decode(id, &payload)?;
+            for child in owning_refs(&object) {
+                if !self.records.contains_key(&child) && discovered.insert(child) {
+                    if self.records.len() + discovered.len() > MAX_OBJECTS {
+                        return Err(Error::Limit("closure objects"));
+                    }
+                    pending.push(child);
+                }
+            }
+            additions.insert(id, payload);
+        }
+        self.records.append(&mut additions);
+        self.bytes = bytes;
+        Ok(())
     }
-    Ok(records)
 }
 fn entry_ref(entry: &Entry) -> Option<Id> {
     match entry {
@@ -1305,6 +1390,8 @@ fn sync_directory(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod fault_tests;
+#[cfg(test)]
+mod restack_tests;
 
 #[cfg(test)]
 mod crash_tests {

@@ -112,9 +112,16 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
         .revision
         .unwrap();
     let selected = repo.select_revision(revision, 2, "select").unwrap();
-    repo.commit("Author", "child", 3, "child").unwrap();
+    let child = repo
+        .commit("Author", "child", 3, "child")
+        .unwrap()
+        .after
+        .revision
+        .unwrap();
+    repo.commit("Author", "tip", 4, "tip").unwrap();
+    let restacked = repo.restack(child, revision, 5, "restack").unwrap();
     let merged = repo
-        .commit_merge(revision, "Author", "merge", 4, "merge")
+        .commit_merge(child, "Author", "merge", 6, "merge")
         .unwrap();
     let name = "saved".parse().unwrap();
     let pinned = repo.set_reference(&name, revision, 0, "ref").unwrap();
@@ -123,9 +130,9 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        14
+        15
     );
-    db.pragma_update(None, "user_version", 13).unwrap();
+    db.pragma_update(None, "user_version", 14).unwrap();
     drop(db);
     // Retain a witness in the obsolete raw-file layout as well as the database.
     let objects = project.path().join(".avc/objects/sealed");
@@ -139,7 +146,7 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
         Err(error) => error,
     };
     assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 13"))
+        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 14"))
     );
     assert_eq!(fs::read(&database_path).unwrap(), before);
     assert_eq!(fs::read(witness).unwrap(), b"preserve old payload");
@@ -151,12 +158,16 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        13
+        14
     );
-    db.pragma_update(None, "user_version", 14).unwrap();
+    db.pragma_update(None, "user_version", 15).unwrap();
     drop(db);
     let repo = Repository::open(project.path()).unwrap();
     assert_eq!(repo.status().unwrap(), merged.after);
+    assert_eq!(
+        repo.receipt("restack").unwrap(),
+        Some(avc::repository::Receipt::Selection(restacked))
+    );
     assert_eq!(
         repo.receipt("merge").unwrap(),
         Some(avc::repository::Receipt::Selection(merged))

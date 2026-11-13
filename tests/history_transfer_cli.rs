@@ -87,7 +87,7 @@ fn cli_history_is_self_contained_and_explicitly_separate_from_source_transfer() 
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
-            .contains("Git metadata excluded")
+            .contains("derived Git maps excluded")
     );
     let source = scratch.path().join("source.avc");
     run(&original, &["export", "--output", source.to_str().unwrap()]);

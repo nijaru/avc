@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use avc::engine::{Edit, Engine};
-use avc::git::{GitOid, GitPlan, GitStore};
+use avc::git::{GitCommit, GitOid, GitPlan, GitStore, GitTreeHasher};
 use avc::{Entry, Object, Revision};
 use tempfile::TempDir;
 
@@ -272,6 +272,87 @@ fn corrupt_existing_oid_is_not_trusted_on_read_or_write() {
     let mut plan = GitPlan::new();
     plan.tree(&store, &engine, root).unwrap();
     assert!(plan.write(&store).is_err());
+}
+
+#[test]
+fn corrupt_late_target_object_prevents_all_early_writes() {
+    let (source_dir, source) = init();
+    let blob = put(source_dir.path(), "blob", b"planned blob");
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b"file", blob);
+    let tree = put(source_dir.path(), "tree", &raw);
+    let mut engine = Engine::new();
+    let root = source.import_source(tree, &mut engine).unwrap();
+    let (target_dir, target) = init();
+    let evil = put(target_dir.path(), "blob", b"corrupt target slot");
+    let object_path = |oid| {
+        let hex = bare(oid);
+        target_dir
+            .path()
+            .join("objects")
+            .join(&hex[..2])
+            .join(&hex[2..])
+    };
+    // GitPlan orders by OID: the other, lower OID would be written first.
+    let late = tree.max(blob);
+    std::fs::create_dir_all(object_path(late).parent().unwrap()).unwrap();
+    std::fs::copy(object_path(evil), object_path(late)).unwrap();
+    let before = object_files(target_dir.path());
+    let mut plan = GitPlan::new();
+    plan.tree(&target, &engine, root).unwrap();
+    assert!(plan.write(&target).is_err());
+    assert_eq!(object_files(target_dir.path()), before);
+}
+
+#[test]
+fn malformed_loose_objects_are_errors_not_missing_and_prevent_all_writes() {
+    let (source_dir, source) = init();
+    let blob_raw = b"planned blob";
+    let blob = put(source_dir.path(), "blob", blob_raw);
+    let mut tree_raw = Vec::new();
+    tree_entry(&mut tree_raw, b"100644", b"file", blob);
+    let tree = put(source_dir.path(), "tree", &tree_raw);
+    let mut engine = Engine::new();
+    let root = source.import_source(tree, &mut engine).unwrap();
+    let rev = revision(root);
+    let id = Object::Revision(rev.clone()).id().unwrap();
+    let mut source_plan = GitPlan::new();
+    source_plan.tree(&source, &engine, root).unwrap();
+    let commit = source_plan.commit(&source, id, &rev, &[]).unwrap();
+    source_plan.write(&source).unwrap();
+    let commit_raw = source.read_commit(commit).unwrap().raw;
+    for (kind, oid, raw) in [
+        ("blob", blob, blob_raw.as_slice()),
+        ("tree", tree, tree_raw.as_slice()),
+        ("commit", commit, commit_raw.as_slice()),
+    ] {
+        let (target_dir, target) = init();
+        assert_eq!(put(target_dir.path(), kind, raw), oid);
+        let hex = bare(oid);
+        let slot = target_dir
+            .path()
+            .join("objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        // Git's loose files are read-only. Replace rather than overwrite them.
+        std::fs::remove_file(&slot).unwrap();
+        std::fs::write(&slot, b"not zlib").unwrap();
+        let mut plan = GitPlan::new();
+        plan.tree(&target, &engine, root).unwrap();
+        assert_eq!(plan.commit(&target, id, &rev, &[]).unwrap(), commit);
+        // No empty tree is planned: its global fsck must not mask this bug.
+        let before = object_files(target_dir.path());
+        assert!(plan.write(&target).is_err(), "corrupt {kind} was accepted");
+        assert_eq!(
+            object_files(target_dir.path()),
+            before,
+            "early writes before corrupt {kind} refusal"
+        );
+        assert_eq!(std::fs::read(&slot).unwrap(), b"not zlib");
+        if kind == "commit" {
+            assert!(target.read_commit_optional(oid).is_err());
+        }
+    }
 }
 
 #[test]
@@ -593,6 +674,7 @@ fn empty_git_tree_import_and_actual_depth_path_bounds() {
     }
     let root = store.import_source(tree, &mut engine).unwrap();
     assert_eq!(GitPlan::new().tree(&store, &engine, root).unwrap(), tree);
+    assert_eq!(GitTreeHasher::new().tree(&engine, root).unwrap(), tree);
     let mut raw = Vec::new();
     tree_entry(&mut raw, b"40000", b"x", tree);
     let too_deep = put(dir.path(), "tree", &raw);
@@ -946,6 +1028,408 @@ fn environment_is_scrubbed() {
         .unwrap();
     assert!(status.success());
     assert!(!marker.exists());
+}
+
+// An independently assembled stock-Git tree with raw names, all supported
+// modes, Git's directory sort order, shared blobs and nested empty directories.
+fn portable_fixture(dir: &Path) -> (GitOid, Vec<u8>, GitOid) {
+    let blob = put(dir, "blob", b"\0portable\xff\n");
+    let empty = put(dir, "tree", b"");
+    let mut child = Vec::new();
+    tree_entry(&mut child, b"40000", b"empty", empty);
+    tree_entry(&mut child, b"100755", b"exec", blob);
+    let child = put(dir, "tree", &child);
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b"dir.file", blob);
+    tree_entry(&mut raw, b"40000", b"dir", child);
+    tree_entry(&mut raw, b"40000", b"empty", empty);
+    tree_entry(&mut raw, b"120000", b"link", blob);
+    tree_entry(&mut raw, b"100644", b"raw-\xff", blob);
+    let tree = put(dir, "tree", &raw);
+    // Neither the original planner nor the writer may demand this ancestor.
+    let raw = raw_commit(tree).replace_bytes(
+        b"\nauthor ",
+        b"\nparent 1111111111111111111111111111111111111111\nauthor ",
+    );
+    let commit = put(dir, "commit", &raw);
+    (tree, raw, commit)
+}
+
+#[test]
+fn offline_codec_and_original_plan_do_not_need_git() {
+    const CASE: &str = "offline_codec_and_original_plan_do_not_need_git";
+    if let Ok(fixture) = std::env::var("AVC_OFFLINE_CODEC_FIXTURE") {
+        // This subprocess has no Git (or anything else) on PATH. Native
+        // construction is independent of the stock-Git fixture in the parent.
+        let mut engine = Engine::new();
+        let empty = engine.empty().unwrap();
+        let blob = engine.blob(b"\0portable\xff\n".to_vec()).unwrap();
+        let file = Entry::File {
+            blob,
+            executable: false,
+        };
+        let child = engine
+            .edit(
+                empty,
+                &[
+                    Edit {
+                        path: vec![b"empty".to_vec()],
+                        expected: Entry::Absent,
+                        value: Entry::Directory(empty),
+                    },
+                    Edit {
+                        path: vec![b"exec".to_vec()],
+                        expected: Entry::Absent,
+                        value: Entry::File {
+                            blob,
+                            executable: true,
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+        let root = engine
+            .edit(
+                empty,
+                &[
+                    Edit {
+                        path: vec![b"dir".to_vec()],
+                        expected: Entry::Absent,
+                        value: Entry::Directory(child),
+                    },
+                    Edit {
+                        path: vec![b"dir.file".to_vec()],
+                        expected: Entry::Absent,
+                        value: file.clone(),
+                    },
+                    Edit {
+                        path: vec![b"empty".to_vec()],
+                        expected: Entry::Absent,
+                        value: Entry::Directory(empty),
+                    },
+                    Edit {
+                        path: vec![b"link".to_vec()],
+                        expected: Entry::Absent,
+                        value: Entry::Symlink(blob),
+                    },
+                    Edit {
+                        path: vec![b"raw-\xff".to_vec()],
+                        expected: Entry::Absent,
+                        value: file,
+                    },
+                ],
+            )
+            .unwrap();
+        let oid = std::env::var("AVC_OFFLINE_CODEC_OID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let raw = std::fs::read(fixture).unwrap();
+        let commit = GitCommit::decode(oid, raw.clone()).unwrap();
+        let mut hashing = GitTreeHasher::new();
+        assert_eq!(hashing.tree(&engine, root).unwrap(), commit.tree);
+        assert_eq!(hashing.tree(&engine, root).unwrap(), commit.tree);
+        assert_eq!(
+            hashing.tree(&engine, child).unwrap(),
+            GitTreeHasher::new().tree(&engine, child).unwrap()
+        );
+        let mut plan = GitPlan::new();
+        assert_eq!(plan.original(&engine, root, &commit).unwrap(), oid);
+        assert_eq!(plan.original(&engine, root, &commit).unwrap(), oid);
+        let mut changed = raw.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(GitCommit::decode(oid, changed).is_err());
+        assert!(GitCommit::decode(commit.tree, raw).is_err());
+        return;
+    }
+    let (dir, _) = init();
+    let (_, raw, oid) = portable_fixture(dir.path());
+    let fixture = dir.path().join("raw-commit");
+    std::fs::write(&fixture, raw).unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", CASE, "--nocapture"])
+        .env("AVC_OFFLINE_CODEC_FIXTURE", fixture)
+        .env("AVC_OFFLINE_CODEC_OID", oid.to_string())
+        .env("PATH", dir.path().join("no-executables"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn original_rehydrates_exact_closure_even_when_commit_already_exists() {
+    let (dir, source) = init();
+    let (tree, raw, oid) = portable_fixture(dir.path());
+    let mut engine = Engine::new();
+    let root = source.import_source(tree, &mut engine).unwrap();
+    let original = GitCommit::decode(oid, raw.clone()).unwrap();
+    let (target_dir, target) = init();
+    let mut plan = GitPlan::new();
+    assert_eq!(plan.original(&engine, root, &original).unwrap(), oid);
+    assert_eq!(object_files(target_dir.path()), 0);
+    assert_eq!(target.read_commit_optional(oid).unwrap(), None);
+    // Install only the original commit. Its absent tree must still be planned.
+    assert_eq!(put(target_dir.path(), "commit", &raw), oid);
+    plan.write(&target).unwrap();
+    assert_eq!(target.read_commit_optional(oid).unwrap(), Some(original));
+    assert_eq!(target.read_commit(oid).unwrap().raw, raw);
+    // cat-file supplies a virtual empty tree, but a complete stored closure
+    // must also materialize it for stock Git connectivity/fsck checks.
+    assert_eq!(object_files(target_dir.path()), 5); // blob, 3 trees, commit
+    let mut imported = Engine::new();
+    assert_eq!(target.import_source(tree, &mut imported).unwrap(), root);
+    plan.write(&target).unwrap();
+    assert_eq!(object_files(target_dir.path()), 5);
+    let foreign = "1111111111111111111111111111111111111111".parse().unwrap();
+    assert_eq!(target.read_commit_optional(foreign).unwrap(), None);
+}
+
+#[test]
+fn corrupt_physical_empty_tree_is_not_hidden_by_gits_virtual_object() {
+    let (dir, store) = init();
+    let tree: GitOid = "4b825dc642cb6eb9a060e54bf8d69288fbee4904".parse().unwrap();
+    let evil = put(dir.path(), "blob", b"corrupt empty tree slot");
+    let object_path = |oid| {
+        let hex = bare(oid);
+        dir.path().join("objects").join(&hex[..2]).join(&hex[2..])
+    };
+    std::fs::create_dir_all(object_path(tree).parent().unwrap()).unwrap();
+    std::fs::copy(object_path(evil), object_path(tree)).unwrap();
+    // Confirm the dangerous stock-Git behavior independently of our reader.
+    assert_eq!(
+        git(dir.path(), &["cat-file", "tree", &bare(tree)], &[]),
+        b""
+    );
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let mut plan = GitPlan::new();
+    plan.tree(&store, &engine, empty).unwrap();
+    let rev = revision(empty);
+    let id = Object::Revision(rev.clone()).id().unwrap();
+    plan.commit(&store, id, &rev, &[]).unwrap();
+    let before = object_files(dir.path());
+    assert!(plan.write(&store).is_err());
+    assert_eq!(object_files(dir.path()), before);
+}
+
+#[test]
+fn original_present_commit_does_not_hide_corrupt_source_objects() {
+    let (dir, source) = init();
+    let (tree, raw, oid) = portable_fixture(dir.path());
+    let mut engine = Engine::new();
+    let root = source.import_source(tree, &mut engine).unwrap();
+    let original = GitCommit::decode(oid, raw.clone()).unwrap();
+    let (target_dir, target) = init();
+    put(target_dir.path(), "commit", &raw);
+    let evil = put(target_dir.path(), "blob", b"not the planned tree");
+    let object_path = |oid| {
+        let hex = bare(oid);
+        target_dir
+            .path()
+            .join("objects")
+            .join(&hex[..2])
+            .join(&hex[2..])
+    };
+    std::fs::create_dir_all(object_path(tree).parent().unwrap()).unwrap();
+    std::fs::copy(object_path(evil), object_path(tree)).unwrap();
+    let before = object_files(target_dir.path());
+    assert_eq!(target.read_commit_optional(oid).unwrap(), Some(original));
+    let original = GitCommit::decode(oid, raw).unwrap();
+    let mut plan = GitPlan::new();
+    plan.original(&engine, root, &original).unwrap();
+    assert!(plan.write(&target).is_err());
+    assert_eq!(object_files(target_dir.path()), before);
+    // A wrong-type or corrupt commit slot is also an error, never missing.
+    std::fs::remove_file(object_path(oid)).unwrap();
+    std::fs::copy(object_path(evil), object_path(oid)).unwrap();
+    assert!(target.read_commit_optional(oid).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn optional_read_requires_exact_missing_framing_and_successful_exit() {
+    use std::os::unix::fs::PermissionsExt;
+    const CASE: &str = "optional_read_requires_exact_missing_framing_and_successful_exit";
+    let oid: GitOid = "1111111111111111111111111111111111111111".parse().unwrap();
+    if let Ok(dir) = std::env::var("AVC_OPTIONAL_READ_CHILD") {
+        let store = GitStore::open(Path::new(&dir)).unwrap();
+        let result = store.read_commit_optional(oid);
+        if std::env::var("AVC_OPTIONAL_READ_MISSING").unwrap() == "yes" {
+            assert_eq!(result.unwrap(), None);
+        } else {
+            assert!(
+                result.is_err(),
+                "invalid protocol response accepted: {result:?}"
+            );
+        }
+        return;
+    }
+    let (dir, _) = init();
+    let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("git"))
+        .find(|path| path.is_file())
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    for (response, status, missing, diagnostic) in [
+        (format!("{} missing\n", bare(oid)), 0, true, false),
+        (format!("{} missing\n", bare(oid)), 1, false, false),
+        (format!("{} missing", bare(oid)), 0, false, false),
+        (format!("{} missing\nextra", bare(oid)), 0, false, false),
+        (format!("{} missing\n\n", bare(oid)), 0, false, false),
+        (
+            "2222222222222222222222222222222222222222 missing\n".into(),
+            0,
+            false,
+            false,
+        ),
+        (format!("{} tree 0\n\n", bare(oid)), 0, false, false),
+        (format!("{} commit 3\nx", bare(oid)), 0, false, false),
+        (format!("{} commit 0\n\n", bare(oid)), 0, false, false),
+        (format!("{} missing\n", bare(oid)), 0, false, true),
+    ] {
+        let script = bin.join("git");
+        // Exceed pipe capacity before stdout: a sequential stderr reader would
+        // deadlock, and discarding stderr would wrongly accept the missing OID.
+        let diagnostics = if diagnostic {
+            "diagnostic".repeat(32 * 1024)
+        } else {
+            String::new()
+        };
+        std::fs::write(&script, format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *cat-file*) printf '%s' '{diagnostics}' >&2; printf '%s' '{response}'; exit {status};;\n  *) exec '{}' \"$@\";;\nesac\n", real_git.display()
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", CASE, "--nocapture"])
+            .env("PATH", &bin)
+            .env("AVC_OPTIONAL_READ_CHILD", dir.path())
+            .env(
+                "AVC_OPTIONAL_READ_MISSING",
+                if missing { "yes" } else { "no" },
+            )
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "response {response:?}");
+    }
+}
+
+#[test]
+fn original_cache_does_not_grant_native_empty_directory_representability() {
+    let (dir, source) = init();
+    let (tree, raw, oid) = portable_fixture(dir.path());
+    let mut engine = Engine::new();
+    let root = source.import_source(tree, &mut engine).unwrap();
+    let original = GitCommit::decode(oid, raw).unwrap();
+    let (target_dir, target) = init();
+    let mut plan = GitPlan::new();
+    plan.original(&engine, root, &original).unwrap();
+    assert!(plan.tree(&target, &engine, root).is_err());
+    assert!(plan.write(&target).is_err());
+    assert_eq!(object_files(target_dir.path()), 0);
+    let empty = engine.empty().unwrap();
+    let mut wrong = GitPlan::new();
+    assert!(wrong.original(&engine, empty, &original).is_err());
+    assert!(wrong.write(&target).is_err());
+    assert_eq!(object_files(target_dir.path()), 0);
+}
+
+#[test]
+fn original_stock_git_admission_failure_prevents_all_writes() {
+    let (source_dir, _) = init();
+    let blob = put(source_dir.path(), "blob", b"payload");
+    let mut raw = Vec::new();
+    tree_entry(&mut raw, b"100644", b".git", blob);
+    let tree = put(source_dir.path(), "tree", &raw);
+    let raw = raw_commit(tree);
+    let oid = put(source_dir.path(), "commit", &raw);
+    let commit = GitCommit::decode(oid, raw).unwrap();
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let blob = engine.blob(b"payload".to_vec()).unwrap();
+    let root = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b".git".to_vec()],
+                expected: Entry::Absent,
+                value: Entry::File {
+                    blob,
+                    executable: false,
+                },
+            }],
+        )
+        .unwrap();
+    let mut plan = GitPlan::new();
+    plan.original(&engine, root, &commit).unwrap();
+    let (target_dir, target) = init();
+    assert!(plan.write(&target).is_err());
+    assert_eq!(object_files(target_dir.path()), 0);
+}
+
+#[test]
+fn offline_source_hashing_budgets_expansion_even_with_cached_children() {
+    let mut engine = Engine::new();
+    let empty = engine.empty().unwrap();
+    let blob = engine.blob(b"shared".to_vec()).unwrap();
+    let mut root = engine
+        .edit(
+            empty,
+            &[Edit {
+                path: vec![b"leaf".to_vec()],
+                expected: Entry::Absent,
+                value: Entry::File {
+                    blob,
+                    executable: false,
+                },
+            }],
+        )
+        .unwrap();
+    let mut hashing = GitTreeHasher::new();
+    for _ in 0..15 {
+        hashing.tree(&engine, root).unwrap();
+        root = engine
+            .edit(
+                empty,
+                &[
+                    Edit {
+                        path: vec![b"a".to_vec()],
+                        expected: Entry::Absent,
+                        value: Entry::Directory(root),
+                    },
+                    Edit {
+                        path: vec![b"b".to_vec()],
+                        expected: Entry::Absent,
+                        value: Entry::Directory(root),
+                    },
+                ],
+            )
+            .unwrap();
+    }
+    // Only 17 unique trees; the next root expands beyond 100,000 entries.
+    hashing.tree(&engine, root).unwrap();
+    root = engine
+        .edit(
+            empty,
+            &[
+                Edit {
+                    path: vec![b"a".to_vec()],
+                    expected: Entry::Absent,
+                    value: Entry::Directory(root),
+                },
+                Edit {
+                    path: vec![b"b".to_vec()],
+                    expected: Entry::Absent,
+                    value: Entry::Directory(root),
+                },
+            ],
+        )
+        .unwrap();
+    assert!(hashing.tree(&engine, root).is_err());
+    assert!(hashing.tree(&engine, empty).is_err());
 }
 
 #[test]

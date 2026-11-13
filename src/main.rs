@@ -721,7 +721,7 @@ fn run(cli: CommandLine) -> Result<()> {
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "unborn".to_owned());
                 println!(
-                    "Exported selected native history: root={} revision={head}; local operations, instance/workspace and Git metadata excluded.",
+                    "Exported selected history: root={} revision={head}; retained Git origins included when needed; local operations, instance/workspace and derived Git maps excluded.",
                     snapshot.root
                 );
             } else {

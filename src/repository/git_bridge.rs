@@ -78,13 +78,19 @@ impl Repository {
     /// its checksum and binding to the immutable native anchor's ChangeId.
     pub fn git_origin(&self, revision: Id) -> Result<Option<GitOrigin>> {
         self.ensure_idle()?;
-        read_origin(&self.connection, revision)
+        // Establish existence before custody lookup so a concurrent fresh import
+        // cannot appear after an earlier "no manifest" read.
+        history::read_revision(&self.connection, revision)?;
+        let scope = OriginScope::load(&self.connection)?;
+        read_origin(&self.connection, revision, scope.as_ref())
     }
 
     /// Inspect every known Git boundary in an exact native history graph.
     /// Bounds metadata traversal without loading all historical file bytes.
     pub fn git_origins(&self, revision: Id) -> Result<Vec<GitOrigin>> {
         self.ensure_idle()?;
+        history::read_revision(&self.connection, revision)?;
+        let scope = OriginScope::load(&self.connection)?;
         let mut seen = BTreeSet::new();
         let mut pending = vec![revision];
         let mut origins = Vec::new();
@@ -102,7 +108,7 @@ impl Repository {
                 return Err(invalid("Git origin traversal requires revisions"));
             };
             pending.extend(value.parents);
-            if let Some(origin) = self.git_origin(id)? {
+            if let Some(origin) = read_origin(&self.connection, id, scope.as_ref())? {
                 budget(&mut bytes, origin.raw_commit.len())?;
                 origins.push(origin);
             }
@@ -122,6 +128,7 @@ impl Repository {
         let records = collect_closure([revision], |id| self.read_object(id))?;
         let mut engine = Engine::new();
         engine.import(records, revision, limits())?;
+        let scope = OriginScope::load(&self.connection)?;
         let git = GitStore::open(git_dir)?;
         let mut plan = GitPlan::new();
         let mut mapped = BTreeMap::new();
@@ -150,11 +157,10 @@ impl Repository {
                 mapped.insert(id, oid);
                 translations.insert(id, oid);
             } else if seen.insert(id) {
-                if let Some(origin) = self.git_origin(id)? {
+                if let Some(origin) = read_origin(&self.connection, id, scope.as_ref())? {
                     budget(&mut origin_bytes, origin.raw_commit.len())?;
-                    let original = git.read_commit(origin.commit)?;
-                    if original.raw != origin.raw_commit
-                        || original.tree != origin.tree
+                    let original = GitCommit::decode(origin.commit, origin.raw_commit)?;
+                    if original.tree != origin.tree
                         || original.parents != origin.parents
                         || Object::Revision(anchor(&original, value.root)).id()? != id
                     {
@@ -162,6 +168,7 @@ impl Repository {
                             "retained Git origin does not match original commit/anchor",
                         ));
                     }
+                    plan.original(&engine, value.root, &original)?;
                     mapped.insert(id, origin.commit);
                 } else {
                     // Preflight source before any writes, even for a revision
@@ -205,7 +212,7 @@ fn change(commit: GitOid) -> [u8; 16] {
     change.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     change
 }
-fn anchor(commit: &GitCommit, root: Id) -> Revision {
+pub(super) fn anchor(commit: &GitCommit, root: Id) -> Revision {
     Revision {
         root,
         parents: Vec::new(),
@@ -235,7 +242,7 @@ fn checksum(origin: &GitOrigin) -> Result<[u8; 32]> {
     Ok(*hash.finalize().as_bytes())
 }
 pub(super) fn insert_origin(connection: &Connection, origin: &GitOrigin) -> Result<()> {
-    if let Some(previous) = read_origin(connection, origin.revision)? {
+    if let Some(previous) = read_origin_record(connection, origin.revision)? {
         if previous != *origin {
             return Err(invalid("Git origin collision"));
         }
@@ -254,7 +261,27 @@ pub(super) fn insert_origin(connection: &Connection, origin: &GitOrigin) -> Resu
     }
     Ok(())
 }
-fn read_origin(connection: &Connection, revision: Id) -> Result<Option<GitOrigin>> {
+pub(super) fn read_origin(
+    connection: &Connection,
+    revision: Id,
+    scope: Option<&OriginScope>,
+) -> Result<Option<GitOrigin>> {
+    let origin = read_origin_record(connection, revision)?;
+    if let Some((commit, digest)) = scope.map(|s| s.claim(revision)).transpose()?.flatten() {
+        let retained = origin
+            .as_ref()
+            .ok_or_else(|| invalid("missing retained Git origin"))?;
+        if retained.commit != commit
+            || blake3::hash(&retained.raw_commit).as_bytes().as_slice() != digest
+        {
+            return Err(invalid(
+                "retained Git origin differs from history import scope",
+            ));
+        }
+    }
+    Ok(origin)
+}
+fn read_origin_record(connection: &Connection, revision: Id) -> Result<Option<GitOrigin>> {
     type StoredOrigin = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
     let row: Option<StoredOrigin> = connection.query_row(
         "SELECT commit_oid, tree_oid, parents, raw_commit, checksum FROM git_origins WHERE revision = ?1",

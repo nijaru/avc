@@ -14,12 +14,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::str::FromStr;
 
 use crate::engine::{Engine, Limits};
 use crate::repository::{Error, MAX_CLOSURE_BYTES, MAX_OBJECT_BYTES, MAX_OBJECTS, Result};
-use crate::{Entry, Id, Object, Revision};
+use crate::{Entry, Id, Node, Object, Revision};
+use sha1collisiondetection::Sha1CD;
 
 const MAX_ENTRIES: usize = 100_000;
 const MAX_AUTHOR: usize = 4096;
@@ -81,7 +82,7 @@ impl FromStr for GitOid {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct GitCommit {
     pub oid: GitOid,
     pub tree: GitOid,
@@ -91,6 +92,17 @@ pub struct GitCommit {
     pub message: String,
     pub time_ns: i64,
     pub timezone_minutes: i16,
+}
+
+impl GitCommit {
+    /// Decode retained bytes without Git, checking the exact Git object hash
+    /// before applying the same bounded grammar used by local import.
+    pub fn decode(oid: GitOid, raw: Vec<u8>) -> Result<Self> {
+        if hash_object(Kind::Commit, &raw)? != oid {
+            return Err(invalid("Git commit hash mismatch"));
+        }
+        parse_commit(oid, raw)
+    }
 }
 
 pub struct GitStore {
@@ -142,6 +154,9 @@ impl GitStore {
             "core.fsmonitor=false",
             "core.useReplaceRefs=false",
             "core.commitGraph=false",
+            // Our explicit /dev/null graft override must not itself emit
+            // deprecation advice into the diagnostic-sensitive protocol.
+            "advice.graftFileDeprecated=false",
             "protocol.allow=never",
             "gc.auto=0",
             "maintenance.auto=false",
@@ -151,7 +166,7 @@ impl GitStore {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         command
     }
 
@@ -161,26 +176,73 @@ impl GitStore {
         input: &[u8],
         read: impl FnOnce(&mut BufReader<std::process::ChildStdout>) -> Result<T>,
     ) -> Result<T> {
-        let mut child = Reap(self.command().args(args).spawn()?);
-        let mut stdin = child
-            .0
-            .stdin
-            .take()
-            .ok_or_else(|| invalid("Git stdin unavailable"))?;
-        // Only hash-object receives a large input. Its output is one OID after
-        // consuming stdin; cat-file receives exactly one 41-byte request.
-        stdin.write_all(input)?;
-        drop(stdin);
-        let stdout = child
-            .0
-            .stdout
-            .take()
-            .ok_or_else(|| invalid("Git stdout unavailable"))?;
-        let value = read(&mut BufReader::new(stdout))?;
-        if !child.0.wait()?.success() {
-            return Err(invalid("Git plumbing subprocess failed (stderr discarded)"));
+        let (value, status) = self.run_status(args, input, read)?;
+        if !status.success() {
+            return Err(invalid("Git plumbing subprocess failed"));
         }
         Ok(value)
+    }
+
+    fn run_status<T>(
+        &self,
+        args: &[&str],
+        input: &[u8],
+        read: impl FnOnce(&mut BufReader<std::process::ChildStdout>) -> Result<T>,
+    ) -> Result<(T, ExitStatus)> {
+        std::thread::scope(|scope| {
+            let mut child = Reap(self.command().args(args).spawn()?);
+            let mut stderr = child
+                .0
+                .stderr
+                .take()
+                .ok_or_else(|| invalid("Git stderr unavailable"))?;
+            // cat-file can print an exact missing response and exit zero after
+            // failing to inflate a corrupt object. Any diagnostic must refuse.
+            // Drain concurrently with stdin/stdout using constant memory, so
+            // large diagnostics cannot fill a pipe or grow an allocation.
+            let diagnostics = std::thread::Builder::new()
+                .name("git-stderr".into())
+                .spawn_scoped(scope, move || -> std::io::Result<bool> {
+                    let mut buffer = [0; 8192];
+                    let mut seen = false;
+                    loop {
+                        match stderr.read(&mut buffer) {
+                            Ok(0) => return Ok(seen),
+                            Ok(_) => seen = true,
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                })?;
+            let result = (|| {
+                let mut stdin = child
+                    .0
+                    .stdin
+                    .take()
+                    .ok_or_else(|| invalid("Git stdin unavailable"))?;
+                // Only hash-object receives a large input. Its output is one
+                // OID after stdin; cat-file receives one 41-byte request.
+                stdin.write_all(input)?;
+                drop(stdin);
+                let stdout = child
+                    .0
+                    .stdout
+                    .take()
+                    .ok_or_else(|| invalid("Git stdout unavailable"))?;
+                let value = read(&mut BufReader::new(stdout))?;
+                Ok((value, child.0.wait()?))
+            })();
+            // On EVERY error, kill/reap before joining the stderr reader. In
+            // particular, do not let scope's implicit join precede Reap::drop.
+            drop(child);
+            let diagnostic_seen = diagnostics
+                .join()
+                .map_err(|_| invalid("Git stderr reader panicked"))??;
+            if diagnostic_seen {
+                return Err(invalid("Git plumbing subprocess emitted diagnostics"));
+            }
+            result
+        })
     }
 
     fn small(&self, args: &[&str], input: &[u8], cap: usize) -> Result<Vec<u8>> {
@@ -212,7 +274,12 @@ impl GitStore {
         text[..40].parse()
     }
 
-    fn object(&self, oid: GitOid, expected: Kind, remaining: usize) -> Result<Vec<u8>> {
+    fn optional_object(
+        &self,
+        oid: GitOid,
+        expected: Kind,
+        remaining: usize,
+    ) -> Result<Option<Vec<u8>>> {
         let raw = self.run(
             &["cat-file", "--batch", "--no-use-mailmap"],
             format!("{}\n", oid.hex()).as_bytes(),
@@ -224,6 +291,16 @@ impl GitStore {
                 }
                 let header = std::str::from_utf8(&header)
                     .map_err(|_| invalid("invalid Git object header"))?;
+                // Missing is a protocol response, not an interpretation of an
+                // I/O, type, hash, or subprocess failure. Require EOF as well;
+                // run also requires a successful exit with no diagnostics.
+                if header == format!("{} missing\n", oid.hex()) {
+                    let mut end = [0];
+                    if reader.read(&mut end)? != 0 {
+                        return Err(invalid("Git missing-object framing"));
+                    }
+                    return Ok(None);
+                }
                 let fields: Vec<_> = header.trim_end_matches('\n').split(' ').collect();
                 if fields.len() != 3 || fields[0] != oid.hex() || fields[1] != expected.name() {
                     return Err(invalid("missing Git object or incorrect object type"));
@@ -244,20 +321,76 @@ impl GitStore {
                 if end != *b"\n" || reader.read(&mut end)? != 0 {
                     return Err(invalid("Git payload framing"));
                 }
-                Ok(data)
+                Ok(Some(data))
             },
         )?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
         // cat-file returns bytes from an OID slot, not a verified content hash.
         // Normal hash-object also applies Git's object-grammar checks (including
         // filesystem aliases of .git), without fetching or traversing children.
-        if self.hash(expected, &raw, false)? != oid {
+        if hash_object(expected, &raw)? != oid || self.hash(expected, &raw, false)? != oid {
             return Err(invalid("Git object hash mismatch"));
         }
-        Ok(raw)
+        Ok(Some(raw))
+    }
+
+    fn object(&self, oid: GitOid, expected: Kind, remaining: usize) -> Result<Vec<u8>> {
+        self.optional_object(oid, expected, remaining)?
+            .ok_or_else(|| invalid("missing Git object"))
     }
 
     pub fn read_commit(&self, oid: GitOid) -> Result<GitCommit> {
-        parse_commit(oid, self.object(oid, Kind::Commit, MAX_OBJECT_BYTES)?)
+        GitCommit::decode(oid, self.object(oid, Kind::Commit, MAX_OBJECT_BYTES)?)
+    }
+
+    /// Only an exact missing-object response, EOF, successful exit and quiet
+    /// stderr produce None. Corrupt loose objects can otherwise look missing.
+    pub fn read_commit_optional(&self, oid: GitOid) -> Result<Option<GitCommit>> {
+        self.optional_object(oid, Kind::Commit, MAX_OBJECT_BYTES)?
+            .map(|raw| GitCommit::decode(oid, raw))
+            .transpose()
+    }
+
+    // cat-file synthesizes the empty tree, even over a corrupt physical slot.
+    // fsck with this sole reachability root checks actual storage, not that
+    // virtual object. Foreign commit parents remain unreachable and unfetched.
+    // Accept only success with no output, or Git's exact missing-root report
+    // with its connectivity-error status (2); all other failures reject.
+    // This is a whole-target ODB scan: only its captured output is bounded,
+    // NOT its work or the target bytes examined. It conservatively rejects
+    // unrelated corrupt target objects. Run once in preflight, and again after
+    // installing a physically missing empty tree, never per source root.
+    fn stored_empty_tree(&self, oid: GitOid) -> Result<bool> {
+        let hex = oid.hex();
+        let (output, status) = self.run_status(
+            &[
+                "fsck",
+                "--full",
+                "--strict",
+                "--no-reflogs",
+                "--no-dangling",
+                "--no-progress",
+                &hex,
+            ],
+            &[],
+            |reader| {
+                let mut output = Vec::new();
+                reader.take(129).read_to_end(&mut output)?;
+                if output.len() > 128 {
+                    return Err(Error::Limit("Git empty-tree storage check output"));
+                }
+                Ok(output)
+            },
+        )?;
+        if status.success() && output.is_empty() {
+            Ok(true)
+        } else if status.code() == Some(2) && output == format!("missing tree {hex}\n").as_bytes() {
+            Ok(false)
+        } else {
+            Err(invalid("Git empty-tree physical storage check failed"))
+        }
     }
 
     pub fn import_source(&self, tree: GitOid, engine: &mut Engine) -> Result<Id> {
@@ -288,7 +421,7 @@ impl GitStore {
 }
 
 /// Drop handles every short read, parse failure, broken pipe and wait error.
-/// Stderr goes to the null device rather than a bounded pipe that can deadlock.
+/// This guard must drop before joining the concurrent stderr drain.
 struct Reap(Child);
 impl Drop for Reap {
     fn drop(&mut self) {
@@ -313,6 +446,23 @@ impl Kind {
             Self::Commit => "commit",
         }
     }
+}
+
+// Never use the Digest trait's infallible finalizer: it can return a
+// substituted safe hash on collision. A detected attack must reject the object.
+fn hash_object(kind: Kind, raw: &[u8]) -> Result<GitOid> {
+    if raw.len() > MAX_OBJECT_BYTES {
+        return Err(Error::Limit("Git object payload"));
+    }
+    let mut hash = Sha1CD::default();
+    hash.update(format!("{} {}\0", kind.name(), raw.len()));
+    hash.update(raw);
+    let digest = hash
+        .finalize_cd()
+        .map_err(|_| invalid("Git SHA-1 collision detected"))?;
+    let mut oid = [0; 20];
+    oid.copy_from_slice(&digest);
+    Ok(GitOid(oid))
 }
 
 #[derive(Default)]
@@ -502,72 +652,77 @@ fn parse_tree(mut raw: &[u8]) -> Result<Vec<(Vec<u8>, Mode, GitOid)>> {
     Ok(entries)
 }
 
-/// Read-only, bounded preflight followed by immutable candidate-object writes.
-/// A failed preflight invalidates the plan: `write` refuses even objects added
-/// by earlier calls. A successful write never publishes a ref.
-#[derive(Default)]
-pub struct GitPlan {
-    objects: BTreeMap<GitOid, (Kind, Vec<u8>)>,
-    roots: BTreeMap<Id, (GitOid, Bounds)>,
-    blobs: BTreeMap<Id, GitOid>,
-    budget: Budget,
-    failed: bool,
+#[derive(Clone, Copy)]
+struct TreeInfo {
+    oid: GitOid,
+    bounds: Bounds,
+    native_candidate: bool,
 }
-impl GitPlan {
-    pub fn new() -> Self {
-        Self::default()
-    }
 
-    fn add(&mut self, store: &GitStore, kind: Kind, raw: Vec<u8>) -> Result<GitOid> {
-        let oid = store.hash(kind, &raw, false)?;
-        if let Some((previous_kind, previous)) = self.objects.get(&oid) {
-            if *previous_kind != kind || previous != &raw {
-                return Err(invalid("Git hash collision"));
+/// Shared source traversal. Engine is already a verified, immutable canonical
+/// authority; account each native radix node once instead of re-verifying every
+/// overlapping root. Caches hold OIDs/metrics, never source payloads.
+#[derive(Default)]
+struct SourceTrees {
+    roots: BTreeMap<Id, TreeInfo>,
+    blobs: BTreeMap<Id, GitOid>,
+    native_seen: BTreeSet<Id>,
+    native_budget: Budget,
+    bindings: usize,
+}
+impl SourceTrees {
+    fn account(&mut self, engine: &Engine, root: Id) -> Result<()> {
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            if self.native_seen.contains(&id) {
+                continue;
             }
-        } else {
-            self.budget.add(raw.len())?;
-            self.objects.insert(oid, (kind, raw));
+            let object = engine.object(id)?;
+            let length = match object {
+                Object::Blob(raw) => raw.len(),
+                _ => object.encode()?.len(),
+            };
+            self.native_budget.add(length)?;
+            self.native_seen.insert(id);
+            if let Object::Map(Node::Branch { children, .. }) = object {
+                pending.extend(children.values().copied());
+            }
         }
-        Ok(oid)
-    }
-
-    pub fn tree(&mut self, store: &GitStore, engine: &Engine, root: Id) -> Result<GitOid> {
-        let result = (|| {
-            if self.failed {
-                return Err(invalid("Git preflight plan has failed"));
-            }
-            engine.verify(root, limits())?;
-            self.directory(store, engine, root, 0).map(|(oid, _)| oid)
-        })();
-        self.failed |= result.is_err();
-        result
+        Ok(())
     }
 
     fn directory(
         &mut self,
-        store: &GitStore,
         engine: &Engine,
         root: Id,
         depth: usize,
-    ) -> Result<(GitOid, Bounds)> {
+        add: &mut impl FnMut(Id, Kind, &[u8]) -> Result<GitOid>,
+    ) -> Result<TreeInfo> {
         if depth > 256 {
             return Err(Error::Limit("Git export nesting"));
         }
         if let Some(result) = self.roots.get(&root) {
             return Ok(*result);
         }
+        self.account(engine, root)?;
         let entries = engine.list(root, &[])?;
+        self.bindings = self
+            .bindings
+            .checked_add(entries.len())
+            .ok_or(Error::Limit("native source bindings"))?;
+        if self.bindings > MAX_ENTRIES {
+            return Err(Error::Limit("native source bindings"));
+        }
         let mut output = Vec::with_capacity(entries.len());
         let mut bounds = Bounds::default();
+        let mut native_candidate = true;
         for (name, entry) in entries {
             crate::validate_name(&name)?;
             let (mode, oid, child) = match entry {
                 Entry::Directory(id) => {
-                    let (oid, bounds) = self.directory(store, engine, id, depth + 1)?;
-                    if bounds.entries == 0 {
-                        return Err(invalid("native empty directory entries cannot be exported"));
-                    }
-                    (Mode::Directory, oid, bounds)
+                    let child = self.directory(engine, id, depth + 1, add)?;
+                    native_candidate &= child.native_candidate && child.bounds.entries != 0;
+                    (Mode::Directory, child.oid, child.bounds)
                 }
                 Entry::File { blob, executable } => (
                     if executable {
@@ -575,12 +730,12 @@ impl GitPlan {
                     } else {
                         Mode::File
                     },
-                    self.blob(store, engine, blob)?,
+                    self.blob(engine, blob, add)?,
                     Bounds::default(),
                 ),
                 Entry::Symlink(blob) => (
                     Mode::Symlink,
-                    self.blob(store, engine, blob)?,
+                    self.blob(engine, blob, add)?,
                     Bounds::default(),
                 ),
                 _ => {
@@ -604,26 +759,174 @@ impl GitPlan {
                 return Err(Error::Limit("Git tree payload"));
             }
         }
-        let oid = self.add(store, Kind::Tree, raw)?;
-        self.roots.insert(root, (oid, bounds));
-        Ok((oid, bounds))
+        let result = TreeInfo {
+            oid: add(root, Kind::Tree, &raw)?,
+            bounds,
+            native_candidate,
+        };
+        self.roots.insert(root, result);
+        Ok(result)
     }
 
-    fn blob(&mut self, store: &GitStore, engine: &Engine, id: Id) -> Result<GitOid> {
+    fn blob(
+        &mut self,
+        engine: &Engine,
+        id: Id,
+        add: &mut impl FnMut(Id, Kind, &[u8]) -> Result<GitOid>,
+    ) -> Result<GitOid> {
         if let Some(oid) = self.blobs.get(&id) {
             return Ok(*oid);
         }
-        let oid = match engine.object(id)? {
-            Object::Blob(raw) => {
-                if raw.len() > MAX_OBJECT_BYTES {
-                    return Err(Error::Limit("native blob payload"));
-                }
-                self.add(store, Kind::Blob, raw.clone())
-            }
-            _ => Err(invalid("native file does not reference a blob")),
-        }?;
+        self.account(engine, id)?;
+        let Object::Blob(raw) = engine.object(id)? else {
+            return Err(invalid("native file does not reference a blob"));
+        };
+        let oid = add(id, Kind::Blob, raw)?;
         self.blobs.insert(id, oid);
         Ok(oid)
+    }
+}
+
+/// Bounded, offline original-source hashing across many overlapping roots.
+/// Preserves nested empty directories. Retains only OIDs and traversal metrics,
+/// not cloned blobs or serialized trees. Limits cover the union of roots.
+#[derive(Default)]
+pub struct GitTreeHasher {
+    sources: SourceTrees,
+    seen: BTreeMap<GitOid, (Kind, Id)>,
+    budget: Budget,
+    failed: bool,
+}
+impl GitTreeHasher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn tree(&mut self, engine: &Engine, root: Id) -> Result<GitOid> {
+        let result = (|| {
+            if self.failed {
+                return Err(invalid("Git source hashing context has failed"));
+            }
+            self.sources
+                .directory(engine, root, 0, &mut |id, kind, raw| {
+                    let oid = hash_object(kind, raw)?;
+                    if let Some(previous) = self.seen.get(&oid) {
+                        // Canonical source-to-Git serialization is injective
+                        // for supported trees/blobs. Native identity detects
+                        // observed aliases without retaining the source bytes.
+                        if *previous != (kind, id) {
+                            return Err(invalid("Git hash collision"));
+                        }
+                    } else {
+                        self.budget.add(raw.len())?;
+                        self.seen.insert(oid, (kind, id));
+                    }
+                    Ok(oid)
+                })
+                .map(|info| info.oid)
+        })();
+        self.failed |= result.is_err();
+        result
+    }
+}
+
+#[derive(Default)]
+struct PlannedObjects {
+    objects: BTreeMap<GitOid, (Kind, Vec<u8>)>,
+    budget: Budget,
+    unchecked: Vec<GitOid>,
+}
+impl PlannedObjects {
+    fn add(&mut self, kind: Kind, raw: &[u8]) -> Result<GitOid> {
+        let oid = hash_object(kind, raw)?;
+        if let Some((previous_kind, previous)) = self.objects.get(&oid) {
+            if *previous_kind != kind || previous != raw {
+                return Err(invalid("Git hash collision"));
+            }
+        } else {
+            self.budget.add(raw.len())?;
+            self.objects.insert(oid, (kind, raw.to_vec()));
+            self.unchecked.push(oid);
+        }
+        Ok(oid)
+    }
+
+    fn validate_pending(&mut self, store: &GitStore) -> Result<()> {
+        for oid in self.unchecked.drain(..) {
+            let (kind, raw) = &self.objects[&oid];
+            if store.hash(*kind, raw, false)? != oid {
+                return Err(invalid("Git admission hash mismatch"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Read-only, bounded planning followed by immutable candidate-object writes.
+/// A failed planning operation invalidates the entire plan. Offline originals
+/// preserve their raw commit, including opaque unfetched foreign parents.
+/// Stock Git admission and every target slot are checked before any writes.
+/// A successful write never publishes a ref. Plans containing the empty tree
+/// additionally require a whole-target physical-storage fsck: unlike source
+/// traversal, that scan is not bounded by the planned closure's size and may
+/// reject unrelated target corruption. Git's normal reader synthesizes the
+/// empty tree, masking both physical absence and corruption at that OID.
+#[derive(Default)]
+pub struct GitPlan {
+    planned: PlannedObjects,
+    sources: SourceTrees,
+    native_roots: BTreeSet<Id>,
+    failed: bool,
+}
+impl GitPlan {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn source_tree(&mut self, engine: &Engine, root: Id) -> Result<TreeInfo> {
+        self.sources
+            .directory(engine, root, 0, &mut |_, kind, raw| {
+                self.planned.add(kind, raw)
+            })
+    }
+
+    pub fn tree(&mut self, store: &GitStore, engine: &Engine, root: Id) -> Result<GitOid> {
+        let result = (|| {
+            if self.failed {
+                return Err(invalid("Git preflight plan has failed"));
+            }
+            let info = self.source_tree(engine, root)?;
+            // This includes cached original roots: original policy must never
+            // confer policy-1 representability on a native candidate.
+            if !info.native_candidate {
+                return Err(invalid("native empty directory entries cannot be exported"));
+            }
+            self.planned.validate_pending(store)?;
+            self.native_roots.insert(root);
+            Ok(info.oid)
+        })();
+        self.failed |= result.is_err();
+        result
+    }
+
+    /// Plan the complete current-source closure and unchanged original commit
+    /// without Git. Foreign parents remain opaque OIDs, never fetched/fabricated.
+    pub fn original(&mut self, engine: &Engine, root: Id, original: &GitCommit) -> Result<GitOid> {
+        let result = (|| {
+            if self.failed {
+                return Err(invalid("Git preflight plan has failed"));
+            }
+            let decoded = GitCommit::decode(original.oid, original.raw.clone())?;
+            if decoded != *original {
+                return Err(invalid("original Git commit fields do not match raw bytes"));
+            }
+            if self.source_tree(engine, root)?.oid != original.tree {
+                return Err(invalid("original Git source tree mismatch"));
+            }
+            self.planned.add(Kind::Commit, &original.raw)
+        })();
+        self.failed |= result.is_err();
+        result
     }
 
     pub fn commit(
@@ -653,12 +956,12 @@ impl GitPlan {
                     "Git parents must correspond to ordered native parents",
                 ));
             }
-            let (tree, _) = self
-                .roots
-                .get(&revision.root)
-                .ok_or_else(|| invalid("revision source tree was not preflighted"))?;
+            if !self.native_roots.contains(&revision.root) {
+                return Err(invalid("revision source tree was not preflighted"));
+            }
+            let tree = self.sources.roots[&revision.root].oid;
             for parent in parents {
-                if let Some((kind, _)) = self.objects.get(parent) {
+                if let Some((kind, _)) = self.planned.objects.get(parent) {
                     if *kind != Kind::Commit {
                         return Err(invalid("Git parent is not a commit"));
                     }
@@ -685,7 +988,9 @@ impl GitPlan {
             );
             raw.push_str(&format!("author {identity}\ncommitter {identity}\navc-revision {revision_id}\navc-time-ns {}\n\n", revision.time_ns));
             raw.push_str(&revision.message);
-            self.add(store, Kind::Commit, raw.into_bytes())
+            let oid = self.planned.add(Kind::Commit, raw.as_bytes())?;
+            self.planned.validate_pending(store)?;
+            Ok(oid)
         })();
         self.failed |= result.is_err();
         result
@@ -695,15 +1000,39 @@ impl GitPlan {
         if self.failed {
             return Err(invalid("Git preflight plan has failed"));
         }
-        for (oid, (kind, raw)) in &self.objects {
-            if store.hash(*kind, raw, true)? != *oid {
+        // Read-only admission and slot validation for the ENTIRE closure. An
+        // existing commit says nothing about availability/integrity of its tree
+        // and blobs. Never repair a corrupt slot or treat an error as missing.
+        let mut missing = Vec::new();
+        for (oid, (kind, raw)) in &self.planned.objects {
+            if store.hash(*kind, raw, false)? != *oid {
+                return Err(invalid("Git admission hash mismatch"));
+            }
+            match store.optional_object(*oid, *kind, MAX_OBJECT_BYTES)? {
+                Some(actual) if actual != *raw => {
+                    return Err(invalid("stored Git candidate differs from plan"));
+                }
+                Some(_) => {
+                    if *kind == Kind::Tree && raw.is_empty() && !store.stored_empty_tree(*oid)? {
+                        missing.push(*oid);
+                    }
+                }
+                None => missing.push(*oid),
+            }
+        }
+        for oid in missing {
+            let (kind, raw) = &self.planned.objects[&oid];
+            if store.hash(*kind, raw, true)? != oid {
                 return Err(invalid("Git write hash mismatch"));
             }
             // hash-object -w may succeed without replacing an existing corrupt
             // loose object. Read and independently hash the actual stored bytes.
-            let actual = store.object(*oid, *kind, MAX_OBJECT_BYTES)?;
+            let actual = store.object(oid, *kind, MAX_OBJECT_BYTES)?;
             if actual != *raw {
                 return Err(invalid("stored Git candidate differs from plan"));
+            }
+            if *kind == Kind::Tree && raw.is_empty() && !store.stored_empty_tree(oid)? {
+                return Err(invalid("written Git empty tree is not physically stored"));
             }
         }
         Ok(())

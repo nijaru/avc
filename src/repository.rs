@@ -39,13 +39,15 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 mod capture;
 pub use capture::CaptureScope;
 mod git_bridge;
 pub use git_bridge::GitOrigin;
 mod history;
+mod origin_scope;
+use origin_scope::OriginScope;
 mod rebase;
 mod transfer;
 
@@ -204,6 +206,8 @@ enum Mutation<'a> {
     ImportHistory {
         root: Id,
         revision: Option<Id>,
+        origins: &'a [GitOrigin],
+        scope: &'a OriginScope,
     },
     ImportGit {
         root: Id,
@@ -504,11 +508,21 @@ impl Repository {
         // outside the write transaction except for new concurrent dedup winners.
         insert_objects(&tx, prepared)?;
         let after = match mutation {
-            Mutation::ImportHistory { root, revision } => Selection {
+            Mutation::ImportHistory {
                 root,
                 revision,
-                generation: next as u64,
-            },
+                origins,
+                ..
+            } => {
+                for origin in origins {
+                    git_bridge::insert_origin(&tx, origin)?;
+                }
+                Selection {
+                    root,
+                    revision,
+                    generation: next as u64,
+                }
+            }
             Mutation::ImportGit { root, origin } => {
                 git_bridge::insert_origin(&tx, origin)?;
                 Selection {
@@ -573,7 +587,7 @@ impl Repository {
         let onto = operation.rebase_onto().map(Id::to_bytes).transpose()?;
         let git_commit = operation.git_commit().map(|oid| oid.to_bytes());
         tx.execute(
-            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 request_key,
                 operation.as_str(),
@@ -587,6 +601,7 @@ impl Repository {
                 onto.as_ref().map(|id| id.as_slice()),
                 git_commit.as_ref().map(|oid| oid.as_slice()),
                 operation.capture_scope(),
+                match mutation { Mutation::ImportHistory { scope, .. } => Some(scope.bytes()), _ => None },
             ],
         )?;
         tx.commit()?;
@@ -610,8 +625,23 @@ impl Repository {
         }
         let same = prior.before.generation == expected
             && match (&prior.operation, mutation) {
-                (Operation::ImportHistory, Mutation::ImportHistory { root, revision }) => {
-                    prior.after.root == root && prior.after.revision == revision
+                (
+                    Operation::ImportHistory,
+                    Mutation::ImportHistory {
+                        root,
+                        revision,
+                        scope,
+                        ..
+                    },
+                ) => {
+                    let retained: Vec<u8> = self.connection.query_row(
+                        "SELECT import_origins FROM operations WHERE request_key = ?1",
+                        [&prior.request_key],
+                        |r| r.get(0),
+                    )?;
+                    prior.after.root == root
+                        && prior.after.revision == revision
+                        && OriginScope::decode(retained)? == *scope
                 }
                 (Operation::Source, Mutation::Source { root, .. }) => prior.after.root == root,
                 (Operation::Undo { target: previous }, Mutation::Undo { target }) => {
@@ -708,6 +738,8 @@ CREATE TABLE operations (
     onto_revision BLOB REFERENCES objects(id),
     git_commit BLOB REFERENCES git_origins(commit_oid),
     capture_scope BLOB CHECK(capture_scope IS NULL OR length(capture_scope) BETWEEN 1 AND 131072),
+    import_origins BLOB CHECK(import_origins IS NULL OR length(import_origins) BETWEEN 44 AND 8600044),
+    CHECK((kind = 'import-history' AND import_origins IS NOT NULL) OR (kind != 'import-history' AND import_origins IS NULL)),
     CHECK((kind = 'capture' AND capture_scope IS NOT NULL) OR (kind != 'capture' AND capture_scope IS NULL)),
     CHECK((kind = 'import-git' AND git_commit IS NOT NULL) OR (kind != 'import-git' AND git_commit IS NULL)),
     CHECK((kind = 'rebase' AND onto_revision IS NOT NULL) OR (kind != 'rebase' AND onto_revision IS NULL)),
@@ -731,6 +763,7 @@ BEGIN SELECT RAISE(ABORT, 'capture observation/receipt mismatch'); END;
 CREATE TRIGGER capture_observations_no_update BEFORE UPDATE ON capture_observations BEGIN SELECT RAISE(ABORT, 'immutable capture observation'); END;
 CREATE TRIGGER capture_observations_no_delete BEFORE DELETE ON capture_observations BEGIN SELECT RAISE(ABORT, 'retained capture observation'); END;
 CREATE INDEX operations_git_anchor ON operations(after_revision) WHERE kind = 'import-git';
+CREATE UNIQUE INDEX operations_history_import ON operations(kind) WHERE kind = 'import-history';
 CREATE TRIGGER git_origins_no_update BEFORE UPDATE ON git_origins BEGIN SELECT RAISE(ABORT, 'immutable Git origin'); END;
 CREATE TRIGGER git_origins_no_delete BEFORE DELETE ON git_origins BEGIN SELECT RAISE(ABORT, 'retained Git origin'); END;
 CREATE TRIGGER git_exports_no_update BEFORE UPDATE ON git_exports BEGIN SELECT RAISE(ABORT, 'immutable Git mapping'); END;
@@ -860,13 +893,14 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
         Option<Vec<u8>>,
         Option<Vec<u8>>,
         Option<Vec<u8>>,
+        Option<Vec<u8>>,
     );
     let row: Option<StoredReceipt> = connection.query_row(
-        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope FROM operations WHERE request_key = ?1",
-        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins FROM operations WHERE request_key = ?1",
+        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?)),
     ).optional()?;
     row.map(
-        |(kind, before, after, target, onto, git_commit, capture_scope)| {
+        |(kind, before, after, target, onto, git_commit, capture_scope, import_origins)| {
             let before = decode_selection(before)?;
             let after = decode_selection(after)?;
             if before.generation.checked_add(1) != Some(after.generation) {
@@ -883,6 +917,12 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
             }
             if (kind == "capture") != capture_scope.is_some() {
                 return Err(invalid("receipt capture scope"));
+            }
+            if (kind == "import-history") != import_origins.is_some() {
+                return Err(invalid("receipt history origin scope"));
+            }
+            if let Some(bytes) = import_origins {
+                OriginScope::decode(bytes)?;
             }
             let operation = match kind.as_str() {
                 "capture" if before.revision == after.revision => Operation::Capture {

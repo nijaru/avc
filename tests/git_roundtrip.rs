@@ -556,8 +556,8 @@ fn deterministic_anchor_and_native_children_roundtrip_with_exact_foreign_parent(
     );
     assert_eq!(fs::read(dir.path().join("live")).unwrap(), b"untouched");
     let output = dir.path().join("history.avc");
-    assert!(repo.export_history_file(&output).is_err());
-    assert!(!output.exists());
+    repo.export_history_file(&output).unwrap();
+    assert!(fs::read(&output).unwrap().starts_with(b"AVCHIS02"));
     let mut source = Vec::new();
     repo.export(repo.status().unwrap().root, &mut source)
         .unwrap();

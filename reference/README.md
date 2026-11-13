@@ -136,9 +136,10 @@ exporter; parent end-to-end tests can also feed real CLI exports to this parser.
 
 ## Selected authored-history streams
 
-Use `--history` to select the separate `AVCHIS01` parser. The default parser and
-`verify_stream` / `verify_file` APIs still accept only `AVCEXP01`; there is no
-automatic format detection. Canonical v1 object payloads are unchanged.
+Use `--history` to accept `AVCHIS01` native history or `AVCHIS02` history with
+portable Git origins. The default parser and `verify_stream` / `verify_file`
+APIs still accept only `AVCEXP01`. Canonical v1 object payloads and native-only
+`AVCHIS01` bytes are unchanged.
 
 ```sh
 uv run reference/bundle.py history.avchis --history
@@ -146,7 +147,7 @@ uv run reference/bundle.py history.avchis --history --json > history-corpus.json
 uv run reference/check.py --verify history-corpus.json
 ```
 
-The wire fields, in order, are:
+The `AVCHIS01` wire fields, in order, are:
 
 - Eight-byte magic `AVCHIS01`.
 - A 33-byte typed selected source root: map kind `02`/`03` or root Conflict `04`.
@@ -158,12 +159,28 @@ The wire fields, in order, are:
 - Eight-byte completion marker `AVCHEND1`, then the 32-byte BLAKE3 digest of
   every preceding byte, including the completion marker. EOF is mandatory.
 
-`verify_history_stream` / `verify_history_file` return the same canonical JSON
-shape as the source-only APIs. Its verification roots are the selected source,
+`AVCHIS02` has the same source/head/object section, with magic `AVCHIS02` and a
+mandatory present head. After the objects comes a nonzero `u64le` origin count
+(at most 100,000), then strictly sorted unique records keyed by 33-byte native
+Revision ID. Each record contains that ID, a 21-byte Git OID (`01` plus 20 raw
+SHA-1 bytes), a `u64le` raw-commit length, and the exact raw commit. Its footer is
+`AVCHEND2` followed by BLAKE3 over all preceding bytes, including that marker;
+EOF is mandatory.
+
+`verify_history_stream` / `verify_history_file` retain `{objects, roots}` for v1.
+V2 additionally returns `origins`, with JSON records shaped as
+`{"revision": "avc1-k05-…", "commit": "sha1:<40 lowercase hex digits>",
+"raw_commit": "<lowercase hex>"}`. Verification roots are the selected source,
 then the authored head when present. The selected source may differ from the
-head Revision's source: uncommitted selection must not be replaced by the last
-authored source. No head is valid for an unborn source selection, including an
-empty map.
+head Revision's source: uncommitted selection is not replaced by the authored
+source. An absent head is valid for an unborn v1 selection, including an empty
+map.
+
+`encode_history(corpus, origins=None, limits=HISTORY_LIMITS)` returns verified
+wire bytes, sorting input records. By default it uses `corpus.get("origins", [])`;
+no origins emits v1, while any origins selects v2. Explicit `origins` overrides
+the corpus field. The encoder refuses invalid closures or origins before
+returning bytes. Existing source-only verification APIs are unchanged.
 
 Records must be the **exact union** of both owning closures: all selected-source
 dependencies, the head, every ancestor Revision, and all their source
@@ -172,17 +189,39 @@ dependencies too. The checker rejects path conflicts in source-root contexts,
 missing ancestry or sources, and surplus records even with a valid outer
 checksum. Framing and bounded-read logic are shared with the source-only parser.
 
-History payload caps are 16 MiB per object and 256 MiB aggregate unique payload;
-the object count cap is 100,000. The same limit flags can tighten these caps, but
-cannot relax them. The history whole-file default adds 34 bytes for the optional
-head header: `256 MiB + 41 × 100,000 + 123` bytes. `--max-file-bytes` overrides
-that framing budget. Both parsers emit JSON only after full verification.
+Origins must name zero-native-parent Revisions reachable from the selected head,
+not merely present in the object array. The checker independently hashes exact
+Git framing (`kind + ' ' + decimal length + NUL + raw`) with `hashlib.sha1`,
+parses the established Git import header/person/message grammar, and recomputes
+the complete native anchor ID. Its ChangeId is the first 16 BLAKE3 bytes of
+`AVC-GIT-ANCHOR\0v1\0` followed by `01 14` and the raw commit OID. Author,
+message, committer nanoseconds/timezone, and source must all match. Opaque extra
+headers, including `avc-*` audit headers, grant no authority. Foreign parents
+(at most 16 unique OIDs) remain opaque: they are not native ancestry and are
+never fetched.
 
-No local generations, request keys, instance identity, workspace state, operation
-receipts, or foreign-Git metadata are encoded. Foreign-Git mapping is not
-implemented. This selected history transfer is not a full repository backup.
-Tests construct the stream and Revision payloads independently of the Rust
-implementation and exercise the JSON output through `check.py`.
+The original tree OID is reconstructed from resolved native Maps/Blobs using raw
+names, exact modes, and Git's directory-name-plus-`/` ordering. Imported nested
+empty directories are retained, even though ordinary Git export rejects them.
+Reconstruction enforces 100,000 expanded entries per source, 256 components,
+4,096 path bytes, 16 MiB per reconstructed object, and 100,000 objects/256 MiB
+of unique reconstruction work across origins. Codec traversal/recovered-key
+budgets also apply. No Git executable, repository, network, or Rust is required.
+SHA-1 here checks framing/math; it is **not** a collision-detection security
+oracle or proof of provenance.
+
+History caps are 16 MiB per canonical payload or raw origin commit and 256 MiB
+for their combined total; canonical objects and origins each cap at 100,000.
+The same limit flags can tighten payload/object caps, but cannot relax them.
+The history whole-file default accommodates v2 framing:
+`256 MiB + 41 × 100,000 + 62 × 100,000 + 131` bytes.
+`--max-file-bytes` overrides that framing budget. Both parsers emit JSON only
+after full verification.
+
+No local generations, request keys, instance identity, workspace state, or
+operation receipts are encoded. This selected history transfer is not a full
+repository backup. Tests lay out streams, Git trees/commits, and Revision
+payloads independently of Rust and exercise the CLI's JSON output.
 
 ## Bounds and semantic decisions
 

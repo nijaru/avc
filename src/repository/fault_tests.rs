@@ -143,6 +143,10 @@ fn failed_commit_and_failed_rollback_cannot_acknowledge_own_uncommitted_receipt(
     ));
     assert!(matches!(repo.log(None, 20), Err(Error::RecoveryRequired)));
     assert!(matches!(
+        repo.select_revision(next_root, before.generation, "must-not-select"),
+        Err(Error::RecoveryRequired)
+    ));
+    assert!(matches!(
         repo.amend("", "", before.generation, "must-not-amend"),
         Err(Error::RecoveryRequired)
     ));

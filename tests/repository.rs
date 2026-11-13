@@ -102,14 +102,26 @@ fn init_is_an_empty_source_pin_and_open_never_creates_a_database() {
 #[test]
 fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
     let project = tempfile::tempdir().unwrap();
-    drop(Repository::init(project.path()).unwrap());
+    let mut repo = Repository::init(project.path()).unwrap();
+    let (engine, root, _) = source(vec![29; FIXTURE_PAYLOAD_BYTES]);
+    repo.commit_source(&engine, root, 0, "source").unwrap();
+    let revision = repo
+        .commit("Author", "revision", 1, "author")
+        .unwrap()
+        .after
+        .revision
+        .unwrap();
+    let selected = repo.select_revision(revision, 2, "select").unwrap();
+    let name = "saved".parse().unwrap();
+    let pinned = repo.set_reference(&name, revision, 0, "ref").unwrap();
+    drop(repo);
     let db = database(project.path());
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        12
+        13
     );
-    db.pragma_update(None, "user_version", 11).unwrap();
+    db.pragma_update(None, "user_version", 12).unwrap();
     drop(db);
     // Retain a witness in the obsolete raw-file layout as well as the database.
     let objects = project.path().join(".avc/objects/sealed");
@@ -123,7 +135,7 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
         Err(error) => error,
     };
     assert!(
-        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 11"))
+        matches!(&error, Error::Invalid(message) if message.contains("unsupported physical schema 12"))
     );
     assert_eq!(fs::read(&database_path).unwrap(), before);
     assert_eq!(fs::read(witness).unwrap(), b"preserve old payload");
@@ -131,6 +143,26 @@ fn unsupported_physical_schema_refuses_without_migration_or_data_changes() {
         Repository::init(project.path()),
         Err(Error::AlreadyExists(_))
     ));
+    let db = database(project.path());
+    assert_eq!(
+        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+            .unwrap(),
+        12
+    );
+    db.pragma_update(None, "user_version", 13).unwrap();
+    drop(db);
+    let repo = Repository::open(project.path()).unwrap();
+    assert_eq!(repo.status().unwrap(), selected.after);
+    assert_eq!(
+        repo.receipt("select").unwrap(),
+        Some(avc::repository::Receipt::Selection(selected))
+    );
+    assert_eq!(repo.reference(&name).unwrap(), Some(pinned.after));
+    assert_eq!(
+        repo.receipt("ref").unwrap(),
+        Some(avc::repository::Receipt::Ref(pinned))
+    );
+    repo.load_root(root).unwrap();
 }
 
 #[test]

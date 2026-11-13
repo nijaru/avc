@@ -234,8 +234,21 @@ struct History {
 }
 #[derive(Subcommands)]
 enum HistoryCommand {
+    /// Select a stored revision's source/head; clean selected source required, no checkout.
+    Select(SelectRevision),
     /// Restore the exact current operation's before-source/head under a new generation.
     Undo(Undo),
+}
+#[derive(Args)]
+struct SelectRevision {
+    /// Exact stored native revision, not a floating ref name.
+    // Validate after parsing so rejected values cannot inject parser diagnostics.
+    #[usage(long)]
+    revision: String,
+    #[usage(long)]
+    expected_generation: u64,
+    #[usage(long)]
+    request_key: String,
 }
 #[derive(Args)]
 struct Undo {
@@ -926,6 +939,15 @@ fn run(cli: CommandLine) -> Result<()> {
             }
         }
         Command::History(args) => match args.command {
+            HistoryCommand::Select(args) => {
+                let revision = args.revision.parse()?;
+                let receipt =
+                    repo.select_revision(revision, args.expected_generation, &args.request_key)?;
+                print_receipt(&receipt);
+                println!(
+                    "Selected stored revision source/head; no checkout, live files or named refs changed."
+                );
+            }
             HistoryCommand::Undo(args) => {
                 let receipt =
                     repo.undo(&args.operation, args.expected_generation, &args.request_key)?;

@@ -4,6 +4,10 @@ use super::*;
 use crate::Revision;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+#[path = "selection_tests.rs"]
+mod selection_tests;
+
 impl Repository {
     /// Author the currently selected source, parenting the last authored revision.
     /// An explicit commit may have unchanged or empty source. Random ChangeId and
@@ -79,6 +83,39 @@ impl Repository {
         // Validate the source being authored, not every ancestor's source again.
         // Retained parents are immutable and were admitted when first authored.
         self.load_root(current.root)?;
+        self.publish(expected_generation, request_key, Vec::new(), mutation)
+    }
+
+    /// Select an exact stored revision's source and head without touching files
+    /// or named refs. Refuses selected-but-uncommitted source; an unborn selection
+    /// must be the canonical empty Map. Exact retries precede all health checks.
+    pub fn select_revision(
+        &mut self,
+        revision: Id,
+        expected_generation: u64,
+        request_key: &str,
+    ) -> Result<SelectionReceipt> {
+        self.ensure_idle()?;
+        check_request_key(request_key)?;
+        let mutation = Mutation::Select { revision };
+        if let Some(prior) = self.selection_receipt(request_key)? {
+            return self.reconcile(prior, expected_generation, mutation);
+        }
+        let current = self.status()?;
+        if current.generation != expected_generation {
+            if let Some(prior) = self.selection_receipt(request_key)? {
+                return self.reconcile(prior, expected_generation, mutation);
+            }
+            return Err(Error::Stale {
+                expected: expected_generation,
+                actual: current.generation,
+            });
+        }
+        require_clean_selection(&self.connection, current)?;
+        let target = self.revision(revision)?;
+        // Verify the destination's current source, not its accumulated history
+        // or the departing source. Metadata retention is not a health certificate.
+        self.load_root(target.root)?;
         self.publish(expected_generation, request_key, Vec::new(), mutation)
     }
 
@@ -169,6 +206,19 @@ pub(super) fn read_revision(connection: &Connection, id: Id) -> Result<Revision>
         return Err(invalid("expected a revision ID"));
     };
     Ok(revision)
+}
+
+pub(super) fn require_clean_selection(connection: &Connection, current: Selection) -> Result<()> {
+    let clean_root = match current.revision {
+        Some(head) => read_revision(connection, head)?.root,
+        None => Object::Map(crate::Node::Leaf(Vec::new())).id()?,
+    };
+    if current.root != clean_root {
+        return Err(invalid(
+            "revision selection refuses selected-but-uncommitted source; commit it or undo its current source operation first",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn undo_selection(

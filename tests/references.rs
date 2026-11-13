@@ -812,26 +812,3 @@ fn generation_and_key_boundaries_reject_without_creating_refs_or_receipts() {
     repo.set_reference(&n, revision, 0, &key).unwrap();
     assert!(repo.receipt(&key).unwrap().is_some());
 }
-
-#[test]
-fn physical_schema_twelve_refuses_eleven_without_automatic_migration() {
-    let project = tempfile::tempdir().unwrap();
-    drop(Repository::init(project.path()).unwrap());
-    let db = database(project.path());
-    assert_eq!(
-        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
-            .unwrap(),
-        12
-    );
-    db.pragma_update(None, "user_version", 11).unwrap();
-    drop(db);
-    let objects = retained_objects(project.path());
-    assert!(Repository::open(project.path()).is_err());
-    let db = database(project.path());
-    assert_eq!(
-        db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
-            .unwrap(),
-        11
-    );
-    assert_eq!(retained_objects(project.path()), objects);
-}

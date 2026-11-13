@@ -39,7 +39,7 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 mod capture;
 pub use capture::CaptureScope;
@@ -169,6 +169,7 @@ pub enum Operation {
     Commit,
     Amend,
     Rebase { onto: Id },
+    Select { revision: Id },
     ImportHistory,
     ImportGit { commit: crate::git::GitOid },
     Undo { target: String },
@@ -181,6 +182,7 @@ impl Operation {
             Self::Commit => "commit",
             Self::Amend => "amend",
             Self::Rebase { .. } => "rebase",
+            Self::Select { .. } => "select",
             Self::ImportHistory => "import-history",
             Self::ImportGit { .. } => "import-git",
             Self::Undo { .. } => "undo",
@@ -241,6 +243,9 @@ enum Mutation<'a> {
     Undo {
         target: &'a str,
     },
+    Select {
+        revision: Id,
+    },
     Rebase {
         onto: Id,
         root: Id,
@@ -266,6 +271,7 @@ impl Mutation<'_> {
                 commit: origin.commit,
             },
             Self::Rebase { onto, .. } => Operation::Rebase { onto },
+            Self::Select { revision } => Operation::Select { revision },
             Self::Undo { target } => Operation::Undo {
                 target: target.to_owned(),
             },
@@ -577,6 +583,15 @@ impl Repository {
                 revision: Some(revision),
                 generation: next as u64,
             },
+            Mutation::Select { revision } => {
+                history::require_clean_selection(&tx, before)?;
+                let target = history::read_revision(&tx, revision)?;
+                Selection {
+                    root: target.root,
+                    revision: Some(revision),
+                    generation: next as u64,
+                }
+            }
             Mutation::Capture {
                 root,
                 scope,
@@ -690,6 +705,9 @@ impl Repository {
                         && OriginScope::decode(retained)? == *scope
                 }
                 (Operation::Source, Mutation::Source { root, .. }) => prior.after.root == root,
+                (Operation::Select { revision: previous }, Mutation::Select { revision }) => {
+                    *previous == revision && prior.after.revision == Some(revision)
+                }
                 (Operation::Undo { target: previous }, Mutation::Undo { target }) => {
                     previous == target
                 }
@@ -773,7 +791,7 @@ CREATE TABLE git_exports (
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo', 'ref-set')),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo', 'select', 'ref-set')),
     before_root BLOB REFERENCES objects(id),
     before_generation INTEGER CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
@@ -803,6 +821,7 @@ CREATE TABLE operations (
           (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL) OR
           (kind = 'import-git' AND before_generation = 0 AND before_revision IS NULL AND after_revision IS NOT NULL) OR
           (kind = 'rebase' AND before_revision IS NOT NULL AND after_revision IS NOT NULL) OR
+          (kind = 'select' AND after_revision IS NOT NULL) OR
           kind IN ('undo', 'ref-set'))
 ) STRICT;
 CREATE TABLE capture_observations (
@@ -1027,6 +1046,12 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
                 return Err(invalid("receipt rebase target kind"));
             }
             Operation::Rebase { onto }
+        }
+        "select" => {
+            let revision = after
+                .revision
+                .ok_or_else(|| invalid("selection receipt has no target revision"))?;
+            Operation::Select { revision }
         }
         "undo" => {
             let target = target.ok_or_else(|| invalid("receipt undo target"))?;

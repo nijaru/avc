@@ -402,12 +402,6 @@ fn complete_origin_scope_is_retry_identity_not_current_origin_health() {
         let mut repo = Repository::init(fresh.path()).unwrap();
         let receipt = repo.import_history(wire.as_slice(), "restore").unwrap();
         let connection = db(fresh.path());
-        assert_eq!(
-            connection
-                .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
-                .unwrap(),
-            12
-        );
         let scope: Vec<u8> = connection
             .query_row(
                 "SELECT import_origins FROM operations WHERE request_key = 'restore'",

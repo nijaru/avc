@@ -771,7 +771,11 @@ fn missing_origins_and_changed_derived_mappings_refuse_without_git_effects() {
     for missing in [true, false] {
         let f = Fixture::new();
         let (dir, mut repo) = f.native();
-        let imported = repo.receipt("origin").unwrap().unwrap();
+        let avc::repository::Receipt::Selection(imported) =
+            repo.receipt("origin").unwrap().unwrap()
+        else {
+            panic!("expected selection receipt");
+        };
         let first = author(&mut repo, "Native <native@example.test>", "first");
         repo.export_git(&f.git, first).unwrap();
         put(

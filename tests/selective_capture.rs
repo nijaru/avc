@@ -92,7 +92,10 @@ fn actual_cli_direct_removals_do_not_capture_or_read_unselected_siblings() {
             "{output}"
         );
     }
-    let captured = repo.receipt("direct").unwrap().unwrap();
+    let avc::repository::Receipt::Selection(captured) = repo.receipt("direct").unwrap().unwrap()
+    else {
+        panic!("expected selection receipt");
+    };
     assert_eq!(captured.after.revision, authored.after.revision);
     assert_eq!(captured.after.generation, 3);
     for name in ["src/branch", "src/gone", "src/untracked", "src/pipe"] {

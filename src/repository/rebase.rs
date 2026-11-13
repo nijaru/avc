@@ -11,15 +11,15 @@ impl Repository {
         onto: Id,
         expected_generation: u64,
         request_key: &str,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
-        if let Some(prior) = self.receipt(request_key)? {
+        if let Some(prior) = self.selection_receipt(request_key)? {
             return self.reconcile_rebase(prior, expected_generation, onto);
         }
         let current = self.status()?;
         if current.generation != expected_generation {
-            if let Some(prior) = self.receipt(request_key)? {
+            if let Some(prior) = self.selection_receipt(request_key)? {
                 return self.reconcile_rebase(prior, expected_generation, onto);
             }
             return Err(Error::Stale {
@@ -104,10 +104,10 @@ impl Repository {
 
     pub(super) fn reconcile_rebase(
         &self,
-        prior: Receipt,
+        prior: SelectionReceipt,
         expected: u64,
         onto: Id,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         if prior.before.generation != expected || prior.operation != (Operation::Rebase { onto }) {
             return Err(Error::RequestKeyReuse(prior.request_key));
         }

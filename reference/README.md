@@ -129,7 +129,7 @@ uses the bundle's aggregate byte cap for recovered-key workspace. Limits yield
 refusal, never an authoritative partial result. Input must terminate.
 
 This is an **experimental object-only source export**, excluding operation
-receipts, authored history, selections, and workspace state. It is not a full
+receipts, authored history, named refs, selections, and workspace state. It is not a full
 repository backup or a source-custody qualification. Tests construct streams
 independently, including repaired-checksum attacks, without using the Rust
 exporter; parent end-to-end tests can also feed real CLI exports to this parser.
@@ -218,8 +218,8 @@ The history whole-file default accommodates v2 framing:
 `--max-file-bytes` overrides that framing budget. Both parsers emit JSON only
 after full verification.
 
-No local generations, request keys, instance identity, workspace state, or
-operation receipts are encoded. This selected history transfer is not a full
+No named refs, local generations, request keys, instance identity, workspace
+state, or operation receipts are encoded. This selected history transfer is not a full
 repository backup. Tests lay out streams, Git trees/commits, and Revision
 payloads independently of Rust and exercise the CLI's JSON output.
 

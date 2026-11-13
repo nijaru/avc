@@ -248,7 +248,10 @@ fn actual_cli_recursive_root_reports_omissions_and_commits_pinned_bytes_only() {
     assert!(output.contains("Unobserved administration scope: .avc"));
     assert!(output.contains("Unobserved administration scope: .git"));
     repo = Repository::open(project.path()).unwrap();
-    let receipt = repo.receipt("root").unwrap().unwrap();
+    let avc::repository::Receipt::Selection(receipt) = repo.receipt("root").unwrap().unwrap()
+    else {
+        panic!("expected selection receipt");
+    };
     let captured = receipt.after.root;
     let Operation::Capture { scope: recorded } = &receipt.operation else {
         panic!("not capture");
@@ -344,8 +347,11 @@ fn cli_normalizes_relative_scopes_but_refuses_escapes_and_overlapping_requests()
         ],
     );
     let repo = Repository::open(project.path()).unwrap();
-    let Operation::Capture { scope: recorded } = repo.receipt("good").unwrap().unwrap().operation
+    let avc::repository::Receipt::Selection(receipt) = repo.receipt("good").unwrap().unwrap()
     else {
+        panic!("expected selection receipt");
+    };
+    let Operation::Capture { scope: recorded } = receipt.operation else {
         panic!("not capture");
     };
     assert_eq!(recorded.paths(), &[path("src")]);

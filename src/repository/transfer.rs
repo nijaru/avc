@@ -313,7 +313,7 @@ impl Repository {
 
     /// Verify a complete source-only stream before admission into an untouched
     /// initialized store. Exact retry returns its original receipt; EOF is required.
-    pub fn import(&mut self, reader: impl Read, request_key: &str) -> Result<Receipt> {
+    pub fn import(&mut self, reader: impl Read, request_key: &str) -> Result<SelectionReceipt> {
         self.import_transfer(reader, request_key, Format::Source)
     }
 
@@ -321,7 +321,11 @@ impl Repository {
     /// or store identity. All input verification precedes any admission. Payloads,
     /// selected source/head and a new typed receipt publish in one SQLite transaction.
     /// An identical retry may recover the original result after later local edits.
-    pub fn import_history(&mut self, reader: impl Read, request_key: &str) -> Result<Receipt> {
+    pub fn import_history(
+        &mut self,
+        reader: impl Read,
+        request_key: &str,
+    ) -> Result<SelectionReceipt> {
         self.import_transfer(reader, request_key, Format::History)
     }
 
@@ -330,9 +334,10 @@ impl Repository {
         reader: impl Read,
         request_key: &str,
         format: Format,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
+        let prior = self.selection_receipt(request_key)?;
         let bundle = Bundle::read(reader, format)?;
         let mutation = match format {
             Format::Source => Mutation::Source {
@@ -346,11 +351,11 @@ impl Repository {
                 scope: &bundle.scope,
             },
         };
-        if let Some(prior) = self.receipt(request_key)? {
+        if let Some(prior) = prior {
             return self.reconcile(prior, 0, mutation);
         }
         if self.status()?.generation != 0 {
-            if let Some(prior) = self.receipt(request_key)? {
+            if let Some(prior) = self.selection_receipt(request_key)? {
                 return self.reconcile(prior, 0, mutation);
             }
             return Err(Error::NotEmpty);

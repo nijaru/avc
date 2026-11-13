@@ -1,7 +1,7 @@
 use avc::{
     Conflict, Entry, Id, Object, Revision,
     engine::{Edit, Engine},
-    repository::{Error, Operation, Receipt, Repository},
+    repository::{Error, Operation, Receipt, Repository, SelectionReceipt},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Barrier},
 };
 
-fn select(repo: &mut Repository, files: &[(&str, &[u8])], key: &str) -> Receipt {
+fn select(repo: &mut Repository, files: &[(&str, &[u8])], key: &str) -> SelectionReceipt {
     let mut engine = Engine::new();
     let empty = engine.empty().unwrap();
     let edits = files
@@ -165,7 +165,10 @@ fn replay_preserves_authorship_exact_new_parent_and_independent_source_then_undo
     assert_eq!(repo.status().unwrap(), later);
     drop(repo);
     let mut repo = Repository::open(dir.path()).unwrap();
-    assert_eq!(repo.receipt("rebase").unwrap(), Some(replay.clone()));
+    assert_eq!(
+        repo.receipt("rebase").unwrap(),
+        Some(Receipt::Selection(replay.clone()))
+    );
     assert_eq!(
         repo.rebase(onto, before.generation, "rebase").unwrap(),
         replay

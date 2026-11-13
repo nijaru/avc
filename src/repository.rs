@@ -1,7 +1,7 @@
 //! Experimental local storage and authored history, using SQLite WAL/FULL.
 //!
-//! SQLite WAL/FULL owns canonical payloads, the selection and immutable receipts
-//! in the same transaction.
+//! SQLite WAL/FULL owns canonical payloads, selection and the immutable journal.
+//! Each selection or independent named-reference transition commits with its ACK.
 //! Compression, extents, large-object streaming, deletion and GC are deferred.
 //! All closure operations buffer bounded data (and may hold several copies).
 //! No leases are needed while retained object rows are never removed or changed.
@@ -39,7 +39,7 @@ pub const MAX_CLOSURE_BYTES: usize = 256 * 1024 * 1024;
 pub const MAX_OBJECTS: usize = 100_000;
 const MAX_REQUEST_BYTES: usize = 1024;
 const APPLICATION_ID: i64 = 0x41564331;
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 mod capture;
 pub use capture::CaptureScope;
@@ -49,6 +49,8 @@ mod history;
 mod origin_scope;
 use origin_scope::OriginScope;
 mod rebase;
+mod references;
+pub use references::{NamedRef, RefName, RefReceipt, RefValue};
 mod transfer;
 
 #[derive(Debug)]
@@ -59,7 +61,15 @@ pub enum Error {
     AlreadyExists(PathBuf),
     Invalid(String),
     Limit(&'static str),
-    Stale { expected: u64, actual: u64 },
+    Stale {
+        expected: u64,
+        actual: u64,
+    },
+    StaleReference {
+        name: RefName,
+        expected: u64,
+        actual: u64,
+    },
     RequestKeyReuse(String),
     NotEmpty,
     RecoveryRequired,
@@ -78,8 +88,23 @@ impl fmt::Display for Error {
             Self::Stale { expected, actual } => {
                 write!(f, "stale selection: expected {expected}, actual {actual}")
             }
+            Self::StaleReference {
+                name,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "stale reference {}: expected {expected}, actual {actual}",
+                    name.as_str().escape_debug()
+                )
+            }
             Self::RequestKeyReuse(key) => {
-                write!(f, "request key reused with a different identity: {key}")
+                write!(
+                    f,
+                    "request key reused with a different identity: {}",
+                    key.escape_debug()
+                )
             }
             Self::NotEmpty => f.write_str("import requires an untouched initialized repository"),
             Self::RecoveryRequired => {
@@ -250,11 +275,18 @@ impl Mutation<'_> {
 
 /// Immutable private retention of both selections. Not exported by `export`.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Receipt {
+pub struct SelectionReceipt {
     pub request_key: String,
     pub operation: Operation,
     pub before: Selection,
     pub after: Selection,
+}
+
+/// An immutable acknowledgement from the shared operation-key namespace.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Receipt {
+    Selection(SelectionReceipt),
+    Ref(RefReceipt),
 }
 
 pub struct Repository {
@@ -363,6 +395,15 @@ impl Repository {
         Ok(prior)
     }
 
+    fn selection_receipt(&self, request_key: &str) -> Result<Option<SelectionReceipt>> {
+        self.ensure_idle()?;
+        let prior = selection_receipt(&self.connection, request_key)?;
+        if prior.is_some() {
+            durability_fence(&self.connection)?;
+        }
+        Ok(prior)
+    }
+
     /// Resolve the original source base for a conditional request/retry. Receipt
     /// and selection are one SQLite read snapshot: an identical concurrent
     /// commit cannot turn a valid preparation into a spurious Stale result.
@@ -374,7 +415,7 @@ impl Repository {
         self.ensure_idle()?;
         check_request_key(request_key)?;
         let tx = self.connection.unchecked_transaction()?;
-        let previous = match receipt(&tx, request_key)? {
+        let previous = match selection_receipt(&tx, request_key)? {
             Some(prior) => {
                 if prior.operation != Operation::Source
                     || prior.before.generation != expected_generation
@@ -421,14 +462,14 @@ impl Repository {
         root: Id,
         expected_generation: u64,
         request_key: &str,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
         let mutation = Mutation::Source {
             root,
             empty_only: false,
         };
-        if let Some(prior) = self.receipt(request_key)? {
+        if let Some(prior) = self.selection_receipt(request_key)? {
             return self.reconcile(prior, expected_generation, mutation);
         }
         require_source_root(root)?;
@@ -438,7 +479,7 @@ impl Repository {
         let current = self.status()?;
         if current.generation != expected_generation {
             // Reconcile an identical request that won the race to selection.
-            if let Some(prior) = self.receipt(request_key)? {
+            if let Some(prior) = self.selection_receipt(request_key)? {
                 return self.reconcile(prior, expected_generation, mutation);
             }
             return Err(Error::Stale {
@@ -472,13 +513,13 @@ impl Repository {
         request_key: &str,
         prepared: Vec<(Id, Vec<u8>)>,
         mutation: Mutation<'_>,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         let expected =
             i64::try_from(expected_generation).map_err(|_| Error::Limit("generation"))?;
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(prior) = receipt(&tx, request_key)? {
+        if let Some(prior) = selection_receipt(&tx, request_key)? {
             tx.rollback()?;
             durability_fence(&self.connection)?;
             return self.reconcile(prior, expected_generation, mutation);
@@ -587,7 +628,7 @@ impl Repository {
         let onto = operation.rebase_onto().map(Id::to_bytes).transpose()?;
         let git_commit = operation.git_commit().map(|oid| oid.to_bytes());
         tx.execute(
-            "INSERT INTO operations VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO operations (request_key, kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 request_key,
                 operation.as_str(),
@@ -605,7 +646,7 @@ impl Repository {
             ],
         )?;
         tx.commit()?;
-        Ok(Receipt {
+        Ok(SelectionReceipt {
             request_key: request_key.to_owned(),
             operation,
             before,
@@ -613,7 +654,12 @@ impl Repository {
         })
     }
 
-    fn reconcile(&self, prior: Receipt, expected: u64, mutation: Mutation<'_>) -> Result<Receipt> {
+    fn reconcile(
+        &self,
+        prior: SelectionReceipt,
+        expected: u64,
+        mutation: Mutation<'_>,
+    ) -> Result<SelectionReceipt> {
         if let Mutation::ImportGit { origin, .. } = mutation {
             return self.reconcile_git_import(prior, origin.commit);
         }
@@ -727,18 +773,25 @@ CREATE TABLE git_exports (
 ) STRICT;
 CREATE TABLE operations (
     request_key TEXT PRIMARY KEY CHECK(length(CAST(request_key AS BLOB)) BETWEEN 1 AND 1024),
-    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo')),
-    before_root BLOB NOT NULL REFERENCES objects(id),
-    before_generation INTEGER NOT NULL CHECK(before_generation >= 0),
+    kind TEXT NOT NULL CHECK(kind IN ('source', 'capture', 'commit', 'amend', 'rebase', 'import-history', 'import-git', 'undo', 'ref-set')),
+    before_root BLOB REFERENCES objects(id),
+    before_generation INTEGER CHECK(before_generation >= 0),
     before_revision BLOB REFERENCES objects(id),
-    after_root BLOB NOT NULL REFERENCES objects(id),
-    after_generation INTEGER NOT NULL CHECK(after_generation = before_generation + 1),
+    after_root BLOB REFERENCES objects(id),
+    after_generation INTEGER CHECK(after_generation = before_generation + 1),
     after_revision BLOB REFERENCES objects(id),
     undo_target TEXT REFERENCES operations(request_key),
     onto_revision BLOB REFERENCES objects(id),
     git_commit BLOB REFERENCES git_origins(commit_oid),
     capture_scope BLOB CHECK(capture_scope IS NULL OR length(capture_scope) BETWEEN 1 AND 131072),
     import_origins BLOB CHECK(import_origins IS NULL OR length(import_origins) BETWEEN 44 AND 8600044),
+    ref_name TEXT COLLATE BINARY,
+    before_ref_generation INTEGER CHECK(before_ref_generation BETWEEN 1 AND 9223372036854775806),
+    after_ref_generation INTEGER CHECK(after_ref_generation > 0 AND after_ref_generation = coalesce(before_ref_generation, 0) + 1),
+    after_ref_revision BLOB REFERENCES objects(id) CHECK(length(after_ref_revision) = 33 AND substr(after_ref_revision, 1, 1) = X'05'),
+    FOREIGN KEY(ref_name, before_ref_generation) REFERENCES operations(ref_name, after_ref_generation),
+    CHECK((kind != 'ref-set' AND before_root IS NOT NULL AND before_generation IS NOT NULL AND after_root IS NOT NULL AND after_generation IS NOT NULL AND ref_name IS NULL AND before_ref_generation IS NULL AND after_ref_generation IS NULL AND after_ref_revision IS NULL) OR
+          (kind = 'ref-set' AND before_root IS NULL AND before_generation IS NULL AND before_revision IS NULL AND after_root IS NULL AND after_generation IS NULL AND after_revision IS NULL AND undo_target IS NULL AND onto_revision IS NULL AND git_commit IS NULL AND capture_scope IS NULL AND import_origins IS NULL AND ref_name IS NOT NULL AND after_ref_generation IS NOT NULL AND after_ref_revision IS NOT NULL)),
     CHECK((kind = 'import-history' AND import_origins IS NOT NULL) OR (kind != 'import-history' AND import_origins IS NULL)),
     CHECK((kind = 'capture' AND capture_scope IS NOT NULL) OR (kind != 'capture' AND capture_scope IS NULL)),
     CHECK((kind = 'import-git' AND git_commit IS NOT NULL) OR (kind != 'import-git' AND git_commit IS NULL)),
@@ -750,7 +803,7 @@ CREATE TABLE operations (
           (kind = 'import-history' AND before_generation = 0 AND before_revision IS NULL) OR
           (kind = 'import-git' AND before_generation = 0 AND before_revision IS NULL AND after_revision IS NOT NULL) OR
           (kind = 'rebase' AND before_revision IS NOT NULL AND after_revision IS NOT NULL) OR
-          kind = 'undo')
+          kind IN ('undo', 'ref-set'))
 ) STRICT;
 CREATE TABLE capture_observations (
     request_key TEXT PRIMARY KEY REFERENCES operations(request_key) DEFERRABLE INITIALLY DEFERRED,
@@ -762,6 +815,8 @@ WHEN (NEW.kind = 'capture') != EXISTS(SELECT 1 FROM capture_observations WHERE r
 BEGIN SELECT RAISE(ABORT, 'capture observation/receipt mismatch'); END;
 CREATE TRIGGER capture_observations_no_update BEFORE UPDATE ON capture_observations BEGIN SELECT RAISE(ABORT, 'immutable capture observation'); END;
 CREATE TRIGGER capture_observations_no_delete BEFORE DELETE ON capture_observations BEGIN SELECT RAISE(ABORT, 'retained capture observation'); END;
+CREATE UNIQUE INDEX operations_ref_generation ON operations(ref_name, after_ref_generation);
+CREATE UNIQUE INDEX operations_ref_birth ON operations(ref_name) WHERE kind = 'ref-set' AND before_ref_generation IS NULL;
 CREATE INDEX operations_git_anchor ON operations(after_revision) WHERE kind = 'import-git';
 CREATE UNIQUE INDEX operations_history_import ON operations(kind) WHERE kind = 'import-history';
 CREATE TRIGGER git_origins_no_update BEFORE UPDATE ON git_origins BEGIN SELECT RAISE(ABORT, 'immutable Git origin'); END;
@@ -895,95 +950,121 @@ fn receipt(connection: &Connection, key: &str) -> Result<Option<Receipt>> {
         Option<Vec<u8>>,
         Option<Vec<u8>>,
     );
-    let row: Option<StoredReceipt> = connection.query_row(
-        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins FROM operations WHERE request_key = ?1",
-        [key], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?)),
-    ).optional()?;
-    row.map(
-        |(kind, before, after, target, onto, git_commit, capture_scope, import_origins)| {
-            let before = decode_selection(before)?;
-            let after = decode_selection(after)?;
-            if before.generation.checked_add(1) != Some(after.generation) {
-                return Err(invalid("receipt generation step"));
+    enum Stored {
+        Selection(StoredReceipt),
+        Ref(references::StoredRefReceipt),
+    }
+    let row = connection.query_row(
+        "SELECT kind, before_root, before_generation, before_revision, after_root, after_generation, after_revision, undo_target, onto_revision, git_commit, capture_scope, import_origins, ref_name, before_ref_generation, after_ref_generation, after_ref_revision FROM operations WHERE request_key = ?1",
+        [key], |r| {
+            let kind: String = r.get(0)?;
+            if kind == "ref-set" {
+                Ok(Stored::Ref((r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?)))
+            } else {
+                Ok(Stored::Selection((kind, (r.get(1)?, r.get(2)?, r.get(3)?), (r.get(4)?, r.get(5)?, r.get(6)?), r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?)))
             }
-            if (kind == "undo") != target.is_some() {
-                return Err(invalid("receipt undo target"));
-            }
-            if (kind == "rebase") != onto.is_some() {
-                return Err(invalid("receipt rebase target"));
-            }
-            if (kind == "import-git") != git_commit.is_some() {
-                return Err(invalid("receipt Git commit"));
-            }
-            if (kind == "capture") != capture_scope.is_some() {
-                return Err(invalid("receipt capture scope"));
-            }
-            if (kind == "import-history") != import_origins.is_some() {
-                return Err(invalid("receipt history origin scope"));
-            }
-            if let Some(bytes) = import_origins {
-                OriginScope::decode(bytes)?;
-            }
-            let operation = match kind.as_str() {
-                "capture" if before.revision == after.revision => Operation::Capture {
-                    scope: CaptureScope::decode(
-                        &capture_scope.ok_or_else(|| invalid("receipt capture scope"))?,
-                    )?,
-                },
-                "source" if before.revision == after.revision => Operation::Source,
-                "commit"
-                    if before.root == after.root
-                        && after.revision.is_some()
-                        && before.revision != after.revision =>
-                {
-                    Operation::Commit
-                }
-                "amend"
-                    if before.root == after.root
-                        && before.revision.is_some()
-                        && after.revision.is_some()
-                        && before.revision != after.revision =>
-                {
-                    Operation::Amend
-                }
-                "rebase" if before.revision.is_some() && after.revision.is_some() => {
-                    let onto =
-                        Id::from_bytes(&onto.ok_or_else(|| invalid("receipt rebase target"))?)?;
-                    if onto.kind != crate::REVISION_KIND {
-                        return Err(invalid("receipt rebase target kind"));
-                    }
-                    Operation::Rebase { onto }
-                }
-                "undo" => {
-                    let target = target.ok_or_else(|| invalid("receipt undo target"))?;
-                    check_request_key(&target)?;
-                    Operation::Undo { target }
-                }
-                "import-history" if before.generation == 0 && before.revision.is_none() => {
-                    Operation::ImportHistory
-                }
-                "import-git"
-                    if before.generation == 0
-                        && before.revision.is_none()
-                        && after.revision.is_some() =>
-                {
-                    Operation::ImportGit {
-                        commit: crate::git::GitOid::from_bytes(
-                            &git_commit.ok_or_else(|| invalid("receipt Git commit"))?,
-                        )?,
-                    }
-                }
-                _ => return Err(invalid("receipt operation")),
-            };
-            Ok(Receipt {
-                request_key: key.to_owned(),
-                operation,
-                before,
-                after,
-            })
         },
-    )
-    .transpose()
+    ).optional()?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let (kind, before, after, target, onto, git_commit, capture_scope, import_origins) = match row {
+        Stored::Ref(stored) => {
+            return Ok(Some(Receipt::Ref(references::decode_receipt(
+                connection, key, stored,
+            )?)));
+        }
+        Stored::Selection(stored) => stored,
+    };
+    let before = decode_selection(before)?;
+    let after = decode_selection(after)?;
+    if before.generation.checked_add(1) != Some(after.generation) {
+        return Err(invalid("receipt generation step"));
+    }
+    if (kind == "undo") != target.is_some() {
+        return Err(invalid("receipt undo target"));
+    }
+    if (kind == "rebase") != onto.is_some() {
+        return Err(invalid("receipt rebase target"));
+    }
+    if (kind == "import-git") != git_commit.is_some() {
+        return Err(invalid("receipt Git commit"));
+    }
+    if (kind == "capture") != capture_scope.is_some() {
+        return Err(invalid("receipt capture scope"));
+    }
+    if (kind == "import-history") != import_origins.is_some() {
+        return Err(invalid("receipt history origin scope"));
+    }
+    if let Some(bytes) = import_origins {
+        OriginScope::decode(bytes)?;
+    }
+    let operation = match kind.as_str() {
+        "capture" if before.revision == after.revision => Operation::Capture {
+            scope: CaptureScope::decode(
+                &capture_scope.ok_or_else(|| invalid("receipt capture scope"))?,
+            )?,
+        },
+        "source" if before.revision == after.revision => Operation::Source,
+        "commit"
+            if before.root == after.root
+                && after.revision.is_some()
+                && before.revision != after.revision =>
+        {
+            Operation::Commit
+        }
+        "amend"
+            if before.root == after.root
+                && before.revision.is_some()
+                && after.revision.is_some()
+                && before.revision != after.revision =>
+        {
+            Operation::Amend
+        }
+        "rebase" if before.revision.is_some() && after.revision.is_some() => {
+            let onto = Id::from_bytes(&onto.ok_or_else(|| invalid("receipt rebase target"))?)?;
+            if onto.kind != crate::REVISION_KIND {
+                return Err(invalid("receipt rebase target kind"));
+            }
+            Operation::Rebase { onto }
+        }
+        "undo" => {
+            let target = target.ok_or_else(|| invalid("receipt undo target"))?;
+            check_request_key(&target)?;
+            Operation::Undo { target }
+        }
+        "import-history" if before.generation == 0 && before.revision.is_none() => {
+            Operation::ImportHistory
+        }
+        "import-git"
+            if before.generation == 0 && before.revision.is_none() && after.revision.is_some() =>
+        {
+            Operation::ImportGit {
+                commit: crate::git::GitOid::from_bytes(
+                    &git_commit.ok_or_else(|| invalid("receipt Git commit"))?,
+                )?,
+            }
+        }
+        _ => return Err(invalid("receipt operation")),
+    };
+    Ok(Some(Receipt::Selection(SelectionReceipt {
+        request_key: key.to_owned(),
+        operation,
+        before,
+        after,
+    })))
+}
+
+fn selection_receipt_value(prior: Option<Receipt>, key: &str) -> Result<Option<SelectionReceipt>> {
+    match prior {
+        Some(Receipt::Selection(prior)) => Ok(Some(prior)),
+        Some(Receipt::Ref(_)) => Err(Error::RequestKeyReuse(key.to_owned())),
+        None => Ok(None),
+    }
+}
+
+fn selection_receipt(connection: &Connection, key: &str) -> Result<Option<SelectionReceipt>> {
+    selection_receipt_value(receipt(connection, key)?, key)
 }
 
 fn insert_objects(
@@ -1214,7 +1295,10 @@ mod crash_tests {
         let selected = repo.preparation_base(0, "same").unwrap();
         assert_eq!(selected, before);
         let committed = worker.join().unwrap();
-        assert_eq!(repo.receipt("same").unwrap().unwrap(), committed);
+        assert_eq!(
+            repo.receipt("same").unwrap().unwrap(),
+            Receipt::Selection(committed)
+        );
         assert_eq!(repo.preparation_base(0, "same").unwrap(), before);
     }
 
@@ -1272,7 +1356,10 @@ mod crash_tests {
             } else {
                 assert_eq!(selected.root, root);
                 assert!(restored.read(root, &[b"payload".to_vec()]).is_ok());
-                let prior = repo.receipt("crash-request").unwrap().unwrap();
+                let Receipt::Selection(prior) = repo.receipt("crash-request").unwrap().unwrap()
+                else {
+                    panic!("expected selection receipt");
+                };
                 assert_eq!(
                     repo.commit_source(&Engine::new(), root, 0, "crash-request")
                         .unwrap(),

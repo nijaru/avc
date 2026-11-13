@@ -10,7 +10,7 @@
 use avc::{
     Entry, Id, Object,
     engine::{Edit, Engine},
-    repository::{Operation, Receipt, Repository, Selection},
+    repository::{Operation, Receipt, Repository, Selection, SelectionReceipt},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -381,12 +381,12 @@ fn check_selected(repository: &Repository, before: Selection, after: Selection, 
     } else {
         assert_eq!(
             receipt,
-            Some(Receipt {
+            Some(Receipt::Selection(SelectionReceipt {
                 operation: Operation::Source,
                 request_key: KEY.into(),
                 before,
                 after,
-            })
+            }))
         );
         let Entry::File { blob, executable } =
             engine.read(selected.root, &[b"file".to_vec()]).unwrap()
@@ -664,7 +664,7 @@ fn receipt_wal_sweeps(
     h: &Harness,
     seed: &Path,
     input: &Path,
-    expected: &Receipt,
+    expected: &SelectionReceipt,
     bytes: &[u8],
     source_baseline: &[Event],
     old_export: &[u8],
@@ -765,8 +765,8 @@ fn receipt_wal_sweeps(
                     Repository::open(&project).unwrap_or_else(|e| panic!("{e}: {context}"));
                 assert_eq!(repository.status().unwrap(), expected.after, "{context}");
                 assert_eq!(
-                    repository.receipt(KEY).unwrap().as_ref(),
-                    Some(expected),
+                    repository.receipt(KEY).unwrap(),
+                    Some(Receipt::Selection(expected.clone())),
                     "{context}"
                 );
                 check_selected(&repository, expected.before, expected.after, bytes);
@@ -1019,7 +1019,7 @@ fn cli_observed_syscall_fault_sweep_preserves_source_and_exactly_once_retry() {
         &h,
         seed.path(),
         &input,
-        &Receipt {
+        &SelectionReceipt {
             operation: Operation::Source,
             request_key: KEY.into(),
             before,

@@ -105,7 +105,10 @@ fn actual_cli_reports_empty_or_unresolved_replay_recovers_receipts_and_exports_c
             assert!(diagnostic.contains("Unresolved source conflicts preserved"));
             assert!(!diagnostic.contains("Empty change"));
         }
-        let receipt = repo.receipt("rebase").unwrap().unwrap();
+        let avc::repository::Receipt::Selection(receipt) = repo.receipt("rebase").unwrap().unwrap()
+        else {
+            panic!("expected selection receipt");
+        };
         let revised = repo.revision(receipt.after.revision.unwrap()).unwrap();
         assert_eq!(revised.parents, vec![onto]);
         assert_eq!(revised.change, original.change);

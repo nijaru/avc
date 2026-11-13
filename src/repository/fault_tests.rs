@@ -274,7 +274,10 @@ fn incomplete_checkpoint_cannot_acknowledge_a_receipt() {
         "a partial FULL checkpoint is not a completed durability fence"
     );
     reader.execute_batch("ROLLBACK").unwrap();
-    assert_eq!(repo.receipt("held").unwrap().unwrap().after.root, next_root);
+    let Receipt::Selection(held) = repo.receipt("held").unwrap().unwrap() else {
+        panic!("expected selection receipt");
+    };
+    assert_eq!(held.after.root, next_root);
     assert_restorable(&repo, before.root, 17);
     assert_restorable(&repo, next_root, 29);
 }
@@ -399,7 +402,9 @@ fn post_commit_wal_hook_error_reconciles_the_already_committed_outcome() {
             .is_err()
     );
     repo.connection.wal_hook(None);
-    let outcome = repo.receipt("ambiguous").unwrap().unwrap();
+    let Receipt::Selection(outcome) = repo.receipt("ambiguous").unwrap().unwrap() else {
+        panic!("expected selection receipt");
+    };
     assert_eq!(outcome.before, before);
     assert_eq!(outcome.after.root, next_root);
     assert_eq!(
@@ -411,5 +416,8 @@ fn post_commit_wal_hook_error_reconciles_the_already_committed_outcome() {
     assert_restorable(&repo, next_root, 29);
     drop(repo);
     let reopened = Repository::open(project.path()).unwrap();
-    assert_eq!(reopened.receipt("ambiguous").unwrap().unwrap(), outcome);
+    assert_eq!(
+        reopened.receipt("ambiguous").unwrap().unwrap(),
+        Receipt::Selection(outcome)
+    );
 }

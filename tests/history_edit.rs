@@ -1,10 +1,10 @@
 use avc::{
     Entry, Id, Object,
     engine::{Edit, Engine},
-    repository::{Error, Operation, Receipt, Repository, Selection},
+    repository::{Error, Operation, Receipt, Repository, Selection, SelectionReceipt},
 };
 use std::sync::{Arc, Barrier};
-fn select(repo: &mut Repository, value: &[u8], key: &str) -> Receipt {
+fn select(repo: &mut Repository, value: &[u8], key: &str) -> SelectionReceipt {
     let mut engine = Engine::new();
     let empty = engine.empty().unwrap();
     let blob = engine.blob(value.to_vec()).unwrap();
@@ -124,7 +124,10 @@ fn amend_uses_selected_source_and_preserves_change_parents_and_predecessor() {
     drop(repo);
     let repo = Repository::open(project.path()).unwrap();
     assert_eq!(repo.status().unwrap(), empty.after);
-    assert_eq!(repo.receipt("undo").unwrap(), Some(undone));
+    assert_eq!(
+        repo.receipt("undo").unwrap(),
+        Some(Receipt::Selection(undone))
+    );
     repo.load_root(tip).unwrap();
     repo.load_root(id).unwrap();
 }

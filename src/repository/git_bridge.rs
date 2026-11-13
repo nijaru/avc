@@ -26,14 +26,14 @@ impl Repository {
         git_dir: &Path,
         commit: GitOid,
         request_key: &str,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
-        if let Some(prior) = self.receipt(request_key)? {
+        if let Some(prior) = self.selection_receipt(request_key)? {
             return self.reconcile_git_import(prior, commit);
         }
         if self.status()?.generation != 0 {
-            if let Some(prior) = self.receipt(request_key)? {
+            if let Some(prior) = self.selection_receipt(request_key)? {
                 return self.reconcile_git_import(prior, commit);
             }
             return Err(Error::NotEmpty);
@@ -64,7 +64,11 @@ impl Repository {
         )
     }
 
-    pub(super) fn reconcile_git_import(&self, prior: Receipt, commit: GitOid) -> Result<Receipt> {
+    pub(super) fn reconcile_git_import(
+        &self,
+        prior: SelectionReceipt,
+        commit: GitOid,
+    ) -> Result<SelectionReceipt> {
         if prior.before.generation != 0 || prior.operation != (Operation::ImportGit { commit }) {
             return Err(Error::RequestKeyReuse(prior.request_key));
         }

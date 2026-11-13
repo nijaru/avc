@@ -81,7 +81,7 @@ test -z "$(git --git-dir "$demo/target.git" show -s --format=%P "$oid")"
 git --git-dir "$demo/target.git" show "$oid:hello"
 ```
 
-All examples leave candidate objects unreferenced; no Git branch was created. The sections below describe the broader interoperability target; refs, remote synchronization, foreign partial views and hosting are not implemented by this subset.
+All examples leave candidate objects unreferenced; no Git branch was created. The sections below describe the broader interoperability target; Git ref publication, remote synchronization, foreign partial views and hosting are not implemented by this subset. Local native revision aliases are independent of Git refs ([UX](ux.md#local-named-revision-references)).
 
 ## The fundamental identity incompatibility
 

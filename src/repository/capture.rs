@@ -155,15 +155,20 @@ impl Repository {
     /// bytes under the current source CAS. Unselected source and authored head
     /// remain unchanged. A retry recovers the original observation without any
     /// source filesystem access, even after later edits or selection changes.
-    pub fn capture(&mut self, scope: &CaptureScope, expected: u64, key: &str) -> Result<Receipt> {
+    pub fn capture(
+        &mut self,
+        scope: &CaptureScope,
+        expected: u64,
+        key: &str,
+    ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(key)?;
-        if let Some(prior) = self.receipt(key)? {
+        if let Some(prior) = self.selection_receipt(key)? {
             return self.reconcile_capture(prior, expected, scope);
         }
         let before = self.status()?;
         if before.generation != expected {
-            if let Some(prior) = self.receipt(key)? {
+            if let Some(prior) = self.selection_receipt(key)? {
                 return self.reconcile_capture(prior, expected, scope);
             }
             return Err(Error::Stale {
@@ -202,10 +207,10 @@ impl Repository {
     }
     pub(super) fn reconcile_capture(
         &self,
-        prior: Receipt,
+        prior: SelectionReceipt,
         expected: u64,
         scope: &CaptureScope,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         if prior.before.generation != expected
             || prior.operation
                 != (Operation::Capture {
@@ -219,7 +224,7 @@ impl Repository {
     /// Retained versioned observation evidence, not a filesystem snapshot proof.
     /// Unlike receipt recovery, this explicitly checks witness-record custody.
     pub fn capture_observation(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let Some(prior) = self.receipt(key)? else {
+        let Some(Receipt::Selection(prior)) = self.receipt(key)? else {
             return Ok(None);
         };
         let Operation::Capture { scope } = prior.operation else {

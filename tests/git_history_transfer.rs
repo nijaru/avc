@@ -406,7 +406,7 @@ fn complete_origin_scope_is_retry_identity_not_current_origin_health() {
             connection
                 .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                 .unwrap(),
-            11
+            12
         );
         let scope: Vec<u8> = connection
             .query_row(
@@ -441,7 +441,10 @@ fn complete_origin_scope_is_retry_identity_not_current_origin_health() {
             repo.import_history(wire.as_slice(), "restore").unwrap(),
             receipt
         );
-        assert_eq!(repo.receipt("restore").unwrap(), Some(receipt));
+        assert_eq!(
+            repo.receipt("restore").unwrap(),
+            Some(avc::repository::Receipt::Selection(receipt))
+        );
         assert_eq!(repo.status().unwrap(), current);
         assert_eq!(durable_rows(&connection), before); // ACK recovery does not repair custody.
         assert!(matches!(

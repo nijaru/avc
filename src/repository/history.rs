@@ -15,7 +15,7 @@ impl Repository {
         message: &str,
         expected_generation: u64,
         request_key: &str,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.author(author, message, expected_generation, request_key, false)
     }
 
@@ -28,7 +28,7 @@ impl Repository {
         message: &str,
         expected_generation: u64,
         request_key: &str,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.author(author, message, expected_generation, request_key, true)
     }
 
@@ -39,7 +39,7 @@ impl Repository {
         expected_generation: u64,
         request_key: &str,
         amend: bool,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
         let mutation = Mutation::Author {
@@ -47,7 +47,7 @@ impl Repository {
             message,
             amend,
         };
-        if let Some(prior) = self.receipt(request_key)? {
+        if let Some(prior) = self.selection_receipt(request_key)? {
             return self.reconcile(prior, expected_generation, mutation);
         }
         if author.trim().is_empty() {
@@ -58,7 +58,7 @@ impl Repository {
         }
         let current = self.status()?;
         if current.generation != expected_generation {
-            if let Some(prior) = self.receipt(request_key)? {
+            if let Some(prior) = self.selection_receipt(request_key)? {
                 return self.reconcile(prior, expected_generation, mutation);
             }
             return Err(Error::Stale {
@@ -90,17 +90,17 @@ impl Repository {
         target: &str,
         expected_generation: u64,
         request_key: &str,
-    ) -> Result<Receipt> {
+    ) -> Result<SelectionReceipt> {
         self.ensure_idle()?;
         check_request_key(request_key)?;
         let mutation = Mutation::Undo { target };
-        if let Some(prior) = self.receipt(request_key)? {
+        if let Some(prior) = self.selection_receipt(request_key)? {
             return self.reconcile(prior, expected_generation, mutation);
         }
         check_request_key(target)?;
         let current = self.status()?;
         if current.generation != expected_generation {
-            if let Some(prior) = self.receipt(request_key)? {
+            if let Some(prior) = self.selection_receipt(request_key)? {
                 return self.reconcile(prior, expected_generation, mutation);
             }
             return Err(Error::Stale {
@@ -176,8 +176,15 @@ pub(super) fn undo_selection(
     current: Selection,
     target: &str,
 ) -> Result<Selection> {
-    let original = receipt(connection, target)?
-        .ok_or_else(|| invalid("undo target has no committed receipt"))?;
+    let original = match receipt(connection, target)? {
+        Some(Receipt::Selection(original)) => original,
+        Some(Receipt::Ref(_)) => {
+            return Err(invalid(
+                "selection undo cannot target a reference operation",
+            ));
+        }
+        None => return Err(invalid("undo target has no committed receipt")),
+    };
     if original.after.generation != current.generation {
         return Err(Error::Stale {
             expected: original.after.generation,

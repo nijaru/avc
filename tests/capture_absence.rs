@@ -117,7 +117,10 @@ fn actual_cli_prunes_only_proven_missing_bindings_and_commit_does_not_rescan() {
             "{output}"
         );
     }
-    let receipt = repo.receipt("remove").unwrap().unwrap();
+    let avc::repository::Receipt::Selection(receipt) = repo.receipt("remove").unwrap().unwrap()
+    else {
+        panic!("expected selection receipt");
+    };
     assert_eq!(receipt.after.generation, 3);
     assert_eq!(receipt.after.revision, authored.after.revision);
     for name in ["src/empty", "src/gone", "src/tree"] {

@@ -334,7 +334,10 @@ fn cli_reports_raw_directory_bytes_without_lossy_scope_substitution() {
     assert!(text.contains("source-\\xc3\\xbf"));
     assert!(!text.contains('\u{fffd}'));
     let repo = Repository::open(project.path()).unwrap();
-    let Operation::Capture { scope } = repo.receipt("raw").unwrap().unwrap().operation else {
+    let avc::repository::Receipt::Selection(receipt) = repo.receipt("raw").unwrap().unwrap() else {
+        panic!("expected selection receipt");
+    };
+    let Operation::Capture { scope } = receipt.operation else {
         panic!("not capture");
     };
     assert_eq!(

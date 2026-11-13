@@ -1,6 +1,6 @@
 //! Thin experimental CLI; source selection and authored history are explicit.
 use avc::engine::{Edit, Engine, Limits, MergeBudget, Relocate};
-use avc::repository::{Receipt, Repository, Selection};
+use avc::repository::{RefName, RefReceipt, RefValue, Repository, Selection, SelectionReceipt};
 use avc::{Entry, Id, Object};
 use std::{
     io::{Read, Write},
@@ -33,6 +33,7 @@ enum Command {
     Import(Import),
     Restore(Restore),
     Receipt(ReceiptArgs),
+    Ref(References),
     Source(Source),
     Commit(Commit),
     Capture(Capture),
@@ -101,6 +102,46 @@ struct Restore {
 /// Inspect an immutable request outcome after a lost response.
 #[derive(Args)]
 struct ReceiptArgs {
+    request_key: String,
+}
+/// Independent local revision aliases; no checkout, automatic advancement or Git publication.
+#[derive(Args)]
+struct References {
+    #[usage(subcommand)]
+    command: RefCommand,
+}
+#[derive(Subcommands)]
+enum RefCommand {
+    /// Inspect one name's current target and independent generation.
+    Show(RefShow),
+    /// List names in exact UTF-8 byte order; each page is one metadata snapshot.
+    List(RefList),
+    /// Create or move one name without changing selected source/head.
+    Set(RefSet),
+}
+// Validate names after argument parsing: usage-rs echoes failed typed values
+// verbatim, including controls rejected by RefName.
+#[derive(Args)]
+struct RefShow {
+    name: String,
+}
+#[derive(Args)]
+struct RefList {
+    /// Exclusive name cursor; it need not exist.
+    #[usage(long)]
+    after: Option<String>,
+    #[usage(long, default = "20")]
+    limit: usize,
+}
+#[derive(Args)]
+struct RefSet {
+    name: String,
+    #[usage(long)]
+    revision: Id,
+    /// This name's generation, or zero to create it (not the source generation).
+    #[usage(long)]
+    expected_generation: u64,
+    #[usage(long)]
     request_key: String,
 }
 /// Author the selected source, not live filesystem files. Does not scan a workspace.
@@ -311,7 +352,24 @@ fn display_path(path: &[Vec<u8>]) -> String {
         .collect::<Vec<_>>()
         .join("/")
 }
-fn print_receipt(receipt: &Receipt) {
+fn print_reference(name: &RefName, value: RefValue) {
+    println!(
+        "ref={} revision={} generation={}",
+        name.as_str().escape_debug(),
+        value.revision,
+        value.generation
+    );
+}
+fn print_ref_receipt(receipt: &RefReceipt) {
+    println!(
+        "ref={} revision={} generation={} request={}",
+        receipt.name.as_str().escape_debug(),
+        receipt.after.revision,
+        receipt.after.generation,
+        receipt.request_key.escape_debug()
+    );
+}
+fn print_receipt(receipt: &SelectionReceipt) {
     let revision = receipt
         .after
         .revision
@@ -365,7 +423,7 @@ fn print_receipt(receipt: &Receipt) {
         }
     }
 }
-fn capture_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
+fn capture_diagnostics(repo: &Repository, receipt: &SelectionReceipt) -> Result<()> {
     let witnesses = repo
         .capture_observation(&receipt.request_key)?
         .ok_or("capture receipt has no observation")?;
@@ -390,7 +448,7 @@ fn capture_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
 }
 // Publication is already acknowledged before these optional comparisons run.
 // Damaged comparison metadata must not hide a committed/recovered receipt.
-fn rewrite_diagnostics(repo: &Repository, receipt: &Receipt) -> Result<()> {
+fn rewrite_diagnostics(repo: &Repository, receipt: &SelectionReceipt) -> Result<()> {
     let before = repo.revision(
         receipt
             .before
@@ -542,7 +600,7 @@ fn source(repo: &mut Repository, command: SourceCommand) -> Result<()> {
     print_receipt(&receipt);
     Ok(())
 }
-fn relocate(repo: &mut Repository, args: Move, copy: bool) -> Result<Receipt> {
+fn relocate(repo: &mut Repository, args: Move, copy: bool) -> Result<SelectionReceipt> {
     let (base, mut engine) =
         mutation_base(repo, args.base, args.expected_generation, &args.request_key)?;
     let source = source_path(Some(&args.source))?;
@@ -570,6 +628,9 @@ fn run(cli: CommandLine) -> Result<()> {
             | Command::Amend(_)
             | Command::Rebase(_)
             | Command::History(_)
+            | Command::Ref(References {
+                command: RefCommand::Set(_)
+            })
             | Command::Git(Git {
                 command: GitCommand::Import(_) | GitCommand::Export(_)
             })
@@ -721,14 +782,14 @@ fn run(cli: CommandLine) -> Result<()> {
                     .map(|id| id.to_string())
                     .unwrap_or_else(|| "unborn".to_owned());
                 println!(
-                    "Exported selected history: root={} revision={head}; retained Git origins included when needed; local operations, instance/workspace and derived Git maps excluded.",
+                    "Exported selected history: root={} revision={head}; retained Git origins included when needed; named refs, local operations, instance/workspace and derived Git maps excluded.",
                     snapshot.root
                 );
             } else {
                 let root = selected(&repo, args.root)?;
                 repo.export_file(root, &args.output)?;
                 println!(
-                    "Exported exact source closure {root}; authored history and private operations excluded."
+                    "Exported exact source closure {root}; authored history, named refs and private operations excluded."
                 );
             }
         }
@@ -754,8 +815,34 @@ fn run(cli: CommandLine) -> Result<()> {
             let receipt = repo
                 .receipt(&args.request_key)?
                 .ok_or("request has no committed receipt; no success may be assumed")?;
-            print_receipt(&receipt);
+            match receipt {
+                avc::repository::Receipt::Selection(receipt) => print_receipt(&receipt),
+                avc::repository::Receipt::Ref(receipt) => print_ref_receipt(&receipt),
+            }
         }
+        Command::Ref(args) => match args.command {
+            RefCommand::Show(args) => {
+                let name = args.name.parse()?;
+                let value = repo.reference(&name)?.ok_or("reference does not exist")?;
+                print_reference(&name, value);
+            }
+            RefCommand::List(args) => {
+                let after = args.after.as_deref().map(str::parse).transpose()?;
+                for named in repo.references(after.as_ref(), args.limit)? {
+                    print_reference(&named.name, named.value);
+                }
+            }
+            RefCommand::Set(args) => {
+                let name = args.name.parse()?;
+                let receipt = repo.set_reference(
+                    &name,
+                    args.revision,
+                    args.expected_generation,
+                    &args.request_key,
+                )?;
+                print_ref_receipt(&receipt);
+            }
+        },
         Command::Source(args) => source(&mut repo, args.command)?,
         Command::Capture(args) => {
             let mut paths = Vec::with_capacity(args.paths.len());

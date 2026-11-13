@@ -193,7 +193,10 @@ fn selected_history_roundtrip_preserves_ancestry_dirty_selection_and_retry_ident
     drop(restored);
     let restored = Repository::open(fresh.path()).unwrap();
     assert_eq!(restored.status().unwrap(), current);
-    assert_eq!(restored.receipt("restore").unwrap(), Some(receipt));
+    assert_eq!(
+        restored.receipt("restore").unwrap(),
+        Some(avc::repository::Receipt::Selection(receipt))
+    );
     restored.load_root(current.revision.unwrap()).unwrap();
 }
 

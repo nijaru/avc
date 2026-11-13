@@ -37,7 +37,6 @@ fn content(seed: u64, len: usize) -> Vec<u8> {
 
 struct Workload {
     name: &'static str,
-    file_count: usize,
     file_bytes: Vec<usize>,
     revisions: usize,
     replaced_per_rev: usize,
@@ -48,7 +47,6 @@ fn workload(name: &str) -> Workload {
         // Many small source-like files, repeated partial replacement churn.
         "small-churn" => Workload {
             name: "small-churn",
-            file_count: 200,
             file_bytes: (0..200)
                 .map(|i| [64, 256, 1024, 2048, 4096][i % 5])
                 .collect(),
@@ -59,7 +57,6 @@ fn workload(name: &str) -> Workload {
         // 256 MiB closure model.
         "binary-churn" => Workload {
             name: "binary-churn",
-            file_count: 8,
             file_bytes: vec![4 * 1024 * 1024; 8],
             revisions: 10,
             replaced_per_rev: 2,
@@ -133,8 +130,8 @@ fn main() {
     let mut root = engine.empty().unwrap();
 
     let build = Instant::now();
-    for i in 0..w.file_count {
-        let bytes = content(i as u64 * 2 + 1, w.file_bytes[i]);
+    for (i, &length) in w.file_bytes.iter().enumerate() {
+        let bytes = content(i as u64 * 2 + 1, length);
         fingerprint.update(&bytes);
         let blob = engine.blob(bytes).unwrap();
         root = engine
@@ -165,7 +162,7 @@ fn main() {
         let churn = Instant::now();
         let mut edits = Vec::new();
         for j in 0..w.replaced_per_rev {
-            let i = (rev * w.replaced_per_rev + j) % w.file_count;
+            let i = (rev * w.replaced_per_rev + j) % w.file_bytes.len();
             last_changed = i;
             let bytes = content(
                 i as u64 * 2 + 1 + (rev as u64 + 1) * 1_000_003,
@@ -302,7 +299,7 @@ fn main() {
                      every acknowledged commit here paid that contract.",
         },
         "workload_params": {
-            "file_count": w.file_count,
+            "file_count": w.file_bytes.len(),
             "file_bytes_total": w.file_bytes.iter().sum::<usize>(),
             "revisions": w.revisions,
             "replaced_per_rev": w.replaced_per_rev,

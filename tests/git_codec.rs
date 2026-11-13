@@ -1298,8 +1298,10 @@ fn optional_read_requires_exact_missing_framing_and_successful_exit() {
         } else {
             String::new()
         };
+        // Consume the request like real batch plumbing; exiting before the
+        // parent's write completes would introduce a legitimate broken pipe.
         std::fs::write(&script, format!(
-            "#!/bin/sh\ncase \"$*\" in\n  *cat-file*) printf '%s' '{diagnostics}' >&2; printf '%s' '{response}'; exit {status};;\n  *) exec '{}' \"$@\";;\nesac\n", real_git.display()
+            "#!/bin/sh\ncase \"$*\" in\n  *cat-file*) IFS= read -r request || exit 2; [ \"$request\" = '{request}' ] || exit 2; printf '%s' '{diagnostics}' >&2; printf '%s' '{response}'; exit {status};;\n  *) exec '{}' \"$@\";;\nesac\n", real_git.display(), request = bare(oid)
         )).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let status = Command::new(std::env::current_exe().unwrap())
